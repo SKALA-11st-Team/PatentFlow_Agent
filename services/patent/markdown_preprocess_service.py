@@ -1,0 +1,764 @@
+from pathlib import Path
+from typing import Any
+import re
+
+
+STRUCTURAL_HEADERS = {
+    "명세서",
+    "청구범위",
+    "발명의 설명",
+    "기술분야",
+    "배경기술",
+    "발명의 내용",
+    "해결하려는 과제",
+    "과제의 해결 수단",
+    "발명의 효과",
+    "도면의 간단한 설명",
+    "발명을 실시하기 위한 구체적인 내용",
+    "부호의 설명",
+    "도면",
+}
+
+SECTION_HEADINGS = {
+    "명세서",
+    "청구범위",
+    "발명의 설명",
+    "기술분야",
+    "배경기술",
+    "발명의 내용",
+    "해결하려는 과제",
+    "과제의 해결 수단",
+    "발명의 효과",
+    "도면의 간단한 설명",
+    "발명을 실시하기 위한 구체적인 내용",
+    "부호의 설명",
+}
+
+SECTION_ALIASES = {
+    "요약": "abstract",
+    "청구범위": "claims_text",
+    "기술분야": "technical_field",
+    "배경기술": "background_art",
+    "해결하려는 과제": "problem",
+    "과제의 해결 수단": "solution",
+    "발명의 효과": "effect",
+    "도면의 간단한 설명": "figure_description",
+    "발명을 실시하기 위한 구체적인 내용": "detailed_description",
+    "부호의 설명": "reference_signs",
+}
+
+HEADER_NORMALIZE_MAP = {
+    "명 세 서": "명세서",
+    "기 술 분 야": "기술분야",
+    "배 경 기 술": "배경기술",
+}
+
+
+def remove_image_markdown(text: str) -> str:
+    return re.sub(r"!\[image\s+\d+\]\(<[^>]+>\)", "", text)
+
+
+def remove_duplicate_registration_title(text: str, max_scan_lines: int = 40) -> str:
+    lines = text.splitlines()
+    result = []
+    seen = False
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if index < max_scan_lines and re.fullmatch(r"등록특허\s+\d{2}-\d+", stripped):
+            if seen:
+                continue
+            seen = True
+        result.append(line)
+
+    return "\n".join(result)
+
+
+def normalize_headers(text: str) -> str:
+    for src, dst in HEADER_NORMALIZE_MAP.items():
+        text = text.replace(src, dst)
+    return text
+
+
+def remove_page_artifacts(text: str) -> str:
+    text = text.replace("(뒷면에 계속)", "")
+    text = re.sub(r"대\s*표\s*도\s*[-:]\s*도\s*\d+", "", text)
+    text = re.sub(r"대표도\s*[-:]\s*도\s*\d+", "", text)
+    return text
+
+
+def remove_deleted_claims(text: str) -> str:
+    return re.sub(
+        r"^-?\s*청구항\s+\d+\s+삭제\s*$",
+        "",
+        text,
+        flags=re.MULTILINE,
+    )
+
+
+def remove_figure_section(text: str) -> str:
+    pattern = r"\n#?\s*도면\s*\n"
+    match = re.search(pattern, text)
+    if match:
+        return text[: match.start()].strip()
+    return text
+
+
+def is_structural_line(line: str) -> bool:
+    stripped = line.strip()
+    header = stripped.lstrip("#").strip()
+
+    if not stripped:
+        return True
+    if header in STRUCTURAL_HEADERS:
+        return True
+    if re.match(r"^-?\s*청구항\s+\d+", stripped):
+        return True
+    if re.match(r"^\[\d{4}\]", stripped):
+        return True
+    if re.match(r"^-?\s*\[\d{4}\]", stripped):
+        return True
+    if re.match(r"^#\s*", stripped):
+        return True
+    if re.match(r"^-+\s*$", stripped):
+        return True
+    return False
+
+
+def merge_broken_lines(text: str) -> str:
+    lines = text.splitlines()
+    result: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not stripped:
+            result.append("")
+            continue
+
+        if is_structural_line(stripped):
+            result.append(stripped)
+            continue
+
+        if result and result[-1] and not is_structural_line(result[-1]):
+            result[-1] = result[-1].rstrip() + " " + stripped
+        else:
+            result.append(stripped)
+
+    merged = "\n".join(result)
+    return re.sub(r"([;,.])\s+([은는이가을를])", r"\1\2", merged)
+
+
+def normalize_blank_lines(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    text = "\n".join(lines)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def preprocess_patent_markdown(raw_text: str) -> str:
+    text = raw_text
+    text = remove_image_markdown(text)
+    text = remove_duplicate_registration_title(text)
+    text = normalize_headers(text)
+    text = remove_page_artifacts(text)
+    text = remove_deleted_claims(text)
+    text = remove_figure_section(text)
+    text = merge_broken_lines(text)
+    text = normalize_blank_lines(text)
+    return text
+
+
+def build_preprocessed_patent(
+    raw_text: str,
+    *,
+    source: dict[str, Any] | None = None,
+    db_metadata: dict[str, Any] | None = None,
+    api_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cleaned_text = preprocess_patent_markdown(raw_text)
+    sections = extract_sections(cleaned_text)
+
+    if api_data:
+        metadata = merge_api_metadata(
+            extract_pdf_support_metadata(cleaned_text, db_metadata=db_metadata),
+            api_data.get("metadata") or {},
+        )
+        api_sections = api_data.get("sections") or {}
+        if api_sections.get("abstract"):
+            sections["abstract"] = postprocess_agent_text(api_sections["abstract"])
+        api_claims = api_data.get("claims") or []
+        claims = [
+            {
+                "claim_no": claim["claim_no"],
+                "text": postprocess_agent_text(claim["text"]),
+                "is_independent": claim.get("is_independent", False),
+                "dependency": claim.get("dependency"),
+            }
+            for claim in api_claims
+        ]
+        claim_stats = {
+            key: value
+            for key, value in (api_data.get("claim_stats") or {}).items()
+            if key != "deleted_claim_numbers"
+        }
+        if not claim_stats:
+            claim_stats = build_claim_stats(metadata.get("reported_claim_count"), claims)
+    else:
+        metadata = extract_pdf_fallback_metadata(cleaned_text, db_metadata=db_metadata)
+        claims = extract_claims(sections.get("claims_text", ""))
+        claim_stats = build_claim_stats(metadata.get("claim_count"), claims)
+
+    metadata["claim_count"] = claim_stats["active_claim_count"] or metadata.get("claim_count")
+    metadata["assignee_count"] = len(metadata.get("assignee") or [])
+    metadata["has_co_assignee"] = metadata["assignee_count"] > 1
+
+    validation = validate_preprocessed_patent(metadata, sections, claims, source_text=cleaned_text)
+    patent_id = _first_non_empty(
+        metadata.get("registration_number"),
+        metadata.get("application_number"),
+        source.get("application_number") if source else None,
+    )
+
+    result = {
+        "patent_id": f"KR{patent_id}" if patent_id else None,
+        "source": {
+            "source_type": "kipris_api_plus_pdf_markdown" if api_data else "kipris_pdf_markdown",
+            **(source or {}),
+            "has_kipris_api": bool(api_data),
+            "has_pdf_markdown": bool(raw_text.strip()),
+        },
+        "metadata": metadata,
+        "sections": sections,
+        "claims": claims,
+        "claim_stats": claim_stats,
+        "agent_inputs": build_agent_inputs(metadata, sections, claims),
+        "validation": validation,
+        "debug": {
+            "paragraph_numbers": extract_paragraph_numbers(cleaned_text),
+        },
+        "cleaned_markdown": cleaned_text,
+    }
+    return result
+
+
+def preprocess_markdown_file(
+    markdown_path: str | Path,
+    *,
+    source: dict[str, Any] | None = None,
+    db_metadata: dict[str, Any] | None = None,
+    api_data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    path = Path(markdown_path)
+    raw_text = path.read_text(encoding="utf-8", errors="ignore")
+    source_info = {"file_name": path.name, **(source or {})}
+    return build_preprocessed_patent(
+        raw_text,
+        source=source_info,
+        db_metadata=db_metadata,
+        api_data=api_data,
+    )
+
+
+def merge_api_metadata(pdf_metadata: dict[str, Any], api_metadata: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(pdf_metadata)
+    prefer_api_fields = [
+        "country",
+        "patent_type",
+        "registration_number",
+        "application_number",
+        "publication_number",
+        "title",
+        "title_eng",
+        "assignee",
+        "assignee_eng",
+        "inventors",
+        "inventors_eng",
+        "filing_date",
+        "registration_date",
+        "publication_date",
+        "open_date",
+        "ipc",
+        "examiner",
+        "claim_count",
+        "reported_claim_count",
+        "register_status",
+        "final_disposal",
+    ]
+    for field in prefer_api_fields:
+        if api_metadata.get(field) not in (None, "", []):
+            merged[field] = api_metadata[field]
+
+    # CPC and prior art are usually richer in the PDF markdown for this project.
+    for field in ["cpc", "prior_art"]:
+        api_values = api_metadata.get(field) or []
+        pdf_values = pdf_metadata.get(field) or []
+        merged[field] = _dedupe([*api_values, *pdf_values])
+    return merged
+
+
+def extract_pdf_support_metadata(text: str, *, db_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    db_metadata = db_metadata or {}
+    return {
+        "country": db_metadata.get("country"),
+        "application_number": db_metadata.get("application_number"),
+        "registration_number": db_metadata.get("registration_number"),
+        "title": db_metadata.get("title_final"),
+        "cpc": _extract_classifications(text, "CPC특허분류"),
+        "prior_art": _extract_prior_art(text),
+    }
+
+
+def extract_pdf_fallback_metadata(text: str, *, db_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+    db_metadata = db_metadata or {}
+    metadata: dict[str, Any] = {
+        "country": db_metadata.get("country") or _search_group(r"\(19\).*?\((KR)\)", text),
+        "patent_type": _search_group(r"\(12\)\s*([^\n]+)", text) or "등록특허",
+        "registration_number": _search_group(r"\(11\)\s*등록번호\s*([0-9-]+)", text)
+        or db_metadata.get("registration_number"),
+        "application_number": _search_group(r"\(21\)\s*출원번호\s*([0-9-]+)", text)
+        or db_metadata.get("application_number"),
+        "publication_number": _search_group(r"\(65\)\s*공개번호\s*([0-9-]+)", text),
+        "title": _search_group(r"\(54\)\s*발명의 명칭\s*(.+)", text) or db_metadata.get("title_final"),
+        "assignee": _extract_assignee_list(text),
+        "inventors": _extract_inventor_list(text),
+        "filing_date": _normalize_korean_date(_search_group(r"\(22\)\s*출원일자\s*([0-9년월일]+)", text))
+        or db_metadata.get("application_date"),
+        "registration_date": _normalize_korean_date(_search_group(r"\(24\)\s*등록일자\s*([0-9년월일]+)", text))
+        or db_metadata.get("registration_date"),
+        "publication_date": _normalize_korean_date(_search_group(r"\(45\)\s*공고일자\s*([0-9년월일]+)", text)),
+        "ipc": _extract_classifications(text, "국제특허분류"),
+        "cpc": _extract_classifications(text, "CPC특허분류"),
+        "examiner": _search_group(r"심사관\s*[:：]\s*([^\n ]+)", text),
+        "claim_count": _extract_int(r"전체\s*청구항\s*수\s*[:：]\s*총\s*(\d+)\s*항", text),
+        "prior_art": _extract_prior_art(text),
+    }
+    metadata["country"] = metadata["country"] or "KR"
+    return metadata
+
+
+def extract_sections(text: str) -> dict[str, str]:
+    sections = {value: "" for value in SECTION_ALIASES.values()}
+    sections["abstract"] = postprocess_agent_text(_extract_abstract(text))
+
+    headings = _find_section_headings(text)
+    for index, (heading, start) in enumerate(headings):
+        key = SECTION_ALIASES.get(heading)
+        if not key:
+            continue
+        end = headings[index + 1][1] if index + 1 < len(headings) else len(text)
+        content_start = _line_end(text, start)
+        content = text[content_start:end].strip()
+        if key == "claims_text":
+            sections[key] = postprocess_claims_text(strip_section_heading_lines(content))
+        else:
+            sections[key] = postprocess_agent_text(strip_section_heading_lines(content))
+
+    return sections
+
+
+def extract_claims(claims_text: str) -> list[dict[str, Any]]:
+    claims_text = truncate_at_next_major_section(claims_text)
+    matches = list(re.finditer(r"(?m)^-?\s*청구항\s+(\d+)\s*(.*)$", claims_text))
+    claims: list[dict[str, Any]] = []
+    for index, match in enumerate(matches):
+        claim_no = int(match.group(1))
+        first_line = match.group(2).strip()
+        start = match.end()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(claims_text)
+        body = claims_text[start:end].strip()
+        text = postprocess_agent_text(f"{first_line}\n{body}".strip())
+        dependency = _extract_int(r"청구항\s+(\d+)\s*에 있어서", text)
+        claims.append(
+            {
+                "claim_no": claim_no,
+                "text": text,
+                "is_independent": dependency is None,
+                "dependency": dependency,
+            }
+        )
+    return claims
+
+
+def build_claim_stats(reported_claim_count: int | None, claims: list[dict[str, Any]]) -> dict[str, Any]:
+    active_numbers = [claim["claim_no"] for claim in claims]
+    independent_numbers = [claim["claim_no"] for claim in claims if claim.get("is_independent")]
+    dependent_numbers = [claim["claim_no"] for claim in claims if not claim.get("is_independent")]
+    expected_numbers = set(range(1, (reported_claim_count or max(active_numbers, default=0)) + 1))
+    active_set = set(active_numbers)
+    return {
+        "reported_claim_count": reported_claim_count,
+        "active_claim_count": len(active_numbers),
+        "active_claim_numbers": active_numbers,
+        "independent_claim_numbers": independent_numbers,
+        "dependent_claim_numbers": dependent_numbers,
+        "has_deleted_claims_gap": bool(expected_numbers - active_set) if expected_numbers else False,
+    }
+
+
+def build_agent_inputs(
+    metadata: dict[str, Any],
+    sections: dict[str, str],
+    claims: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    representative_claims = [claim for claim in claims if claim.get("is_independent")]
+    if not representative_claims and claims:
+        representative_claims = [claims[0]]
+
+    return {
+        "summary": {
+            "metadata": _pick(
+                metadata,
+                ["title", "application_number", "registration_number", "ipc", "cpc"],
+            ),
+            "abstract": sections.get("abstract", ""),
+            "technical_field": sections.get("technical_field", ""),
+            "problem": sections.get("problem", ""),
+            "solution": sections.get("solution", ""),
+            "effect": sections.get("effect", ""),
+            "representative_claims": representative_claims,
+        },
+        "valuation": {
+            "metadata": _pick(
+                metadata,
+                [
+                    "title",
+                    "application_number",
+                    "registration_number",
+                    "assignee",
+                    "assignee_count",
+                    "has_co_assignee",
+                    "filing_date",
+                    "registration_date",
+                    "prior_art",
+                    "ipc",
+                    "cpc",
+                ],
+            ),
+            "claims": claims,
+            "effect": sections.get("effect", ""),
+            "detailed_description": sections.get("detailed_description", ""),
+        },
+        "search_planning": {
+            "metadata": _pick(
+                metadata,
+                ["title", "application_number", "registration_number", "ipc", "cpc"],
+            ),
+            "abstract": sections.get("abstract", ""),
+            "problem": sections.get("problem", ""),
+            "solution": sections.get("solution", ""),
+            "key_claims": representative_claims,
+        },
+    }
+
+
+def render_agent_input(agent_input: dict[str, Any]) -> str:
+    parts = []
+    metadata = agent_input.get("metadata", {})
+    if metadata:
+        parts.append("메타데이터")
+        for key, value in metadata.items():
+            if value not in (None, "", []):
+                parts.append(f"- {key}: {value}")
+    for key, value in agent_input.items():
+        if key == "metadata" or value in (None, "", []):
+            continue
+        parts.append(f"\n{key}")
+        if isinstance(value, list):
+            for item in value:
+                parts.append(f"- {item}")
+        else:
+            parts.append(str(value))
+    return "\n".join(parts).strip()
+
+
+def validate_preprocessed_patent(
+    metadata: dict[str, Any],
+    sections: dict[str, str],
+    claims: list[dict[str, Any]],
+    *,
+    source_text: str | None = None,
+) -> dict[str, Any]:
+    missing_fields = []
+    warnings = []
+    for field in ["title", "application_number", "registration_number"]:
+        if not metadata.get(field):
+            missing_fields.append(f"metadata.{field}")
+    for field in ["abstract", "claims_text", "technical_field"]:
+        if not sections.get(field):
+            missing_fields.append(f"sections.{field}")
+    if not claims:
+        missing_fields.append("claims")
+    if not metadata.get("ipc") and not metadata.get("cpc"):
+        warnings.append("IPC/CPC classification was not extracted.")
+    if metadata.get("claim_count") and claims and metadata["claim_count"] != len(claims):
+        warnings.append("Extracted active claim count differs from total claim count.")
+    if source_text:
+        assignee_candidates = _extract_assignee_candidates(source_text)
+        inventor_candidates = _extract_inventor_candidates(source_text)
+        missing_assignees = sorted(set(assignee_candidates) - set(metadata.get("assignee") or []))
+        missing_inventors = sorted(set(inventor_candidates) - set(metadata.get("inventors") or []))
+        if missing_assignees:
+            warnings.append(f"possible_missing_assignees: {', '.join(missing_assignees)}")
+        if missing_inventors:
+            warnings.append(f"possible_missing_inventors: {', '.join(missing_inventors)}")
+    return {
+        "is_valid": not missing_fields,
+        "missing_fields": missing_fields,
+        "warnings": warnings,
+    }
+
+
+def _find_section_headings(text: str) -> list[tuple[str, int]]:
+    pattern = re.compile(
+        r"(?m)^#?\s*(명세서|청구범위|발명의 설명|기술분야|배경기술|발명의 내용|해결하려는 과제|과제의 해결 수단|발명의 효과|도면의 간단한 설명|발명을 실시하기 위한 구체적인 내용|부호의 설명)\s*$"
+    )
+    return [(match.group(1), match.start()) for match in pattern.finditer(text)]
+
+
+def _extract_abstract(text: str) -> str:
+    match = re.search(r"\(57\)\s*요\s*약\s*(.+?)(?=\n#{0,6}\s*명세서|\n청구범위|\n####|\n명세서)", text, re.S)
+    return normalize_blank_lines(match.group(1)) if match else ""
+
+
+def strip_section_heading_lines(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        heading = stripped.lstrip("#").strip()
+        if heading in SECTION_HEADINGS:
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def truncate_at_next_major_section(text: str) -> str:
+    match = re.search(r"(?m)^#?\s*(발명의 설명|기술분야|배경기술|발명의 내용|해결하려는 과제|과제의 해결 수단|발명의 효과|도면의 간단한 설명|발명을 실시하기 위한 구체적인 내용|부호의 설명)\s*$", text)
+    return text[: match.start()].strip() if match else text
+
+
+def postprocess_agent_text(text: str) -> str:
+    text = strip_section_heading_lines(text)
+    text = remove_paragraph_numbers(text)
+    text = merge_section_broken_lines(text)
+    return normalize_blank_lines(text)
+
+
+def postprocess_claims_text(text: str) -> str:
+    text = strip_section_heading_lines(text)
+    text = remove_paragraph_numbers(text)
+    text = re.sub(r"(?m)^\s*-\s*(청구항\s+\d+)", r"- \1", text)
+    lines = text.splitlines()
+    result: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            result.append("")
+            continue
+        if re.match(r"^-?\s*청구항\s+\d+", stripped):
+            result.append(stripped)
+            continue
+        if result and result[-1] and not re.match(r"^-?\s*청구항\s+\d+", result[-1]):
+            result[-1] = result[-1].rstrip() + " " + stripped
+        else:
+            result.append(stripped)
+    merged = "\n".join(result)
+    merged = re.sub(r"([가-힣A-Za-z0-9])\n{2,}([가-힣A-Za-z0-9])", r"\1\2", merged)
+    merged = re.sub(r"\s{2,}", " ", merged)
+    return normalize_blank_lines(merged)
+
+
+def remove_paragraph_numbers(text: str) -> str:
+    text = re.sub(r"(?m)^-?\s*\[(\d{4})\]\s*", "", text)
+    text = re.sub(r"(?m)^\[(\d{4})\]\s*", "", text)
+    return text
+
+
+def extract_paragraph_numbers(text: str) -> list[str]:
+    return _dedupe(re.findall(r"\[(\d{4})\]", text))
+
+
+def merge_section_broken_lines(text: str) -> str:
+    text = re.sub(r"([가-힣A-Za-z0-9])\n{2,}([가-힣A-Za-z0-9])", r"\1\2", text)
+    text = re.sub(r"([가-힣A-Za-z0-9,;:.])\n([가-힣A-Za-z0-9])", r"\1 \2", text)
+    text = re.sub(r"\s{2,}", " ", text)
+    text = re.sub(r"\s+([,;.])", r"\1", text)
+    return text
+
+
+def _line_end(text: str, start: int) -> int:
+    index = text.find("\n", start)
+    return len(text) if index == -1 else index + 1
+
+
+def _search_group(pattern: str, text: str) -> str | None:
+    match = re.search(pattern, text)
+    return match.group(1).strip() if match else None
+
+
+def _extract_int(pattern: str, text: str) -> int | None:
+    value = _search_group(pattern, text)
+    return int(value) if value and value.isdigit() else None
+
+
+def _normalize_korean_date(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = re.search(r"(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일", value)
+    if not match:
+        return value
+    year, month, day = match.groups()
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+
+def _extract_classifications(text: str, label: str) -> list[str]:
+    values: list[str] = []
+    for line in text.splitlines():
+        if label not in line:
+            continue
+        values.extend(re.findall(r"[A-H]\d{2}[A-Z]\s+\d+/\d+", line))
+    return _dedupe(values)
+
+
+def _extract_prior_art(text: str) -> list[str]:
+    patterns = [
+        r"\bKR\s*\d{7,13}\s*[A-Z]\d?\*?",
+        r"\bJP\s*\d{7,13}\s*[A-Z]\d?\*?",
+        r"\bUS\s*\d{7,13}\s*[A-Z]\d?\*?",
+        r"\bUS\s*\d{4}/\d{6,8}\s*[A-Z]\d?\*?",
+    ]
+    values: list[str] = []
+    for pattern in patterns:
+        values.extend(re.findall(pattern, text))
+    return _dedupe([re.sub(r"\s+", " ", value) for value in values])
+
+
+def _extract_assignee_list(text: str) -> list[str]:
+    return _extract_assignee_candidates(text)
+
+
+def _extract_inventor_list(text: str) -> list[str]:
+    return _extract_inventor_candidates(text)
+
+
+def _extract_assignee_candidates(text: str) -> list[str]:
+    chunks = re.findall(
+        r"\(73\)\s*특허권자\s*(.+?)(?=\(72\)|\(74\)|\(56\)|전체 청구항|명세서|청구범위|\(73\)|$)",
+        text,
+        re.S,
+    )
+    names: list[str] = []
+    for chunk in chunks:
+        value = re.sub(r"\s+", " ", normalize_blank_lines(chunk))
+        names.extend(_company_names_from_chunk(value))
+        if not names:
+            names.extend([part.strip() for part in re.split(r"[,，]", _split_before_address(value)) if part.strip()])
+    return _dedupe([name for name in names if name])
+
+
+def _extract_inventor_candidates(text: str) -> list[str]:
+    chunks = re.findall(
+        r"\(72\)\s*발명자\s*(.+?)(?=\(74\)|\(56\)|전체 청구항|명세서|청구범위|\(72\)|$)",
+        text,
+        re.S,
+    )
+    names: list[str] = []
+    for chunk in chunks:
+        value = re.sub(r"\s+", " ", normalize_blank_lines(chunk))
+        names.extend(
+            re.findall(
+                r"([가-힣]{2,5})\s+(?=서울|경기|경기도|대전|부산|인천|광주|대구|울산|세종|강원|충청|충북|충남|전라|전북|전남|경상|경북|경남|제주)",
+                value,
+            )
+        )
+    return _dedupe(names)
+
+
+def _company_names_from_chunk(value: str) -> list[str]:
+    suffix_pattern = r"(?:주식회사|유한회사|학교법인|대학교|연구원|연구소|공사|공단|재단|회사|Inc\.?|LLC|Ltd\.?)"
+    candidates: list[str] = []
+    for match in re.finditer(suffix_pattern, value):
+        prefix = value[: match.end()].strip()
+        prefix = re.split(r"[()]\s*", prefix)[-1].strip() if ")" in prefix else prefix
+        prefix = _remove_leading_address(prefix)
+        words = prefix.split()
+        if len(words) > 6:
+            words = words[-6:]
+        candidate = " ".join(words).strip(" ,，")
+        if candidate:
+            candidates.append(candidate)
+    return candidates
+
+
+def _remove_leading_address(value: str) -> str:
+    address_tokens = _address_tokens()
+    last_position = -1
+    last_token = ""
+    for token in address_tokens:
+        position = value.rfind(token)
+        if position > last_position:
+            last_position = position
+            last_token = token
+    if last_position <= 0:
+        return value
+    before = value[:last_position]
+    after = value[last_position + len(last_token) :].strip()
+    if re.search(r"\d|로|길|구|군|시|읍|면|동", before) and after:
+        return after
+    return value
+
+
+def _split_before_address(value: str) -> str:
+    address_tokens = _address_tokens()
+    positions = [value.find(token) for token in address_tokens if token in value]
+    return value[: min(positions)].strip() if positions else value.strip()
+
+
+def _address_tokens() -> list[str]:
+    return [
+        "서울",
+        "서울특별시",
+        "경기",
+        "경기도",
+        "대전",
+        "대전광역시",
+        "부산",
+        "부산광역시",
+        "인천",
+        "인천광역시",
+        "광주",
+        "광주광역시",
+        "대구",
+        "대구광역시",
+        "울산",
+        "울산광역시",
+        "세종",
+        "세종특별자치시",
+        "강원",
+        "충청",
+        "전라",
+        "경상",
+        "제주",
+    ]
+
+
+def _dedupe(values: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for value in values:
+        clean = value.strip().rstrip("*")
+        if clean and clean not in seen:
+            result.append(clean)
+            seen.add(clean)
+    return result
+
+
+def _first_non_empty(*values: Any) -> Any:
+    for value in values:
+        if value:
+            return value
+    return None
+
+
+def _pick(data: dict[str, Any], keys: list[str]) -> dict[str, Any]:
+    return {key: data.get(key) for key in keys}

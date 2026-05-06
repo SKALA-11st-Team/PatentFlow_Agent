@@ -1,0 +1,1476 @@
+openapi: 3.0.3
+info:
+  title: KIPRISPlus Patent Evaluation Source API
+  version: 1.0.0
+  description: 'KIPRISPlus만 사용하는 특허 평가 데이터 수집용 OpenAPI 명세입니다.
+
+
+    평가 기준(권리성, 기술성, 시장성, 라이프사이클 경제성, 사업 연계성) 중 KIPRISPlus에서 수집 가능한 항목을 중심으로 구성했습니다.
+
+    추후 WIPO, World Bank, 뉴스/공시, 내부문서 등 다른 데이터 소스를 붙일 수 있도록 x-evaluation-usage, x-future-extension,
+    EvaluationDataSnapshot 스키마를 포함합니다.
+
+
+    주의: 일부 검색/서지 API 경로는 프로젝트 내부 wrapper 기준으로 정리한 논리 경로입니다. KIPRISPlus 실제 운영 경로는 통합설명서의
+    Request URL에 맞춰 adapter 계층에서 매핑하세요. 공개전문PDF API는 사용자가 제공한 실제 오퍼레이션 getPubFullTextInfoSearch를 반영했고,
+    권리성 분석용으로 공고전문PDF 우선 선택 wrapper를 추가했습니다.'
+servers:
+- url: http://plus.kipris.or.kr
+  description: KIPRISPlus base URL / 또는 내부 wrapper base URL
+security:
+- kiprisServiceKey: []
+tags:
+- name: Patent Search
+  description: 특허 후보 검색 및 유사/중복 특허 탐색
+- name: Patent Detail
+  description: 출원번호 기반 서지·청구항·법적상태 상세 조회
+- name: Applicant Search
+  description: 출원인/등록권자 기반 경쟁사 활동 탐색
+- name: Classification Search
+  description: IPC/CPC 기반 기술군 탐색
+- name: Admin History
+  description: 행정처리 변동 이력 조회
+- name: Overseas Citation
+  description: 해외특허 인용 문헌 조회
+- name: Patent Documents
+  description: 특허·실용 도면/전문 PDF 및 이미지 경로 조회
+- name: Evaluation Data Model
+  description: KIPRIS 수집 결과를 평가 엔진에 넘기기 위한 확장 가능 데이터 모델
+paths:
+  /kipris/patent-utility/search/advanced:
+    get:
+      tags:
+      - Patent Search
+      operationId: getAdvancedSearch
+      summary: 특허·실용 전체검색
+      description: '평가 대상 특허 후보를 검색하거나, 발명의 명칭/초록/청구범위/IPC/출원인 등을 조합해 유사·중복 특허 후보를
+        찾습니다.
+
+        원천 오퍼레이션: 특허·실용 공개·등록공보 / 항목별검색 / 전체검색 - getAdvancedSearch
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: word
+        in: query
+        schema:
+          type: string
+        description: 자유검색
+      - name: inventionTitle
+        in: query
+        schema:
+          type: string
+        description: 발명의 명칭
+      - name: astrtCont
+        in: query
+        schema:
+          type: string
+        description: 초록
+      - name: claimScope
+        in: query
+        schema:
+          type: string
+        description: 청구범위
+      - name: ipcNumber
+        in: query
+        schema:
+          type: string
+        description: IPC 코드
+      - name: applicationNumber
+        in: query
+        schema:
+          type: string
+        description: 출원번호
+      - name: applicant
+        in: query
+        schema:
+          type: string
+        description: 출원인명 또는 특허고객번호
+      - name: rightHoler
+        in: query
+        schema:
+          type: string
+        description: 등록권자
+      - name: patent
+        in: query
+        schema:
+          type: boolean
+          default: true
+        description: 특허 포함 여부
+      - name: utility
+        in: query
+        schema:
+          type: boolean
+          default: false
+        description: 실용신안 포함 여부
+      - name: lastvalue
+        in: query
+        schema:
+          type: string
+          enum:
+          - ''
+          - A
+          - C
+          - F
+          - G
+          - I
+          - J
+          - R
+        description: '행정처분: 전체 공백, 공개 A, 취하 C, 소멸 F, 포기 G, 무효 I, 거절 J, 등록 R'
+      - name: pageNo
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+        description: 페이지번호
+      - name: numOfRows
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 500
+          default: 30
+        description: 페이지당 건수
+      - name: sortSpec
+        in: query
+        schema:
+          type: string
+          enum:
+          - PD
+          - AD
+          - GD
+          - OPD
+          - FD
+          - FOD
+          - RD
+        description: '정렬기준: PD 공고일자, AD 출원일자, GD 등록일자, OPD 공개일자, FD 국제출원일자, FOD 국제공개일자,
+          RD 우선권주장일자'
+      - name: descSort
+        in: query
+        schema:
+          type: boolean
+          default: true
+        description: desc 정렬 여부
+      responses:
+        '200':
+          description: 검색 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatentSearchResponse'
+      x-evaluation-usage:
+        권리성:
+        - 중복 여부
+        기술성:
+        - 기술완성도 후보 판단용 텍스트
+        시장성:
+        - 경쟁사 활동
+        - 산업/기술군 특허 건수
+  /kipris/patent-utility/search/application-number:
+    get:
+      tags:
+      - Patent Search
+      operationId: applicationNumberSearchInfo
+      summary: 출원번호 검색
+      description: '출원번호로 기본 서지 정보를 조회합니다. 상세 평가는 보통 이 결과의 applicationNumber를 상세 API에
+        넘겨 수행합니다.
+
+        원천 오퍼레이션: 특허·실용 공개·등록공보 / 항목별검색 / 출원번호 검색 - applicationNumberSearchInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 출원번호
+      - $ref: '#/components/parameters/Patent'
+      - $ref: '#/components/parameters/Utility'
+      - $ref: '#/components/parameters/DocsStart'
+      - $ref: '#/components/parameters/DocsCount'
+      responses:
+        '200':
+          description: 출원번호 검색 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatentSearchResponse'
+  /kipris/patent-utility/detail/bibliography:
+    get:
+      tags:
+      - Patent Detail
+      operationId: getBibliographyDetailInfoSearch
+      summary: 서지상세정보 조회
+      description: '출원번호 하나를 기준으로 상세 서지, 청구항, IPC, 패밀리, 우선권, 출원인, 발명자, 법적상태, 이미지 경로
+        등을 조회합니다.
+
+        원천 오퍼레이션: 특허·실용 공개·등록공보 / 서지정보 / 서지상세정보(공공데이터 포털 연계) - getBibliographyDetailInfoSearch
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 출원번호
+      responses:
+        '200':
+          description: 서지상세정보
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BibliographyDetailResponse'
+      x-evaluation-usage:
+        권리성:
+        - 청구항 개수
+        - 청구항 질
+        - 법적 안정성
+        기술성:
+        - IPC
+        - 초록
+        - 청구항
+        - 기술완성도 판단용 텍스트
+        시장성:
+        - 패밀리 규모
+        - 지정국가
+        - 출원인 국가
+        라이프사이클 경제성:
+        - 출원일자
+        - 등록일자
+        - 등록상태
+        - 법적상태
+  /kipris/patent-utility/search/ipc:
+    get:
+      tags:
+      - Classification Search
+      operationId: ipcSearchInfo
+      summary: IPC 코드 기반 검색
+      description: '동일 기술군의 특허 수, 경쟁사 출원 활동, 유사 특허 후보를 탐색합니다.
+
+        원천 오퍼레이션: 특허·실용 공개·등록공보 / 항목별검색 / IPC - ipcSearchInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: ipcNumber
+        in: query
+        required: true
+        schema:
+          type: string
+        description: IPC 코드
+      - $ref: '#/components/parameters/Patent'
+      - $ref: '#/components/parameters/Utility'
+      - $ref: '#/components/parameters/DocsStart'
+      - $ref: '#/components/parameters/DocsCount'
+      - $ref: '#/components/parameters/SortSpec'
+      - $ref: '#/components/parameters/DescSort'
+      responses:
+        '200':
+          description: IPC 검색 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatentSearchResponse'
+      x-evaluation-usage:
+        시장성:
+        - 시장/기술군 범위
+        - 경쟁사 활동
+        권리성:
+        - 중복 여부 후보군
+  /kipris/patent-utility/search/cpc:
+    get:
+      tags:
+      - Classification Search
+      operationId: cpcSearchInfo
+      summary: CPC 코드 기반 검색
+      description: 'CPC 코드로 동일·인접 기술군 특허를 탐색합니다.
+
+        원천 오퍼레이션: 특허·실용 공개·등록공보 / 항목별검색 / CPC 검색 - cpcSearchInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: cpcNumber
+        in: query
+        required: true
+        schema:
+          type: string
+        description: CPC 코드
+      - $ref: '#/components/parameters/Patent'
+      - $ref: '#/components/parameters/Utility'
+      - $ref: '#/components/parameters/DocsStart'
+      - $ref: '#/components/parameters/DocsCount'
+      - $ref: '#/components/parameters/SortSpec'
+      - $ref: '#/components/parameters/DescSort'
+      responses:
+        '200':
+          description: CPC 검색 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatentSearchResponse'
+      x-evaluation-usage:
+        시장성:
+        - 시장/기술군 범위
+        - 경쟁사 활동
+        권리성:
+        - 중복 여부 후보군
+  /kipris/patent-utility/search/applicant:
+    get:
+      tags:
+      - Applicant Search
+      operationId: applicantNameSearchInfo
+      summary: 출원인 기반 검색
+      description: '경쟁사명 또는 특정 출원인명으로 특허 활동을 조회합니다.
+
+        원천 오퍼레이션: 특허·실용 공개·등록공보 / 항목별검색 / 출원인정보 - applicantNameSearchInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicant
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 출원인정보
+      - $ref: '#/components/parameters/Patent'
+      - $ref: '#/components/parameters/Utility'
+      - $ref: '#/components/parameters/DocsStart'
+      - $ref: '#/components/parameters/DocsCount'
+      - $ref: '#/components/parameters/SortSpec'
+      - $ref: '#/components/parameters/DescSort'
+      responses:
+        '200':
+          description: 출원인 검색 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatentSearchResponse'
+      x-evaluation-usage:
+        시장성:
+        - 경쟁사 활동 여부
+  /kipris/patent-utility/search/right-holder:
+    get:
+      tags:
+      - Applicant Search
+      operationId: rightHolerSearchInfo
+      summary: 등록권자 기반 검색
+      description: '현재 권리 보유자 기준으로 특허를 조회합니다.
+
+        원천 오퍼레이션: 특허·실용 공개·등록공보 / 항목별검색 / 등록권자정보 - rightHolerSearchInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: rightHoler
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 등록권자명
+      - $ref: '#/components/parameters/Patent'
+      - $ref: '#/components/parameters/Utility'
+      - $ref: '#/components/parameters/DocsStart'
+      - $ref: '#/components/parameters/DocsCount'
+      - $ref: '#/components/parameters/SortSpec'
+      - $ref: '#/components/parameters/DescSort'
+      responses:
+        '200':
+          description: 등록권자 검색 결과
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatentSearchResponse'
+      x-evaluation-usage:
+        시장성:
+        - 경쟁사 활동 여부
+        라이프사이클 경제성:
+        - 권리 유지 상태 후보 확인
+  /kipris/patent-utility/admin-history/transfers:
+    get:
+      tags:
+      - Admin History
+      operationId: transferListInfo
+      summary: 특허·실용 행정처리 변동정보 조회
+      description: '특정 변동일자에 발생한 특허·실용 행정처리 이력을 조회합니다.
+
+        원천 오퍼레이션: 특허·실용 행정처리 이력 / 변동정보 - transferListInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: kind
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - oper1
+        description: 검색코드. oper1은 통합이력정보(특실)
+      - name: searchRight
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - all
+          - p
+          - u
+        description: 권리. all 전체, p 특허, u 실용신안
+      - name: transferDate
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^\\d{8}$
+          example: '20260427'
+        description: 변동일자 YYYYMMDD
+      responses:
+        '200':
+          description: 변동정보
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TransferListResponse'
+      x-evaluation-usage:
+        권리성:
+        - 리스크 요소
+        - 법적 안정성
+        라이프사이클 경제성:
+        - 등록/소멸/포기 등 상태 변화 모니터링
+  /kipris/overseas-patent/bibliography/claims:
+    get:
+      tags:
+      - Overseas Citation
+      operationId: demandParagraphInfo
+      summary: 해외특허 청구항 조회
+      description: '해외특허 문헌번호와 국가코드 기준으로 청구항을 조회합니다.
+
+        원천 오퍼레이션: 해외특허 / 서지정보 / 청구항 - demandParagraphInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - $ref: '#/components/parameters/LiteratureNumber'
+      - $ref: '#/components/parameters/CountryCode'
+      responses:
+        '200':
+          description: 해외특허 청구항
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverseasClaimsResponse'
+      x-evaluation-usage:
+        권리성:
+        - 해외 패밀리 청구항 질 비교
+  /kipris/overseas-patent/citations/domestic-documents:
+    get:
+      tags:
+      - Overseas Citation
+      operationId: usPatentDocumentsInfo
+      summary: 해외특허 인용 자국 문헌 조회
+      description: '해외특허의 인용 문헌 중 자국 문헌을 조회합니다. 전방 인용 수 자체가 아니라 인용 네트워크 분석의 보조 데이터로
+        사용합니다.
+
+        원천 오퍼레이션: 해외특허 / 서지정보 / 인용(자국 문헌) - usPatentDocumentsInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - $ref: '#/components/parameters/LiteratureNumber'
+      - $ref: '#/components/parameters/CountryCode'
+      responses:
+        '200':
+          description: 인용 자국 문헌
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CitationDocumentsResponse'
+      x-evaluation-usage:
+        기술성:
+        - 인용 기반 기술 영향력 보조
+  /kipris/overseas-patent/citations/foreign-documents:
+    get:
+      tags:
+      - Overseas Citation
+      operationId: foreignPatentDocumentsInfo
+      summary: 해외특허 인용 타국 문헌 조회
+      description: '해외특허의 인용 문헌 중 타국 문헌을 조회합니다.
+
+        원천 오퍼레이션: 해외특허 / 서지정보 / 인용(타국 문헌) - foreignPatentDocumentsInfo
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - $ref: '#/components/parameters/LiteratureNumber'
+      - $ref: '#/components/parameters/CountryCode'
+      responses:
+        '200':
+          description: 인용 타국 문헌
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CitationDocumentsResponse'
+      x-evaluation-usage:
+        기술성:
+        - 인용 기반 기술 영향력 보조
+  /kipris/patent-utility/documents/publication-fulltext-pdf:
+    get:
+      tags:
+      - Patent Documents
+      operationId: getPatentPublicationFullTextPdfPath
+      summary: 공개전문PDF 경로 조회
+      description: '출원번호를 입력하여 공개전문 PDF의 파일명과 다운로드 경로를 조회합니다.
+
+
+        KIPRISPlus 메뉴:
+
+        특허·실용 공개·등록공보 > 도면/전문 > 공개전문PDF
+
+
+        응답 body.item.path 값이 PDF 다운로드 경로입니다.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+          example: '1020050050026'
+        description: 출원번호
+      responses:
+        '200':
+          description: 공개전문 PDF 경로 조회 성공
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/PubFullTextPdfResponse'
+              examples:
+                success:
+                  summary: 공개전문 PDF 경로 응답 예시
+                  value: "<response>\n  <header>\n    <requestMsgID></requestMsgID>\n\
+                    \    <responseTime>2014-10-31 10:26:17.2617</responseTime>\n \
+                    \   <responseMsgID></responseMsgID>\n    <successYN></successYN>\n\
+                    \    <resultCode>00</resultCode>\n    <resultMsg>NORMAL SERVICE.</resultMsg>\n\
+                    \  </header>\n  <body>\n    <item>\n      <docName>1020050050026.pdf</docName>\n\
+                    \      <path>http://plus.kipris.or.kr/kiprisplusws/fileToss.jsp?arg=...</path>\n\
+                    \    </item>\n  </body>\n</response>\n"
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PubFullTextPdfJsonResponse'
+      x-kipris-menu:
+        category: 특허·실용 공개·등록공보
+        section: 도면/전문
+        name: 공개전문PDF
+      x-evaluation-usage:
+        권리성:
+        - PDF 원문 기반 청구항 구조 및 권리범위 정성 분석
+        기술성:
+        - 명세서/도면 기반 기술 구성 이해
+        - 기술완성도 LLM 판단 보조
+        확장가능:
+        - 공고전문PDF, 대표도면, 전문파일정보, 표준화 공개/공고전문PDF를 같은 응답 스키마로 추가 가능
+      x-source-operation:
+        service: 특허·실용 공개·등록공보
+        category: 도면/전문
+        operationName: getPubFullTextInfoSearch
+        actualPath: /kipo-api/kipi/patUtiModInfoSearchSevice/getPubFullTextInfoSearch
+        requestExample: http://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getPubFullTextInfoSearch?applicationNumber=1020050050026&ServiceKey=서비스키
+  /kipo-api/kipi/patUtiModInfoSearchSevice/getPubFullTextInfoSearch:
+    get:
+      tags:
+      - Patent Documents
+      operationId: getKiprisPubFullTextInfoSearch
+      summary: 공개전문PDF 경로 조회 (KIPRISPlus 실제 경로)
+      description: KIPRISPlus 원천 Request URL 경로를 그대로 노출하는 경우 사용하는 엔드포인트입니다. 응답 body.item.path가
+        PDF 다운로드 URL입니다.
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+          example: '1020050050026'
+        description: 출원번호
+      responses:
+        '200':
+          description: 공개전문 PDF 경로 조회 성공
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/PubFullTextPdfResponse'
+              examples:
+                success:
+                  summary: 공개전문 PDF 경로 응답 예시
+                  value: "<response>\n  <header>\n    <requestMsgID></requestMsgID>\n\
+                    \    <responseTime>2014-10-31 10:26:17.2617</responseTime>\n \
+                    \   <responseMsgID></responseMsgID>\n    <successYN></successYN>\n\
+                    \    <resultCode>00</resultCode>\n    <resultMsg>NORMAL SERVICE.</resultMsg>\n\
+                    \  </header>\n  <body>\n    <item>\n      <docName>1020050050026.pdf</docName>\n\
+                    \      <path>http://plus.kipris.or.kr/kiprisplusws/fileToss.jsp?arg=...</path>\n\
+                    \    </item>\n  </body>\n</response>\n"
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PubFullTextPdfJsonResponse'
+      x-kipris-menu:
+        category: 특허·실용 공개·등록공보
+        section: 도면/전문
+        name: 공개전문PDF
+      x-evaluation-usage:
+        권리성:
+        - PDF 원문 기반 청구항 구조 및 권리범위 정성 분석
+        기술성:
+        - 명세서/도면 기반 기술 구성 이해
+        - 기술완성도 LLM 판단 보조
+        확장가능:
+        - 공고전문PDF, 대표도면, 전문파일정보, 표준화 공개/공고전문PDF를 같은 응답 스키마로 추가 가능
+      x-source-operation:
+        service: 특허·실용 공개·등록공보
+        category: 도면/전문
+        operationName: getPubFullTextInfoSearch
+        actualPath: /kipo-api/kipi/patUtiModInfoSearchSevice/getPubFullTextInfoSearch
+        requestExample: http://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getPubFullTextInfoSearch?applicationNumber=1020050050026&ServiceKey=서비스키
+  /kipris/patent-utility/documents/announcement-fulltext-pdf:
+    get:
+      tags:
+      - Patent Documents
+      operationId: getPatentAnnouncementFullTextPdfPath
+      summary: 공고전문PDF 경로 조회
+      description: '출원번호를 입력하여 등록/공고 시점의 공고전문 PDF 파일명과 다운로드 경로를 조회합니다.
+
+
+        KIPRISPlus 메뉴:
+
+        특허·실용 공개·등록공보 > 도면/전문 > 공고전문PDF
+
+
+        응답 body.item.path 값이 PDF 다운로드 경로입니다.
+
+
+        특허가 등록/공고된 경우 권리성 분석에는 공개전문PDF보다 공고전문PDF를 우선 사용합니다.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+          example: '1020050050026'
+        description: 출원번호
+      responses:
+        '200':
+          description: 공고전문 PDF 경로 조회 성공
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/AnnFullTextPdfResponse'
+              examples:
+                success:
+                  summary: 공고전문 PDF 경로 응답 예시
+                  value: "<response>\n  <header>\n    <requestMsgID></requestMsgID>\n    <responseTime>2014-10-31 10:26:17.2617</responseTime>\n    <responseMsgID></responseMsgID>\n    <successYN></successYN>\n    <resultCode>00</resultCode>\n    <resultMsg>NORMAL SERVICE.</resultMsg>\n  </header>\n  <body>\n    <item>\n      <docName>1020050050026.pdf</docName>\n      <path>http://plus.kipris.or.kr/kiprisplusws/fileToss.jsp?arg=...</path>\n    </item>\n  </body>\n</response>\n"
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnFullTextPdfJsonResponse'
+      x-kipris-menu:
+        category: 특허·실용 공개·등록공보
+        section: 도면/전문
+        name: 공고전문PDF
+      x-evaluation-usage:
+        권리성:
+        - 등록/공고된 최종 권리범위 분석
+        - PDF 원문 기반 청구항 구조 및 권리범위 정성 분석
+        기술성:
+        - 최종 명세서/도면 기반 기술 구성 이해
+        - 기술완성도 LLM 판단 보조
+      x-source-operation:
+        service: 특허·실용 공개·등록공보
+        category: 도면/전문
+        operationName: getAnnFullTextInfoSearch
+        actualPath: /kipo-api/kipi/patUtiModInfoSearchSevice/getAnnFullTextInfoSearch
+        requestExample: http://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getAnnFullTextInfoSearch?applicationNumber=1020050050026&ServiceKey=서비스키
+  /kipris/patent-utility/documents/preferred-fulltext-pdf:
+    get:
+      tags:
+      - Patent Documents
+      operationId: getPreferredPatentFullTextPdfPath
+      summary: 권리성 분석용 우선 전문PDF 경로 조회
+      description: '출원번호를 입력하면 백엔드 wrapper가 공고전문PDF를 먼저 조회하고, 공고전문PDF가 없을 때만 공개전문PDF를 조회합니다.
+
+
+        우선순위:
+
+        1. 공고전문PDF: 등록/공고된 B/B1 계열 최종 권리범위 분석용
+
+        2. 공개전문PDF: 아직 등록/공고되지 않은 A/A1 계열 공개문헌 분석용
+
+
+        주의: 이 엔드포인트는 KIPRISPlus 원천 API가 아니라 프로젝트 내부 wrapper 로직입니다. Swagger는 계약을 정의하고, 실제 선택 로직은 FastAPI 등 백엔드 코드에서 구현합니다.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+          example: '1020050050026'
+        description: 출원번호
+      responses:
+        '200':
+          description: 우선순위에 따라 선택된 전문PDF 경로 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreferredFullTextPdfResponse'
+              examples:
+                grantSelected:
+                  summary: 공고전문PDF 선택 예시
+                  value:
+                    applicationNumber: '1020050050026'
+                    selectedType: ANNOUNCEMENT_FULLTEXT_PDF
+                    reason: 등록/공고 정보가 존재하여 공고전문PDF를 선택했습니다.
+                    docName: 1020050050026.pdf
+                    path: http://plus.kipris.or.kr/kiprisplusws/fileToss.jsp?arg=...
+                publicationFallback:
+                  summary: 공개전문PDF fallback 예시
+                  value:
+                    applicationNumber: '1020210121020'
+                    selectedType: PUBLICATION_FULLTEXT_PDF
+                    reason: 공고전문PDF가 없어 공개전문PDF를 선택했습니다.
+                    docName: 1020210121020.pdf
+                    path: http://plus.kipris.or.kr/kiprisplusws/fileToss.jsp?arg=...
+      x-wrapper-logic:
+        priority:
+        - try: announcement-fulltext-pdf
+          sourceOperation: getAnnFullTextInfoSearch
+          selectedType: ANNOUNCEMENT_FULLTEXT_PDF
+        - fallback: publication-fulltext-pdf
+          sourceOperation: getPubFullTextInfoSearch
+          selectedType: PUBLICATION_FULLTEXT_PDF
+      x-evaluation-usage:
+        권리성:
+        - 등록 특허는 최종 권리범위가 담긴 공고전문PDF를 우선 사용
+        - 미등록/공개 상태 특허는 공개전문PDF로 분석
+        기술성:
+        - 선택된 전문PDF 원문 기반 기술 구성 이해
+  /kipo-api/kipi/patUtiModInfoSearchSevice/getAnnFullTextInfoSearch:
+    get:
+      tags:
+      - Patent Documents
+      operationId: getKiprisAnnFullTextInfoSearch
+      summary: 공고전문PDF 경로 조회 (KIPRISPlus 실제 경로)
+      description: KIPRISPlus 원천 Request URL 경로를 그대로 노출하는 경우 사용하는 엔드포인트입니다. 응답 body.item.path가 PDF 다운로드 URL입니다.
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+          example: '1020050050026'
+        description: 출원번호
+      responses:
+        '200':
+          description: 공고전문 PDF 경로 조회 성공
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/AnnFullTextPdfResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnnFullTextPdfJsonResponse'
+      x-kipris-menu:
+        category: 특허·실용 공개·등록공보
+        section: 도면/전문
+        name: 공고전문PDF
+      x-source-operation:
+        service: 특허·실용 공개·등록공보
+        category: 도면/전문
+        operationName: getAnnFullTextInfoSearch
+        actualPath: /kipo-api/kipi/patUtiModInfoSearchSevice/getAnnFullTextInfoSearch
+        requestExample: http://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getAnnFullTextInfoSearch?applicationNumber=1020050050026&ServiceKey=서비스키
+  /kipris/evaluation-data/{applicationNumber}/snapshot:
+    get:
+      tags:
+      - Evaluation Data Model
+      operationId: getKiprisEvaluationDataSnapshot
+      summary: KIPRIS 기반 평가 데이터 스냅샷 조회
+      description: 출원번호를 기준으로 KIPRIS 검색/서지/문서 경로 데이터를 평가 엔진에 넘기기 쉬운 형태로 묶어 반환하는 내부
+        wrapper 엔드포인트입니다. 현재는 KIPRIS 데이터만 포함하고, 추후 WIPO/WorldBank/뉴스/내부문서 결과는 externalData에
+        확장할 수 있습니다.
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: path
+        required: true
+        schema:
+          type: string
+        description: 출원번호
+      responses:
+        '200':
+          description: 평가 데이터 스냅샷
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EvaluationDataSnapshot'
+      x-evaluation-usage:
+        권리성:
+        - 청구항수
+        - 청구항 원문
+        - 등록상태
+        - 법적상태
+        기술성:
+        - 초록
+        - 청구항
+        - IPC/CPC
+        - PDF 원문
+        시장성:
+        - 패밀리
+        - 출원인/국가
+        - 경쟁사 검색 결과
+        라이프사이클 경제성:
+        - 출원일
+        - 등록일
+        - 처분/상태
+        사업 연계성:
+        - KIPRIS만으로는 부족하며 internalBusinessData 또는 externalData로 확장
+components:
+  securitySchemes:
+    kiprisServiceKey:
+      type: apiKey
+      in: query
+      name: ServiceKey
+      description: KIPRISPlus 서비스키
+  parameters:
+    ServiceKey:
+      name: ServiceKey
+      in: query
+      required: true
+      schema:
+        type: string
+      description: KIPRISPlus 서비스키
+    Patent:
+      name: patent
+      in: query
+      schema:
+        type: boolean
+        default: true
+      description: 특허 포함 여부
+    Utility:
+      name: utility
+      in: query
+      schema:
+        type: boolean
+        default: false
+      description: 실용신안 포함 여부
+    DocsStart:
+      name: docsStart
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+      description: 페이지번호
+    DocsCount:
+      name: docsCount
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 30
+      description: 페이지당 건수
+    SortSpec:
+      name: sortSpec
+      in: query
+      schema:
+        type: string
+        enum:
+        - PD
+        - AD
+        - GD
+        - OPD
+        - FD
+        - FOD
+        - RD
+      description: 정렬기준
+    DescSort:
+      name: descSort
+      in: query
+      schema:
+        type: boolean
+        default: true
+      description: desc 정렬 여부
+    LiteratureNumber:
+      name: literatureNumber
+      in: query
+      required: true
+      schema:
+        type: string
+      description: 해외특허 문헌번호
+    CountryCode:
+      name: countryCode
+      in: query
+      required: true
+      schema:
+        type: string
+        enum:
+        - US
+        - EP
+        - WO
+        - JP
+        - PJ
+        - CP
+        - CN
+        - TW
+        - RU
+        - CO
+        - SE
+        - ES
+        - IL
+        - IN
+        - VN
+      description: 국가코드. 다중 선택 불가
+  schemas:
+    PatentSearchResponse:
+      type: object
+      properties:
+        totalSearchCount:
+          type: integer
+          description: 전체건수
+        pageNo:
+          type: integer
+          description: 페이지번호
+        numOfRows:
+          type: integer
+          description: 페이지당 건수
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PatentSearchItem'
+    PatentSearchItem:
+      type: object
+      properties:
+        serialNumber:
+          type: string
+          description: 일련번호
+        applicationNumber:
+          type: string
+          description: 출원번호
+        applicationDate:
+          type: string
+          description: 출원일자
+        openingNumber:
+          type: string
+          description: 공개번호
+        openingDate:
+          type: string
+          description: 공개일자
+        publicNumber:
+          type: string
+          description: 공고번호
+        publicDate:
+          type: string
+          description: 공고일자
+        registrationNumber:
+          type: string
+          description: 등록번호
+        registrationDate:
+          type: string
+          description: 등록일자
+        registrationStatus:
+          type: string
+          description: 등록상태
+        ipcNumber:
+          type: string
+          description: IPC코드
+        inventionName:
+          type: string
+          description: 발명의 명칭
+        abstract:
+          type: string
+          description: 초록
+        applicant:
+          type: string
+          description: 출원인
+        drawingPath:
+          type: string
+          description: 큰 이미지 경로
+        thumbnailPath:
+          type: string
+          description: 이미지 경로
+    BibliographyDetailResponse:
+      type: object
+      properties:
+        biblioSummaryInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/BiblioSummaryInfo'
+        ipcInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/IpcInfo'
+        familyInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/FamilyInfo'
+        abstractInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/AbstractInfo'
+        claimInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClaimInfo'
+        applicantInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartyInfo'
+        inventorInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/PartyInfo'
+        priorityInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/PriorityInfo'
+        designatedStateInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/DesignatedStateInfo'
+        priorArtDocumentsInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/PriorArtDocumentInfo'
+        legalStatusInfoArray:
+          type: array
+          items:
+            $ref: '#/components/schemas/LegalStatusInfo'
+    BiblioSummaryInfo:
+      type: object
+      properties:
+        applicationNumber:
+          type: string
+          description: 출원번호
+        applicationDate:
+          type: string
+          description: 출원일자
+        applicationFlag:
+          type: string
+          description: 출원구분
+        inventionTitle:
+          type: string
+          description: 발명의 명칭 한글
+        inventionTitleEng:
+          type: string
+          description: 발명의 명칭 영문
+        claimCount:
+          type: integer
+          description: 청구항수
+        examinerName:
+          type: string
+          description: 심사관명
+        finalDisposal:
+          type: string
+          description: 최종처분내용
+        originalExaminationRequestDate:
+          type: string
+          description: 심사청구일자
+        originalExaminationRequestFlag:
+          type: string
+          description: 심사청구여부
+        openNumber:
+          type: string
+          description: 공개번호
+        openDate:
+          type: string
+          description: 공개일자
+        publicationNumber:
+          type: string
+          description: 공고번호
+        publicationDate:
+          type: string
+          description: 공고일자
+        registerNumber:
+          type: string
+          description: 등록번호
+        registerDate:
+          type: string
+          description: 등록일자
+        registerStatus:
+          type: string
+          description: 등록상태
+    IpcInfo:
+      type: object
+      properties:
+        ipcNumber:
+          type: string
+          description: IPC코드
+        ipcDate:
+          type: string
+          description: IPC개정일자
+    FamilyInfo:
+      type: object
+      properties:
+        familyApplicationNumber:
+          type: string
+          description: 패밀리출원번호
+    AbstractInfo:
+      type: object
+      properties:
+        astrtCont:
+          type: string
+          description: 초록
+    ClaimInfo:
+      type: object
+      properties:
+        claim:
+          type: string
+          description: 청구항
+    PartyInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: 명칭 한글
+        engName:
+          type: string
+          description: 명칭 영문
+        code:
+          type: string
+          description: 특허고객번호
+        country:
+          type: string
+          description: 국가
+        address:
+          type: string
+          description: 주소
+    PriorityInfo:
+      type: object
+      properties:
+        priorityApplicationCountry:
+          type: string
+          description: 우선권주장국가
+        priorityApplicationNumber:
+          type: string
+          description: 우선권주장번호
+        priorityApplicationDate:
+          type: string
+          description: 우선권주장일자
+    DesignatedStateInfo:
+      type: object
+      properties:
+        kind:
+          type: string
+          description: 지정국가그룹
+        country:
+          type: string
+          description: 지정국가
+    PriorArtDocumentInfo:
+      type: object
+      properties:
+        documentsNumber:
+          type: string
+          description: 선행기술조사문헌번호
+        examinerQuotationFlag:
+          type: string
+          description: 심사관인용여부
+    LegalStatusInfo:
+      type: object
+      properties:
+        commonCodeName:
+          type: string
+          description: 처리상태
+        documentName:
+          type: string
+          description: 서류명 한글
+        documentEngName:
+          type: string
+          description: 서류명 영문
+        receiptDate:
+          type: string
+          description: 접수일자
+        receiptNumber:
+          type: string
+          description: 접수번호
+    TransferListResponse:
+      type: object
+      properties:
+        transferCount:
+          type: integer
+          description: 변동건수
+        transferList:
+          type: string
+          description: 출원번호 리스트. 구분자 |
+    OverseasClaimsResponse:
+      type: object
+      properties:
+        demandParagraphInfo:
+          type: array
+          items:
+            type: object
+            properties:
+              claimText:
+                type: string
+                description: 청구범위내용
+    CitationDocumentsResponse:
+      type: object
+      properties:
+        documents:
+          type: array
+          items:
+            type: object
+            properties:
+              citedDocumentNumber:
+                type: string
+                description: 참조번호
+              reportType:
+                type: string
+                description: 보고서종류
+              examinerCitationFlag:
+                type: string
+                description: 심사관인용여부
+              publicationDate:
+                type: string
+                description: 공보일자
+              countryCode:
+                type: string
+                description: 국가코드
+    PubFullTextPdfResponse:
+      type: object
+      xml:
+        name: response
+      properties:
+        header:
+          $ref: '#/components/schemas/KiprisResponseHeader'
+        body:
+          type: object
+          properties:
+            item:
+              $ref: '#/components/schemas/PdfPathItem'
+    PubFullTextPdfJsonResponse:
+      type: object
+      description: XML 응답을 JSON으로 변환해 사용하는 경우의 구조 예시
+      properties:
+        header:
+          $ref: '#/components/schemas/KiprisResponseHeader'
+        body:
+          type: object
+          properties:
+            item:
+              $ref: '#/components/schemas/PdfPathItem'
+    AnnFullTextPdfResponse:
+      type: object
+      xml:
+        name: response
+      properties:
+        header:
+          $ref: '#/components/schemas/KiprisResponseHeader'
+        body:
+          type: object
+          properties:
+            item:
+              $ref: '#/components/schemas/PdfPathItem'
+    AnnFullTextPdfJsonResponse:
+      type: object
+      description: XML 응답을 JSON으로 변환해 사용하는 경우의 구조 예시
+      properties:
+        header:
+          $ref: '#/components/schemas/KiprisResponseHeader'
+        body:
+          type: object
+          properties:
+            item:
+              $ref: '#/components/schemas/PdfPathItem'
+    PreferredFullTextPdfResponse:
+      type: object
+      description: 권리성 분석에 사용할 전문PDF를 공고전문 우선, 공개전문 fallback 규칙으로 선택한 내부 wrapper 응답
+      properties:
+        applicationNumber:
+          type: string
+          description: 출원번호
+          example: '1020050050026'
+        selectedType:
+          type: string
+          enum:
+          - ANNOUNCEMENT_FULLTEXT_PDF
+          - PUBLICATION_FULLTEXT_PDF
+          description: 선택된 전문PDF 유형
+        reason:
+          type: string
+          description: 해당 PDF 유형을 선택한 이유
+        docName:
+          type: string
+          description: 파일명
+          example: 1020050050026.pdf
+        path:
+          type: string
+          format: uri
+          description: PDF 파일 다운로드 경로
+          example: http://plus.kipris.or.kr/kiprisplusws/fileToss.jsp?arg=...
+      required:
+      - applicationNumber
+      - selectedType
+      - docName
+      - path
+    KiprisResponseHeader:
+      type: object
+      properties:
+        requestMsgID:
+          type: string
+          description: 요청 메시지 ID
+        responseTime:
+          type: string
+          description: 응답 시간
+          example: '2014-10-31 10:26:17.2617'
+        responseMsgID:
+          type: string
+          description: 응답 메시지 ID
+        successYN:
+          type: string
+          description: 성공 여부
+        resultCode:
+          type: string
+          description: 결과 코드
+          example: '00'
+        resultMsg:
+          type: string
+          description: 결과 메시지
+          example: NORMAL SERVICE.
+    PdfPathItem:
+      type: object
+      properties:
+        docName:
+          type: string
+          description: 파일명
+          example: 1020050050026.pdf
+        path:
+          type: string
+          format: uri
+          description: PDF 파일 다운로드 경로. 이 URL을 GET 요청하면 PDF를 받을 수 있음.
+          example: http://plus.kipris.or.kr/kiprisplusws/fileToss.jsp?arg=...
+      required:
+      - docName
+      - path
+    EvaluationDataSnapshot:
+      type: object
+      description: 특허 평가 엔진에 넘기는 통합 데이터 스냅샷. 현재는 KIPRIS 데이터만 사용하지만 externalData 필드로
+        다른 API 결과를 확장 가능하게 설계합니다.
+      properties:
+        applicationNumber:
+          type: string
+          description: 출원번호
+        source:
+          type: string
+          enum:
+          - KIPRISPlus
+          default: KIPRISPlus
+        kipris:
+          $ref: '#/components/schemas/KiprisPatentEvaluationData'
+        externalData:
+          type: object
+          description: 추후 WIPO, WorldBank, 뉴스/공시, 내부문서 등 외부 데이터 확장 영역
+          additionalProperties: true
+          example:
+            wipo: {}
+            worldBank: {}
+            news: {}
+            internalBusinessData: {}
+        evaluationAxes:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvaluationAxisData'
+    KiprisPatentEvaluationData:
+      type: object
+      description: KIPRISPlus로 수집 가능한 평가 데이터 묶음
+      properties:
+        searchResult:
+          $ref: '#/components/schemas/PatentSearchItem'
+        bibliographyDetail:
+          $ref: '#/components/schemas/BibliographyDetailResponse'
+        publicFullTextPdf:
+          $ref: '#/components/schemas/PdfPathItem'
+        announcementFullTextPdf:
+          $ref: '#/components/schemas/PdfPathItem'
+        preferredFullTextPdf:
+          $ref: '#/components/schemas/PreferredFullTextPdfResponse'
+        adminHistory:
+          $ref: '#/components/schemas/TransferListResponse'
+        citationDocuments:
+          $ref: '#/components/schemas/CitationDocumentsResponse'
+    EvaluationAxisData:
+      type: object
+      properties:
+        axis:
+          type: string
+          enum:
+          - 권리성
+          - 기술성
+          - 시장성
+          - 라이프사이클 경제성
+          - 사업 연계성
+          - 최종 종합 지표
+        availableFromKipris:
+          type: boolean
+        kiprisFields:
+          type: array
+          items:
+            type: string
+        requiresExternalData:
+          type: boolean
+        futureSources:
+          type: array
+          items:
+            type: string
+          example:
+          - WIPO
+          - WorldBank
+          - News
+          - InternalDocuments
+x-evaluation-design:
+  currentScope: KIPRISPlus only
+  primaryKey: applicationNumber
+  kiprisSupportedAxes:
+    권리성:
+    - claimCount
+    - claimInfoArray.claim
+    - registerStatus
+    - legalStatusInfoArray
+    - priorArtDocumentsInfoArray
+    - publicFullTextPdf.path
+    기술성:
+    - ipcInfoArray
+    - abstractInfoArray
+    - claimInfoArray
+    - priorArtDocumentsInfoArray
+    - citationDocuments
+    - publicFullTextPdf.path
+    시장성:
+    - familyInfoArray
+    - designatedStateInfoArray
+    - applicantInfoArray.country
+    - applicantNameSearchInfo
+    - ipcSearchInfo
+    - cpcSearchInfo
+    라이프사이클 경제성:
+    - applicationDate
+    - registerDate
+    - registerStatus
+    - finalDisposal
+    - legalStatusInfoArray
+    사업 연계성:
+    - KIPRIS만으로는 부족. 내부 제품/서비스/로드맵 데이터 필요
+  futureExtensionPolicy: 새 API 소스는 paths에 /{source}/...로 추가하고, EvaluationDataSnapshot.externalData에
+    결과를 연결한다.

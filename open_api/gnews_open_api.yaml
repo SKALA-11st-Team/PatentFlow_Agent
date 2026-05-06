@@ -1,0 +1,165 @@
+openapi: 3.0.3
+
+info:
+  title: GNews Search API
+  version: 1.0.0
+  description: GNews Search API 기본 명세입니다.
+
+servers:
+  - url: https://gnews.io
+
+paths:
+  /api/v4/search:
+    get:
+      tags:
+        - News Search
+      summary: 뉴스 검색
+      description: 키워드 기반 글로벌 뉴스 검색 결과를 반환합니다.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: 검색 키워드
+          schema:
+            type: string
+
+        - name: apikey
+          in: query
+          required: true
+          description: GNews API Key
+          schema:
+            type: string
+
+        - name: lang
+          in: query
+          required: false
+          description: 기사 언어 코드
+          schema:
+            type: string
+
+        - name: country
+          in: query
+          required: false
+          description: 기사 발행 국가 코드
+          schema:
+            type: string
+
+        - name: max
+          in: query
+          required: false
+          description: 반환 기사 수
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+
+        - name: from
+          in: query
+          required: false
+          description: 시작 발행일 ISO 8601 형식
+          schema:
+            type: string
+
+        - name: to
+          in: query
+          required: false
+          description: 종료 발행일 ISO 8601 형식
+          schema:
+            type: string
+
+        - name: sortby
+          in: query
+          required: false
+          description: 정렬 기준
+          schema:
+            type: string
+            enum:
+              - publishedAt
+              - relevance
+
+        - name: page
+          in: query
+          required: false
+          description: 페이지 번호
+          schema:
+            type: integer
+            default: 1
+
+      responses:
+        "200":
+          description: 뉴스 검색 결과
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GNewsSearchResponse"
+        "400":
+          description: 잘못된 요청
+        "401":
+          description: 인증 실패
+        "403":
+          description: 권한 없음 또는 할당량 초과
+        "429":
+          description: 요청 횟수 제한 초과
+        "500":
+          description: 서버 오류
+
+components:
+  schemas:
+    GNewsSearchResponse:
+      type: object
+      properties:
+        totalArticles:
+          type: integer
+          description: 전체 기사 수
+        articles:
+          type: array
+          description: 기사 목록
+          items:
+            $ref: "#/components/schemas/GNewsArticle"
+
+    GNewsArticle:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 기사 ID
+        title:
+          type: string
+          description: 기사 제목
+        description:
+          type: string
+          description: 기사 설명
+        content:
+          type: string
+          description: 기사 본문
+        url:
+          type: string
+          description: 기사 URL
+        image:
+          type: string
+          description: 이미지 URL
+        publishedAt:
+          type: string
+          description: 기사 발행 시각
+        lang:
+          type: string
+          description: 기사 언어
+        source:
+          $ref: "#/components/schemas/GNewsSource"
+
+    GNewsSource:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 매체 ID
+        name:
+          type: string
+          description: 매체명
+        url:
+          type: string
+          description: 매체 URL
+        country:
+          type: string
+          description: 매체 국가

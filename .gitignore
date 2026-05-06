@@ -1,0 +1,41 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Python cache / tooling
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Runtime artifacts
+run.json
+artifacts/runs/
+
+# Legacy output location kept for old runs only
+data/outputs/
+
+# Downloaded or generated local data
+data/patent_pdf/
+data/vector_db/*.sqlite3
+data/vector_db/*.db
+
+# Logs
+*.log

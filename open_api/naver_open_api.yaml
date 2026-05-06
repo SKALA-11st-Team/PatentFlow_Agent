@@ -1,0 +1,114 @@
+openapi: 3.0.3
+
+info:
+  title: Naver News Proxy API
+  version: 1.0.0
+  description: >
+    네이버 뉴스 검색 API를 백엔드에서 호출하는 프록시 API입니다.
+    Swagger UI에서는 네이버 API를 직접 호출하지 않고 이 API를 호출합니다.
+
+servers:
+  - url: http://localhost:8000
+
+paths:
+  /api/news/search:
+    get:
+      tags:
+        - News Search
+      summary: 네이버 뉴스 검색
+      description: >
+        검색어를 받아 백엔드에서 NAVER News Search API를 호출하고,
+        뉴스 검색 결과를 JSON으로 반환합니다.
+      parameters:
+        - name: query
+          in: query
+          required: true
+          description: 검색어
+          schema:
+            type: string
+
+        - name: display
+          in: query
+          required: false
+          description: 한 번에 표시할 검색 결과 개수
+          schema:
+            type: integer
+            default: 10
+            minimum: 1
+            maximum: 100
+
+        - name: start
+          in: query
+          required: false
+          description: 검색 시작 위치
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+            maximum: 1000
+
+        - name: sort
+          in: query
+          required: false
+          description: 정렬 방식
+          schema:
+            type: string
+            default: sim
+            enum:
+              - sim
+              - date
+
+      responses:
+        "200":
+          description: 뉴스 검색 결과 조회 성공
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NaverNewsSearchResponse"
+
+        "400":
+          description: 잘못된 요청
+
+        "500":
+          description: 서버 오류
+
+components:
+  schemas:
+    NaverNewsSearchResponse:
+      type: object
+      properties:
+        lastBuildDate:
+          type: string
+          description: 검색 결과 생성 시간
+        total:
+          type: integer
+          description: 총 검색 결과 개수
+        start:
+          type: integer
+          description: 검색 시작 위치
+        display:
+          type: integer
+          description: 반환 결과 개수
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/NaverNewsItem"
+
+    NaverNewsItem:
+      type: object
+      properties:
+        title:
+          type: string
+          description: 뉴스 제목
+        originallink:
+          type: string
+          description: 기사 원문 URL
+        link:
+          type: string
+          description: 네이버 뉴스 URL 또는 원문 URL
+        description:
+          type: string
+          description: 뉴스 요약
+        pubDate:
+          type: string
+          description: 기사 게시 시각

@@ -1,0 +1,81 @@
+import json
+
+from services.evidence.compression_service import compress_evidence_items, select_compression_candidates
+
+
+def test_select_compression_candidates_keeps_news_and_high_score_rag():
+    items = [
+        {"evidence_id": "news_1", "source_type": "news", "content": "뉴스"},
+        {"evidence_id": "rag_high", "source_type": "industry_report", "score": 0.5, "context": "청크"},
+        {"evidence_id": "rag_low", "source_type": "industry_report", "score": 0.49, "context": "청크"},
+        {"evidence_id": "dart_1", "source_type": "company_disclosure", "content": "공시"},
+    ]
+
+    candidates, skipped = select_compression_candidates(items, rag_score_threshold=0.5)
+
+    assert [item["evidence_id"] for item in candidates] == ["news_1", "rag_high"]
+    assert skipped["low_rag_score"] == 1
+    assert skipped["non_target"] == 1
+
+
+def test_compress_evidence_items_normalizes_news_and_rag_shapes():
+    items = [
+        {
+            "evidence_id": "news_1",
+            "source_type": "news",
+            "source": "naver_news",
+            "title": "AI 로보어드바이저 경쟁",
+            "url": "https://example.com/news",
+            "published_at": "2026-05-05T00:00:00+09:00",
+            "collected_at": "2026-05-06T00:00:00+09:00",
+            "content": "퇴직연금 시장에서 AI 로보어드바이저 경쟁이 확대된다.",
+        },
+        {
+            "evidence_id": "rag_1",
+            "source_type": "industry_report",
+            "source": "report.pdf",
+            "title": "자동차 내수",
+            "published_at": "2026",
+            "collected_at": "2026-05-06T00:00:00+09:00",
+            "metadata": {"industry": "자동차", "page": 26, "heading": "자동차 내수"},
+            "context": "경기침체와 차량 가격 상승으로 자동차 내수가 제한된다.",
+            "score": 0.63,
+        },
+    ]
+
+    responses = iter(
+        [
+            {
+                "is_relevant": True,
+                "related_axes": ["market", "business_fit"],
+                "relation_type": "indirect",
+                "compressed_summary": "AI 로보어드바이저 경쟁이 확대되고 있다.",
+                "key_facts": ["퇴직연금 시장에서 AI 로보어드바이저 경쟁이 확대된다."],
+                "axis_context": {"market": "시장 확대 맥락이다."},
+            },
+            {
+                "related_axes": ["market"],
+                "compressed_summary": "자동차 내수 반등 요인이 제한적이다.",
+                "key_facts": ["경기침체와 가격 상승이 내수에 부정적이다."],
+            },
+        ]
+    )
+
+    result = compress_evidence_items(
+        items,
+        preprocessed_patent={"metadata": {"title": "테스트 특허"}, "sections": {"abstract": "초록"}},
+        rag_score_threshold=0.5,
+        llm=lambda prompt: json.dumps(next(responses), ensure_ascii=False),
+    )
+
+    assert result["stats"]["compressed_count"] == 2
+    news = result["items"][0]
+    assert news["is_relevant"] is True
+    assert news["compressed_summary"] == "AI 로보어드바이저 경쟁이 확대되고 있다."
+    assert "content" not in news
+
+    rag = result["items"][1]
+    assert rag["retrieval_score"] == 0.63
+    assert rag["compressed_summary"] == "자동차 내수 반등 요인이 제한적이다."
+    assert "context" not in rag
+    assert "content" not in rag
