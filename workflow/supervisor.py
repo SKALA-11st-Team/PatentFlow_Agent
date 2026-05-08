@@ -5,11 +5,11 @@ from workflow.state import PatentWorkflowState
 
 
 STAGE_PROMPTS = {
-    "patent_check": "supervisor_patent_check.md",
-    "summary_check": "supervisor_summary_check.md",
-    "evidence_check": "supervisor_evidence_check.md",
-    "valuation_check": "supervisor_valuation_check.md",
-    "final_check": "supervisor_final_check.md",
+    "patent_check": "supervisor/supervisor_patent_check.md",
+    "summary_check": "supervisor/supervisor_summary_check.md",
+    "evidence_check": "supervisor/supervisor_evidence_check.md",
+    "valuation_check": "supervisor/supervisor_valuation_check.md",
+    "final_check": "supervisor/supervisor_final_check.md",
 }
 
 
@@ -28,7 +28,7 @@ def decide_next_step(state: PatentWorkflowState) -> str:
 @trace(name="supervisor_agent", run_type="chain")
 def supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     stage = state.current_stage or "patent_check"
-    prompt_name = STAGE_PROMPTS.get(stage, "supervisor_final_check.md")
+    prompt_name = STAGE_PROMPTS.get(stage, "supervisor/supervisor_final_check.md")
     prompt = load_prompt(prompt_name)
 
     rule_decision = run_rule_based_check(state, stage)
@@ -105,6 +105,9 @@ def check_evidence_bundle(state: PatentWorkflowState) -> SupervisorDecision:
     missing_evidence: list[str] = []
     if len(evidence_bundle) < 3:
         missing_evidence.append("minimum_evidence_count")
+    news_count = sum(1 for evidence in evidence_bundle if evidence.get("source_type") == "news")
+    if news_count < 3:
+        missing_evidence.append("minimum_news_count")
     required_fields = ["evidence_id", "source"]
     for index, evidence in enumerate(evidence_bundle):
         for field in required_fields:
@@ -126,20 +129,25 @@ def check_evidence_bundle(state: PatentWorkflowState) -> SupervisorDecision:
 def check_valuation_result(state: PatentWorkflowState) -> SupervisorDecision:
     valuation = state.valuation_result or {}
     evidence_ids = {evidence.get("evidence_id") for evidence in state.evidence_bundle}
-    required_axes = ["legal", "technology", "market", "economic", "strategy"]
+    axes = valuation.get("axes") or {}
+    required_axes = ["legal", "technology", "market", "economic", "business_fit"]
     issues: list[str] = []
 
     for axis in required_axes:
-        axis_result = valuation.get(axis)
+        axis_result = axes.get(axis)
         if not axis_result:
             issues.append(f"Missing valuation axis: {axis}")
             continue
         for field in ["score", "grade", "rationale", "evidence_ids", "risk_factors", "confidence"]:
+            if field == "evidence_ids":
+                continue
             if axis_result.get(field) in (None, "", []):
                 issues.append(f"{axis} missing {field}")
         for evidence_id in axis_result.get("evidence_ids", []):
             if evidence_id not in evidence_ids:
                 issues.append(f"{axis} references unknown evidence_id: {evidence_id}")
+    if "strategy" in axes:
+        issues.append("Deprecated valuation axis present: strategy")
 
     passed = not issues
     return SupervisorDecision(

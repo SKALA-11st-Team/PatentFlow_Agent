@@ -67,6 +67,68 @@ class ParagraphHTMLParser(HTMLParser):
             self.paragraphs.append(text)
 
 
+class ArticleTitleHTMLParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.meta_titles: list[str] = []
+        self.title_parts: list[str] = []
+        self.h1_parts: list[str] = []
+        self.capture_title = False
+        self.capture_h1_depth = 0
+        self.skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        attr_map = {name.lower(): value for name, value in attrs if name and value}
+        if tag in {"script", "style", "noscript", "svg"}:
+            self.skip_depth += 1
+            return
+        if self.skip_depth:
+            return
+        if tag == "meta":
+            key = (attr_map.get("property") or attr_map.get("name") or "").lower()
+            if key in {"og:title", "twitter:title", "title"} and attr_map.get("content"):
+                self.meta_titles.append(normalize_news_title(attr_map["content"]))
+        elif tag == "title":
+            self.capture_title = True
+        elif tag == "h1":
+            self.capture_h1_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if self.skip_depth:
+            if tag in {"script", "style", "noscript", "svg"}:
+                self.skip_depth = max(0, self.skip_depth - 1)
+            return
+        if tag == "title":
+            self.capture_title = False
+        elif tag == "h1" and self.capture_h1_depth:
+            self.capture_h1_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if self.skip_depth:
+            return
+        text = normalize_news_title(data)
+        if not text:
+            return
+        if self.capture_title:
+            self.title_parts.append(text)
+        elif self.capture_h1_depth:
+            self.h1_parts.append(text)
+
+    def best_title(self) -> str | None:
+        candidates = [
+            *self.meta_titles,
+            normalize_news_title(" ".join(self.h1_parts)),
+            normalize_news_title(" ".join(self.title_parts)),
+        ]
+        for candidate in candidates:
+            cleaned = clean_article_title(candidate)
+            if cleaned:
+                return cleaned
+        return None
+
+
 def enrich_news_items_with_full_text(
     items: list[dict[str, Any]],
     *,
@@ -86,6 +148,11 @@ def enrich_news_items_with_full_text(
             mark_content_source(item, "snippet")
             continue
         result = fetch_article_text(str(url))
+        if result["title"]:
+            metadata = item.setdefault("metadata", {})
+            if result["title"] != item.get("title"):
+                metadata.setdefault("original_title", item.get("title"))
+            item["title"] = result["title"]
         if result["text"]:
             item["content"] = result["text"]
             mark_content_source(item, result.get("source") or "full_text")
@@ -107,23 +174,34 @@ def fetch_article_text(url: str) -> dict[str, str | None]:
         )
         response.raise_for_status()
     except requests.RequestException as exc:
-        return {"text": None, "error": f"{exc.__class__.__name__}: {exc}", "source": None}
+        return {"text": None, "title": None, "error": f"{exc.__class__.__name__}: {exc}", "source": None}
 
+    article_title = extract_article_title(response.text)
     trafilatura_text = extract_with_trafilatura(response.text, url=url)
     if trafilatura_text:
-        return {"text": trafilatura_text[:ARTICLE_MAX_CHARS], "error": None, "source": "full_text_trafilatura"}
+        return {"text": trafilatura_text[:ARTICLE_MAX_CHARS], "title": article_title, "error": None, "source": "full_text_trafilatura"}
 
     parser = ParagraphHTMLParser()
     try:
         parser.feed(response.text)
         parser.close()
     except Exception as exc:
-        return {"text": None, "error": f"html_parse_failed:{exc.__class__.__name__}", "source": None}
+        return {"text": None, "title": article_title, "error": f"html_parse_failed:{exc.__class__.__name__}", "source": None}
 
     text = join_article_paragraphs(parser.paragraphs)
     if not is_valid_article_text(text):
-        return {"text": None, "error": classify_article_failure(text), "source": None}
-    return {"text": text[:ARTICLE_MAX_CHARS], "error": None, "source": "full_text_fallback_parser"}
+        return {"text": None, "title": article_title, "error": classify_article_failure(text), "source": None}
+    return {"text": text[:ARTICLE_MAX_CHARS], "title": article_title, "error": None, "source": "full_text_fallback_parser"}
+
+
+def extract_article_title(html_text: str) -> str | None:
+    parser = ArticleTitleHTMLParser()
+    try:
+        parser.feed(html_text)
+        parser.close()
+    except Exception:
+        return None
+    return parser.best_title()
 
 
 def extract_with_trafilatura(html_text: str, *, url: str) -> str | None:
@@ -175,6 +253,20 @@ def clean_article_text(value: str) -> str:
 def normalize_article_text(value: str) -> str:
     text = re.sub(r"\s+", " ", value or "")
     return text.strip()
+
+
+def normalize_news_title(value: str | None) -> str:
+    text = re.sub(r"\s+", " ", value or "")
+    return text.strip()
+
+
+def clean_article_title(value: str | None) -> str | None:
+    title = normalize_news_title(value)
+    if not title:
+        return None
+    title = re.sub(r"\s*[-|:]\s*(네이버 뉴스|다음 뉴스|Google News|Yahoo News)\s*$", "", title, flags=re.IGNORECASE)
+    title = re.sub(r"\s*[-|:]\s*[가-힣A-Za-z0-9_. ]{2,30}\s*$", "", title).strip() if len(title) > 45 else title
+    return title if len(title) >= 5 else None
 
 
 def is_boilerplate(text: str) -> bool:

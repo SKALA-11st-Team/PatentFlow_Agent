@@ -12,7 +12,12 @@ from workflow.state import PatentWorkflowState
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the patent valuation workflow.")
-    patent_group = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument(
+        "identifier",
+        nargs="?",
+        help="Internal patent management number. Example: P202012001-US0.",
+    )
+    patent_group = parser.add_mutually_exclusive_group()
     patent_group.add_argument("--patent-id", type=int, help="Patent row id in data/patents.sqlite3.")
     patent_group.add_argument("--application-number", help="Patent application number.")
     patent_group.add_argument("--registration-number", help="Patent registration number.")
@@ -70,13 +75,39 @@ def build_parser() -> argparse.ArgumentParser:
         "--dart-end-de",
         help="Optional DART end date YYYYMMDD.",
     )
+    parser.add_argument(
+        "--use-llm-valuation",
+        action="store_true",
+        help="Deprecated: LLM valuation is enabled by default.",
+    )
+    parser.add_argument(
+        "--use-llm-final-report",
+        action="store_true",
+        help="Deprecated: LLM final report generation is enabled by default.",
+    )
+    parser.add_argument(
+        "--no-llm-valuation",
+        action="store_true",
+        help="Disable LLM prompts for axis-level valuation and use deterministic fallback results.",
+    )
+    parser.add_argument(
+        "--no-llm-final-report",
+        action="store_true",
+        help="Disable the LLM final report prompt and use deterministic Markdown fallback.",
+    )
+    parser.add_argument(
+        "--no-llm-summary",
+        action="store_true",
+        help="Disable the LLM summary prompt and use deterministic Markdown fallback.",
+    )
     return parser
 
 
 def build_run_id(args: argparse.Namespace) -> str:
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d_%H%M%S")
     identifier = (
-        args.patent_id
+        args.identifier
+        or args.patent_id
         or args.application_number
         or args.registration_number
         or args.management_number
@@ -93,9 +124,14 @@ def build_user_input(args: argparse.Namespace) -> dict[str, Any]:
         "collect_kipris_api": True,
         "no_save": args.no_save,
         "artifact_dir": str(artifact_dir),
+        "use_llm_summary": not args.no_llm_summary,
+        "use_llm_valuation": not args.no_llm_valuation,
+        "use_llm_final_report": not args.no_llm_final_report,
     }
     if args.patent_id is not None:
         user_input["patent_id"] = args.patent_id
+    if args.identifier:
+        user_input["management_number"] = args.identifier
     if args.application_number:
         user_input["application_number"] = args.application_number
     if args.registration_number:
@@ -103,6 +139,19 @@ def build_user_input(args: argparse.Namespace) -> dict[str, Any]:
     if args.management_number:
         user_input["management_number"] = args.management_number
     return user_input
+
+
+def validate_identifier_args(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    explicit_identifiers = [
+        args.patent_id is not None,
+        bool(args.application_number),
+        bool(args.registration_number),
+        bool(args.management_number),
+    ]
+    if args.identifier and any(explicit_identifiers):
+        parser.error("positional management number cannot be used together with --patent-id/--application-number/--registration-number/--management-number")
+    if not args.identifier and not any(explicit_identifiers):
+        parser.error("one patent identifier is required. Use a management number like P202012001-US0 or pass --patent-id/--application-number/--registration-number/--management-number")
 
 
 def print_summary(state: PatentWorkflowState) -> None:
@@ -127,6 +176,16 @@ def print_summary(state: PatentWorkflowState) -> None:
         print(f"Preprocessed valid: {validation.get('is_valid')}")
         if validation.get("warnings"):
             print(f"Preprocess warnings: {validation.get('warnings')}")
+    if state.portfolio_result:
+        portfolio = state.portfolio_result
+        stats = portfolio.get("stats") or {}
+        print(f"Portfolio evidence output: {portfolio.get('output_path') or 'none'}")
+        print(f"Portfolio evidence count: {stats.get('portfolio_evidence_count', 0)}")
+        warnings = portfolio.get("warnings") or []
+        if warnings:
+            print("Portfolio evidence warnings:")
+            for warning in warnings:
+                print(f"- {warning}")
     print_query_rewriting_summary(state)
 
 
@@ -205,6 +264,26 @@ def save_outputs(state: PatentWorkflowState, *, save_cleaned_markdown: bool = Fa
                 encoding="utf-8",
             )
             saved["cleaned_markdown"] = cleaned_path
+    if state.summary_result:
+        output_dir = artifact_subdir(state, "summary")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        patent_id = (
+            (state.preprocessed_patent or {}).get("patent_id")
+            or (state.patent_structured or {}).get("id")
+            or "unknown_patent"
+        )
+        safe_patent_id = str(patent_id).replace("/", "_")
+        summary_path = output_dir / f"{safe_patent_id}_summary.json"
+        summary_path.write_text(
+            json.dumps(state.summary_result, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        saved["summary_json"] = summary_path
+        markdown = (state.summary_result.get("summary_markdown") or "").strip()
+        if markdown:
+            markdown_path = output_dir / f"{safe_patent_id}_summary.md"
+            markdown_path.write_text(f"{markdown}\n", encoding="utf-8")
+            saved["summary_markdown"] = markdown_path
     if state.final_report:
         output_dir = artifact_subdir(state, "final")
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -216,6 +295,11 @@ def save_outputs(state: PatentWorkflowState, *, save_cleaned_markdown: bool = Fa
             encoding="utf-8",
         )
         saved["final_report"] = final_path
+        markdown = ((state.final_report.get("valuation") or {}).get("final_report_markdown") or "").strip()
+        if markdown:
+            markdown_path = output_dir / f"{safe_patent_id}_final_report.md"
+            markdown_path.write_text(f"{markdown}\n", encoding="utf-8")
+            saved["final_report_markdown"] = markdown_path
     return saved
 
 
@@ -235,11 +319,15 @@ def print_saved_outputs(saved: dict[str, Path]) -> None:
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    parser = build_parser()
+    args = parser.parse_args()
+    validate_identifier_args(args, parser)
     initial_state = PatentWorkflowState(user_input=build_user_input(args))
     final_state = run_workflow(initial_state)
     if args.collect_api_evidence:
-        if not final_state.preprocessed_patent:
+        if final_state.query_plan and final_state.evidence_bundle:
+            print("API evidence collection skipped: workflow evidence already exists.")
+        elif not final_state.preprocessed_patent:
             print("API evidence collection skipped: preprocessed_patent is missing.")
         else:
             patent = final_state.patent_structured or {}

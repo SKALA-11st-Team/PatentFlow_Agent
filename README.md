@@ -17,10 +17,15 @@ cp .env.example .env
 venv/bin/python -m app.main --patent-id 1
 ```
 
+관리번호로도 실행할 수 있습니다.
+
+```bash
+venv/bin/python -m app.main P202405001-KR0
+```
 
 전처리에서는 KIPRIS API 값을 우선 사용하고, PDF markdown은 명세서 본문 섹션 보강에 사용합니다.
 
-## External API Evidence Save
+## External API Evidence
 
 Unified API 서버를 먼저 실행합니다.
 
@@ -28,13 +33,15 @@ Unified API 서버를 먼저 실행합니다.
 venv/bin/python -m uvicorn open_api.api_server:app --reload
 ```
 
-그 다음 워크플로우를 실행하면서 API evidence 저장을 켭니다.
+워크플로우 내부에서 Query Rewriting, Naver/GNews/KIPRIS evidence 수집, 뉴스 필터링, 산업 RAG, evidence compression이 순서대로 실행됩니다.
 
 ```bash
-venv/bin/python -m app.main --patent-id 1 --collect-api-evidence
+venv/bin/python -m app.main --patent-id 1
 ```
 
-DART 공시까지 같이 수집하려면 `corp_code`를 추가합니다.
+`--collect-api-evidence`는 이전 CLI 호환용 옵션입니다. 현재 workflow evidence가 이미 생성된 경우 중복 수집을 건너뜁니다.
+
+DART 공시까지 별도로 수집하려면 `corp_code`를 추가합니다.
 
 ```bash
 venv/bin/python -m app.main --patent-id 1 --collect-api-evidence --dart-corp-code 00126380
@@ -63,6 +70,13 @@ artifacts/runs/<run_id>/filtered_evidence/
 └── <patent_id>_filtered_evidence.json
 ```
 
+동일 제품군 sibling 특허는 PDF 파싱 없이 KIPRIS API만으로 보강해 별도 portfolio evidence로 저장합니다.
+
+```text
+artifacts/runs/<run_id>/portfolio_evidence/
+└── <patent_id>_portfolio_evidence.json
+```
+
 LLM으로 압축한 valuation 입력용 evidence 저장 위치:
 
 ```text
@@ -70,9 +84,31 @@ artifacts/runs/<run_id>/compressed_evidence/
 └── <patent_id>_compressed_evidence.json
 ```
 
+가치평가 Agent별 입력 확인용 JSON 저장 위치:
+
+```text
+artifacts/runs/<run_id>/valuation_inputs/
+├── legal_input.json
+├── technology_input.json
+├── market_input.json
+├── economic_input.json
+├── business_fit_input.json
+└── final_report_input.json
+```
+
+요약 보고서와 최종 가치평가 보고서는 Markdown으로도 저장됩니다.
+
+```text
+artifacts/runs/<run_id>/summary/
+└── <patent_id>_summary.md
+
+artifacts/runs/<run_id>/final/
+└── <patent_id>_final_report.md
+```
+
 ## Query Rewriting Output
 
-Query Rewriting은 `prompts/query_rewriting.md`를 사용하며, 출력 형식은 아래와 같습니다.
+Query Rewriting은 `prompts/evidence/query_rewriting.md`를 사용하며, 출력 형식은 아래와 같습니다.
 
 ```json
 {
@@ -84,6 +120,8 @@ Query Rewriting은 `prompts/query_rewriting.md`를 사용하며, 출력 형식�
 - `ko`: Naver News 검색어 리스트
 - `en`: GNews 검색어 리스트 (영어만 사용)
 - 각 리스트는 최대 3개를 사용합니다.
+- 관련제품, 권리자, 공동출원인 정보가 있으면 검색어 후보에 반영합니다.
+- 이전 검색어는 `previous_queries`로 전달되어 supervisor 재검색 loop에서 중복 생성을 줄입니다.
 
 워크플로우 state에는 아래처럼 저장됩니다.
 
@@ -91,6 +129,38 @@ Query Rewriting은 `prompts/query_rewriting.md`를 사용하며, 출력 형식�
 query_plan.ko_queries
 query_plan.en_queries
 query_plan.rewrite_meta
+```
+
+## Batch Report Generation
+
+출원국이 KR인 특허 중 랜덤으로 성공한 20건의 요약/가치평가 Markdown을 별도 batch 폴더에 모을 수 있습니다.
+
+```bash
+venv/bin/python scripts/generate_kr20_reports.py --count 20
+```
+
+파일명 규칙:
+
+```text
+{순번}_{관리번호}_{등록번호}_{리포트종류}.md
+```
+
+예:
+
+```text
+01_P201510001-KR0_KR10-1795556_summary.md
+01_P201510001-KR0_KR10-1795556_final_report.md
+```
+
+Batch 산출물은 아래에 저장되며, `artifacts/` 전체는 `.gitignore` 대상입니다.
+
+```text
+artifacts/batches/<batch_name>/
+├── summary_reports/
+├── valuation_reports/
+├── logs/
+├── manifest.json
+└── manifest.txt
 ```
 
 ## Service Structure
@@ -152,6 +222,7 @@ venv/bin/python -m app.main --patent-id 1 --collect-pdf --save-cleaned-markdown
 venv/bin/python -m app.main --application-number 10-2024-0115774
 venv/bin/python -m app.main --registration-number 10-2932891
 venv/bin/python -m app.main --management-number P202405001-KR0
+venv/bin/python -m app.main P202405001-KR0
 ```
 
 ## LangSmith

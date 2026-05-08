@@ -209,6 +209,7 @@ def build_preprocessed_patent(
         claims = extract_claims(sections.get("claims_text", ""))
         claim_stats = build_claim_stats(metadata.get("claim_count"), claims)
 
+    metadata = merge_db_context_metadata(metadata, db_metadata=db_metadata)
     metadata["claim_count"] = claim_stats["active_claim_count"] or metadata.get("claim_count")
     metadata["assignee_count"] = len(metadata.get("assignee") or [])
     metadata["has_co_assignee"] = metadata["assignee_count"] > 1
@@ -294,6 +295,40 @@ def merge_api_metadata(pdf_metadata: dict[str, Any], api_metadata: dict[str, Any
         api_values = api_metadata.get(field) or []
         pdf_values = pdf_metadata.get(field) or []
         merged[field] = _dedupe([*api_values, *pdf_values])
+    return merged
+
+
+def merge_db_context_metadata(
+    metadata: dict[str, Any],
+    *,
+    db_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    db_metadata = db_metadata or {}
+    merged = dict(metadata)
+    db_context_fields = [
+        "id",
+        "management_number",
+        "title_draft",
+        "title_final",
+        "business_area",
+        "technology_area",
+        "related_product",
+        "joint_application",
+        "joint_applicant_name",
+        "status",
+        "application_date",
+        "expected_expiration_date",
+        "data_source_status",
+    ]
+    for field in db_context_fields:
+        if db_metadata.get(field) not in (None, "", []):
+            merged[field] = db_metadata[field]
+    if db_metadata.get("registration_date") not in (None, "", []) and not merged.get("registration_date"):
+        merged["registration_date"] = db_metadata["registration_date"]
+    if db_metadata.get("country") not in (None, "", []) and not merged.get("country"):
+        merged["country"] = db_metadata["country"]
+    if not merged.get("title") and db_metadata.get("title_final"):
+        merged["title"] = db_metadata["title_final"]
     return merged
 
 

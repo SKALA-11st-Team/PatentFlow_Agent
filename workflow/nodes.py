@@ -7,6 +7,7 @@ from services.patent.kipris_patent_service import (
     get_patent,
 )
 from services.patent.markdown_preprocess_service import build_preprocessed_patent
+from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
 from services.evidence.compression_service import (
     DEFAULT_RAG_SCORE_THRESHOLD,
     compress_evidence_items,
@@ -48,24 +49,98 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
             },
         }
     if patent and state.user_input.get("collect_pdf"):
-        parsed_pdf = download_and_parse_patent_pdf(
-            patent["application_number"],
-            output_dir=artifact_subdir(state, "patent_markdown"),
-            prefer_announcement=patent.get("status") == "등록",
-        )
-        state.parsed_pdf = parsed_pdf
-        state.pdf_paths = [parsed_pdf["pdf_path"]]
-        state.patent_structured = {
-            **(state.patent_structured or patent),
-            "pdf": {
-                "selected_type": parsed_pdf["selected_type"],
-                "doc_name": parsed_pdf["doc_name"],
-                "pdf_path": parsed_pdf["pdf_path"],
-                "markdown_paths": parsed_pdf["markdown_paths"],
-            },
-        }
+        try:
+            parsed_pdf = download_and_parse_patent_pdf(
+                patent["application_number"],
+                output_dir=artifact_subdir(state, "patent_markdown"),
+                prefer_announcement=patent.get("status") == "등록",
+            )
+            state.parsed_pdf = parsed_pdf
+            state.pdf_paths = [parsed_pdf["pdf_path"]]
+            state.patent_structured = {
+                **(state.patent_structured or patent),
+                "pdf": {
+                    "selected_type": parsed_pdf["selected_type"],
+                    "doc_name": parsed_pdf["doc_name"],
+                    "pdf_path": parsed_pdf["pdf_path"],
+                    "markdown_paths": parsed_pdf["markdown_paths"],
+                },
+            }
+        except Exception as exc:
+            state.patent_structured = {
+                **(state.patent_structured or patent),
+                "pdf": {
+                    "warning": f"pdf_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}",
+                },
+            }
     state.current_stage = "patent_check"
     return state
+
+
+@trace(run_type="tool")
+def portfolio_sibling_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    if not should_collect_portfolio(state):
+        return state
+
+    patent = state.patent_structured or {}
+    if not patent:
+        return state
+
+    result = analyze_portfolio_siblings_safely(
+        target_patent=patent,
+        target_api_data=state.kipris_api_data,
+        patent_id=patent.get("id"),
+        output_dir=artifact_subdir(state, "portfolio_evidence"),
+        save=not state.user_input.get("no_save", False),
+    )
+    state.portfolio_evidence = result.get("items", [])
+    state.portfolio_result = {
+        "output_path": result.get("output_path"),
+        "stats": result.get("stats", {}),
+        "warnings": result.get("warnings", []),
+    }
+    return state
+
+
+def should_collect_portfolio(state: PatentWorkflowState) -> bool:
+    if "collect_portfolio" in state.user_input:
+        return bool(state.user_input.get("collect_portfolio"))
+    return bool(state.user_input.get("collect_kipris_api"))
+
+
+def analyze_portfolio_siblings_safely(
+    *,
+    target_patent: dict,
+    target_api_data: dict | None = None,
+    patent_id: str | int | None,
+    output_dir: Path,
+    save: bool,
+) -> dict:
+    try:
+        result = analyze_portfolio_siblings(target_patent=target_patent, target_api_data=target_api_data)
+        output_path = None
+        if save:
+            output_path = save_portfolio_evidence_result(
+                patent_id=patent_id,
+                result=result,
+                output_dir=output_dir,
+            )
+        return {
+            **result,
+            "output_path": str(output_path) if output_path else None,
+        }
+    except Exception as exc:
+        return {
+            "items": [],
+            "stats": {
+                "candidate_count": 0,
+                "enriched_count": 0,
+                "portfolio_evidence_count": 0,
+                "group_size": 1 if target_patent else 0,
+            },
+            "warnings": [f"portfolio_analysis_failed:{exc.__class__.__name__}:{str(exc)[:200]}"],
+            "output_path": None,
+        }
 
 
 @trace(run_type="tool")
@@ -124,9 +199,12 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
         preprocessed_patent=preprocessed,
         missing_evidence=state.missing_evidence,
         previous_queries=state.search_queries,
+        retry_count=state.retry_count,
         use_llm=True,
     )
-    state.search_queries = rewritten.get("ko", [])
+    state.search_queries = compact_workflow_queries(
+        [*state.search_queries, *rewritten.get("ko", []), *rewritten.get("en", [])]
+    )
     state.query_plan = {
         "source": "query_rewriting",
         "ko_queries": rewritten.get("ko", []),
@@ -156,7 +234,9 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         output_dir=artifact_subdir(state, "api_evidence"),
         save=not state.user_input.get("no_save", False),
     )
-    state.search_queries = result.get("queries", [])
+    state.search_queries = compact_workflow_queries(
+        [*state.search_queries, *result.get("queries", []), *result.get("gnews_queries", [])]
+    )
     raw_items = result.get("items", [])
     news_filter_result = filter_news_safely(
         items=[item for item in raw_items if item.get("source_type") == "news"],
@@ -211,12 +291,25 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
+def compact_workflow_queries(queries: list[str]) -> list[str]:
+    compacted: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        value = " ".join(str(query or "").split())
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        compacted.append(value)
+    return compacted
+
+
 @trace(run_type="tool")
 def evidence_compression_node(state: PatentWorkflowState) -> PatentWorkflowState:
     preprocessed = state.preprocessed_patent or {}
     patent = state.patent_structured or {}
     result = compress_evidence_safely(
         items=state.evidence_bundle,
+        portfolio_items=state.portfolio_evidence,
         preprocessed_patent=preprocessed,
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
         output_dir=artifact_subdir(state, "compressed_evidence"),
@@ -239,6 +332,7 @@ def evidence_compression_node(state: PatentWorkflowState) -> PatentWorkflowState
 def compress_evidence_safely(
     *,
     items: list[dict],
+    portfolio_items: list[dict],
     preprocessed_patent: dict,
     patent_id: str | int | None,
     output_dir: Path,
@@ -250,6 +344,14 @@ def compress_evidence_safely(
             preprocessed_patent=preprocessed_patent,
             rag_score_threshold=DEFAULT_RAG_SCORE_THRESHOLD,
         )
+        result = {
+            **result,
+            "items": [*result.get("items", []), *portfolio_items],
+            "stats": {
+                **(result.get("stats") or {}),
+                "portfolio_evidence_count": len(portfolio_items),
+            },
+        }
         output_path = None
         if save:
             output_path = save_compressed_evidence_result(
@@ -371,8 +473,9 @@ def valuation_node(state: PatentWorkflowState) -> PatentWorkflowState:
 @trace(run_type="tool")
 def validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
     valuation = state.valuation_result or {}
-    required_axes = ["legal", "technology", "market", "economic", "strategy"]
-    passed = all(valuation.get(axis) for axis in required_axes)
+    axes = valuation.get("axes") or {}
+    required_axes = ["legal", "technology", "market", "economic", "business_fit"]
+    passed = all(axes.get(axis) for axis in required_axes) and "strategy" not in axes
     state.validation_result = {
         "passed": passed,
         "needs_more_evidence": not passed,

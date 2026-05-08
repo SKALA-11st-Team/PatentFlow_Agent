@@ -14,6 +14,8 @@ class PatentWorkflowState(BaseModel):
     query_plan: dict[str, Any] | None = None
     search_queries: list[str] = Field(default_factory=list)
     evidence_bundle: list[dict[str, Any]] = Field(default_factory=list)
+    portfolio_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    portfolio_result: dict[str, Any] | None = None
     valuation_result: dict[str, Any] | None = None
     validation_result: dict[str, Any] | None = None
     supervisor_decision: dict[str, Any] | None = None

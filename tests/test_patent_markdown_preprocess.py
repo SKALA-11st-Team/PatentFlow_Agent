@@ -23,3 +23,29 @@ def test_extracts_split_assignees_and_inventors():
     assert result["claim_stats"]["has_deleted_claims_gap"] is True
     assert not any("possible_missing_assignees" in warning for warning in result["validation"]["warnings"])
     assert not any("possible_missing_inventors" in warning for warning in result["validation"]["warnings"])
+
+
+def test_preprocess_keeps_db_business_and_product_context():
+    result = preprocess_markdown_file(
+        Path(__file__).parent / "fixtures" / "patent_markdown" / "1020230093778.md",
+        db_metadata={
+            "id": 1,
+            "management_number": "P202405001-KR0",
+            "business_area": "AI",
+            "technology_area": "AI 자산운용",
+            "related_product": "투자서비스",
+            "joint_application": 1,
+            "joint_applicant_name": "공동출원사",
+            "status": "등록",
+            "application_date": "2024-08-29",
+            "expected_expiration_date": "2044-08-29",
+        },
+    )
+
+    metadata = result["metadata"]
+    assert metadata["management_number"] == "P202405001-KR0"
+    assert metadata["business_area"] == "AI"
+    assert metadata["technology_area"] == "AI 자산운용"
+    assert metadata["related_product"] == "투자서비스"
+    assert metadata["joint_application"] == 1
+    assert metadata["joint_applicant_name"] == "공동출원사"

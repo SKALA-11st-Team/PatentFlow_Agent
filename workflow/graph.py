@@ -2,6 +2,7 @@ from typing import Any
 
 from langgraph.graph import END, START, StateGraph
 
+from app.config import settings
 from services.observability.langsmith_service import trace
 from workflow.nodes import (
     common_preprocess_node,
@@ -10,6 +11,7 @@ from workflow.nodes import (
     final_merge_node,
     patent_fetch_node,
     patent_resolve_node,
+    portfolio_sibling_node,
     query_rewriting_node,
     summary_node,
     validation_node,
@@ -37,7 +39,7 @@ def _route_after_supervisor(payload: dict[str, Any]) -> str:
     if action in {"summary"}:
         return "summary"
     if action in {"evidence_check", "query_rewriting"}:
-        if action == "query_rewriting" and state.retry_count >= 2:
+        if action == "query_rewriting" and state.retry_count >= settings.max_evidence_search_rounds:
             return "valuation"
         return "query_rewriting"
     if action in {"valuation", "valuation_retry"}:
@@ -53,6 +55,7 @@ def _build_graph() -> Any:
     graph = StateGraph(dict)
     graph.add_node("patent_resolve", lambda payload: _run_node(payload, patent_resolve_node))
     graph.add_node("patent_fetch", lambda payload: _run_node(payload, patent_fetch_node))
+    graph.add_node("portfolio_sibling", lambda payload: _run_node(payload, portfolio_sibling_node))
     graph.add_node("common_preprocess", lambda payload: _run_node(payload, common_preprocess_node))
     graph.add_node("supervisor", lambda payload: _run_node(payload, supervisor_node))
     graph.add_node("summary", lambda payload: _run_node(payload, summary_node))
@@ -65,7 +68,8 @@ def _build_graph() -> Any:
 
     graph.add_edge(START, "patent_resolve")
     graph.add_edge("patent_resolve", "patent_fetch")
-    graph.add_edge("patent_fetch", "common_preprocess")
+    graph.add_edge("patent_fetch", "portfolio_sibling")
+    graph.add_edge("portfolio_sibling", "common_preprocess")
     graph.add_edge("common_preprocess", "supervisor")
     graph.add_edge("summary", "supervisor")
     graph.add_edge("query_rewriting", "evidence_search")

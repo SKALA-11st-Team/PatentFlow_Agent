@@ -181,6 +181,67 @@ def test_query_rewriting_generates_english_gnews_queries():
     assert rewritten["en"] == []
 
 
+def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
+    def fake_llm_rewrite_search_queries(**kwargs):
+        return {
+            "ko": ["금융 데이터 전처리 AI", "기준금리 발표 시장 변동성", "에스케이 주식회사 금융데이터"],
+            "en": ["financial data preprocessing", "market volatility AI"],
+        }, None
+
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.llm_rewrite_search_queries",
+        fake_llm_rewrite_search_queries,
+    )
+
+    rewritten = rewrite_search_queries(
+        {
+            "metadata": {
+                "title": "금융시장 데이터 전처리",
+                "related_product": "MarketCaster",
+            },
+            "sections": {"abstract": "금융 데이터 이상치를 탐지하고 전처리하는 기술"},
+        },
+        use_llm=True,
+    )
+
+    assert len(rewritten["ko"]) <= MAX_SEARCH_QUERIES
+    assert any("MarketCaster" in query for query in rewritten["ko"])
+    assert rewritten["meta"]["product_query_enforced"] is True
+
+
+def test_llm_query_rewriting_includes_owner_and_joint_applicant_queries(monkeypatch):
+    def fake_llm_rewrite_search_queries(**kwargs):
+        return {
+            "ko": ["CMP 패드 자동 적재", "CMP 패드 커팅 에이징 자동화", "CMP 패드 트레이 셔틀"],
+            "en": ["CMP pad automatic loading", "wafer polishing pad handling"],
+        }, None
+
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.llm_rewrite_search_queries",
+        fake_llm_rewrite_search_queries,
+    )
+
+    rewritten = rewrite_search_queries(
+        {
+            "metadata": {
+                "title": "CMP Pad의 자동 적재 시스템",
+                "assignee": ["에스케이 주식회사", "(주)한주하이텍"],
+                "related_product": "CMP Pad Press Cutting, Aging",
+                "joint_application": 1,
+                "joint_applicant_name": "한주반도체",
+            },
+            "sections": {"abstract": "CMP Pad 커팅 및 에이징 공정 자동 적재 기술"},
+        },
+        use_llm=True,
+    )
+
+    assert any("에스케이 주식회사" in query for query in rewritten["ko"])
+    assert any("한주반도체" in query for query in rewritten["ko"])
+    assert any("CMP Pad" in query for query in rewritten["ko"])
+    assert rewritten["meta"]["owner_query_enforced"] is True
+    assert rewritten["meta"]["joint_applicant_query_enforced"] is True
+
+
 def test_english_queries_keep_only_gnews_compatible_queries():
     from services.evidence.external_search_service import enforce_english_queries
 

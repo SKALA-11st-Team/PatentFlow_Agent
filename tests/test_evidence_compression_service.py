@@ -79,3 +79,47 @@ def test_compress_evidence_items_normalizes_news_and_rag_shapes():
     assert rag["compressed_summary"] == "자동차 내수 반등 요인이 제한적이다."
     assert "context" not in rag
     assert "content" not in rag
+
+
+def test_compression_prompt_uses_minimal_patent_context():
+    item = {
+        "evidence_id": "news_1",
+        "source_type": "news",
+        "source": "naver_news",
+        "title": "뉴스",
+        "content": "뉴스 본문",
+    }
+    captured_prompts = []
+
+    def fake_llm(prompt):
+        captured_prompts.append(prompt)
+        return json.dumps(
+            {
+                "is_relevant": True,
+                "related_axes": ["market"],
+                "compressed_summary": "요약",
+                "key_facts": ["사실"],
+            },
+            ensure_ascii=False,
+        )
+
+    compress_evidence_items(
+        [item],
+        preprocessed_patent={
+            "metadata": {"title": "테스트 특허", "title_eng": "Test Patent", "ipc": ["G06Q"]},
+            "sections": {
+                "abstract": "초록",
+                "technical_field": "기술분야",
+                "problem": "문제",
+                "solution": "해결수단",
+            },
+        },
+        llm=fake_llm,
+    )
+
+    payload = json.loads(captured_prompts[0].split("Input JSON:", 1)[1])
+    assert payload["patent"] == {
+        "title": "테스트 특허",
+        "abstract": "초록",
+        "technical_field": "기술분야",
+    }

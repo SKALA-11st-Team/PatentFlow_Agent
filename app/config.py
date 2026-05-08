@@ -25,6 +25,7 @@ class Settings(BaseModel):
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     unified_api_base_url: str = getenv("UNIFIED_API_BASE_URL", "http://127.0.0.1:8000")
     search_query_count: int = int(getenv("SEARCH_QUERY_COUNT", "3"))
+    max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
     pgvector_database_url: str | None = getenv("PGVECTOR_DATABASE_URL") or getenv("DATABASE_URL")
     pgvector_table_name: str = getenv("PGVECTOR_TABLE_NAME", "industry_report_chunks")

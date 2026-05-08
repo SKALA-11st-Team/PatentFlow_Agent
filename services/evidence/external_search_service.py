@@ -36,6 +36,7 @@ def rewrite_search_queries(
     *,
     missing_evidence: list[str] | None = None,
     previous_queries: list[str] | None = None,
+    retry_count: int = 0,
     use_llm: bool = False,
 ) -> dict[str, Any]:
     previous = set(previous_queries or [])
@@ -44,12 +45,14 @@ def rewrite_search_queries(
 
     rewrite_source = "rule_based"
     llm_error: str | None = None
+    product_query_enforced = False
 
     if use_llm:
         llm_result, llm_error = llm_rewrite_search_queries(
             preprocessed_patent=preprocessed_patent,
             missing_evidence=missing_evidence or [],
             previous_queries=previous_queries or [],
+            retry_count=retry_count,
         )
         if llm_result:
             rewritten_ko = [query for query in compact_queries(llm_result.get("ko", []))[:MAX_SEARCH_QUERIES] if query not in previous]
@@ -57,6 +60,19 @@ def rewrite_search_queries(
             rewrite_source = "llm"
         else:
             rewrite_source = "fallback_empty"
+
+        rewritten_ko, product_query_enforced = ensure_related_product_query(
+            rewritten_ko,
+            preprocessed_patent,
+            previous,
+        )
+        rewritten_ko, company_query_meta = ensure_applicant_context_queries(
+            rewritten_ko,
+            preprocessed_patent,
+            previous,
+        )
+    else:
+        company_query_meta = {"owner_query_enforced": False, "joint_applicant_query_enforced": False}
 
     rewritten_en = enforce_english_queries(
         rewritten_en,
@@ -70,6 +86,8 @@ def rewrite_search_queries(
         "meta": {
             "rewrite_source": rewrite_source,
             "llm_error": llm_error,
+            "product_query_enforced": product_query_enforced,
+            **company_query_meta,
         },
     }
 
@@ -249,6 +267,143 @@ def compact_queries(queries: list[str]) -> list[str]:
     return result
 
 
+def ensure_related_product_query(
+    queries: list[str],
+    preprocessed_patent: dict[str, Any],
+    previous_queries: set[str],
+) -> tuple[list[str], bool]:
+    product = extract_related_product(preprocessed_patent)
+    if not product or any(product in query for query in queries):
+        return queries, False
+
+    candidates = [
+        f"{product} 시장 동향",
+        f"{product} 기술 적용",
+        f"{product} 기업 동향",
+        product,
+    ]
+    product_query = next(
+        (
+            query
+            for query in candidates
+            if query not in previous_queries and query not in queries
+        ),
+        None,
+    )
+    if not product_query:
+        return queries, False
+
+    if len(queries) < MAX_SEARCH_QUERIES:
+        return compact_queries([*queries, product_query])[:MAX_SEARCH_QUERIES], True
+    return compact_queries([*queries[: max(MAX_SEARCH_QUERIES - 1, 0)], product_query])[:MAX_SEARCH_QUERIES], True
+
+
+def ensure_applicant_context_queries(
+    queries: list[str],
+    preprocessed_patent: dict[str, Any],
+    previous_queries: set[str],
+) -> tuple[list[str], dict[str, bool]]:
+    product = extract_related_product(preprocessed_patent)
+    owner, joint_applicant = extract_applicant_context(preprocessed_patent)
+    required: list[tuple[str, str]] = []
+    if owner:
+        required.append(("owner_query_enforced", build_company_query(owner, product, preprocessed_patent)))
+    if joint_applicant:
+        required.append(("joint_applicant_query_enforced", build_company_query(joint_applicant, product, preprocessed_patent)))
+
+    meta = {"owner_query_enforced": False, "joint_applicant_query_enforced": False}
+    result = compact_queries(queries)
+    additions: list[tuple[str, str]] = []
+    for key, query in required:
+        if not query or query in previous_queries:
+            continue
+        company = owner if key == "owner_query_enforced" else joint_applicant
+        if company and any(company in existing for existing in result):
+            continue
+        additions.append((key, query))
+
+    if not additions or MAX_SEARCH_QUERIES <= 0:
+        return result[:MAX_SEARCH_QUERIES], meta
+
+    while len(result) > max(MAX_SEARCH_QUERIES - len(additions), 0):
+        result.pop()
+    result = compact_queries([*result, *(query for _, query in additions)])[:MAX_SEARCH_QUERIES]
+    for key, query in additions:
+        meta[key] = any(query == existing for existing in result)
+    return result, meta
+
+
+def extract_applicant_context(preprocessed_patent: dict[str, Any]) -> tuple[str, str]:
+    metadata = preprocessed_patent.get("metadata") or {}
+    owner = normalize_company_name(first_non_empty(metadata.get("assignee")))
+    if not owner:
+        for key in ("applicant_name", "applicant", "right_holder", "owner", "company_name"):
+            owner = normalize_company_name(metadata.get(key))
+            if owner:
+                break
+    joint_applicant = ""
+    if is_truthy_joint_application(metadata.get("joint_application")):
+        joint_applicant = normalize_company_name(metadata.get("joint_applicant_name"))
+    return owner, joint_applicant
+
+
+def build_company_query(company: str, product: str, preprocessed_patent: dict[str, Any]) -> str:
+    if product:
+        return f"{company} {product}"
+    metadata = preprocessed_patent.get("metadata") or {}
+    for key in ("technology_area", "business_area", "title_final", "title"):
+        value = normalize_related_product(metadata.get(key))
+        if value:
+            return f"{company} {value}"
+    return company
+
+
+def first_non_empty(value: Any) -> Any:
+    if isinstance(value, list):
+        return next((item for item in value if str(item or "").strip()), "")
+    return value
+
+
+def normalize_company_name(value: Any) -> str:
+    company = " ".join(str(first_non_empty(value) or "").split())
+    if not company:
+        return ""
+    if company.casefold() in {"n/a", "na", "none", "null", "-", "기타", "해당사항없음", "해당 사항 없음"}:
+        return ""
+    return company
+
+
+def is_truthy_joint_application(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    normalized = str(value or "").strip().casefold()
+    return normalized in {"1", "true", "y", "yes", "공동", "공동출원"}
+
+
+def extract_related_product(preprocessed_patent: dict[str, Any]) -> str:
+    metadata = preprocessed_patent.get("metadata") or {}
+    for source in (metadata, preprocessed_patent):
+        if not isinstance(source, dict):
+            continue
+        for key in ("related_product", "related_products", "product", "product_name", "service_name"):
+            value = source.get(key)
+            if isinstance(value, list):
+                value = next((item for item in value if str(item).strip()), "")
+            product = normalize_related_product(value)
+            if product:
+                return product
+    return ""
+
+
+def normalize_related_product(value: Any) -> str:
+    product = " ".join(str(value or "").split())
+    if not product:
+        return ""
+    if product.casefold() in {"n/a", "na", "none", "null", "-", "기타", "해당사항없음", "해당 사항 없음"}:
+        return ""
+    return product
+
+
 def request_json(
     base_url: str,
     path: str,
@@ -259,6 +414,7 @@ def request_json(
     url = f"{base_url.rstrip('/')}{path}"
     last_error: requests.RequestException | None = None
     for attempt in range(1, API_REQUEST_MAX_ATTEMPTS + 1):
+        time.sleep(0.5)
         try:
             response = requests.get(url, params=params, timeout=timeout)
             response.raise_for_status()
@@ -306,8 +462,9 @@ def llm_rewrite_search_queries(
     preprocessed_patent: dict[str, Any],
     missing_evidence: list[str],
     previous_queries: list[str],
+    retry_count: int = 0,
 ) -> tuple[dict[str, list[str]] | None, str | None]:
-    prompt_template = load_prompt("query_rewriting.md").replace(
+    prompt_template = load_prompt("evidence/query_rewriting.md").replace(
         "{{search_query_count}}",
         str(MAX_SEARCH_QUERIES),
     )
@@ -321,6 +478,7 @@ def llm_rewrite_search_queries(
         },
         "missing_evidence": missing_evidence,
         "previous_queries": previous_queries,
+        "retry_count": retry_count,
     }
     prompt = f"{prompt_template.strip()}\n\n입력 데이터(JSON):\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
 

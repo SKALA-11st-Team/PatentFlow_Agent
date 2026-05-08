@@ -97,7 +97,7 @@ def compress_single_evidence(
 
 
 def build_compression_prompt(item: dict[str, Any], *, preprocessed_patent: dict[str, Any]) -> str:
-    prompt_template = load_prompt("evidence_compression.md").strip()
+    prompt_template = load_prompt("evidence/evidence_compression.md").strip()
     payload = {
         "patent": patent_prompt_payload(preprocessed_patent),
         "evidence": evidence_prompt_payload(item),
@@ -110,12 +110,8 @@ def patent_prompt_payload(preprocessed_patent: dict[str, Any]) -> dict[str, Any]
     sections = preprocessed_patent.get("sections") or {}
     return {
         "title": metadata.get("title"),
-        "title_eng": metadata.get("title_eng"),
-        "ipc": metadata.get("ipc"),
         "abstract": sections.get("abstract"),
         "technical_field": sections.get("technical_field"),
-        "problem": sections.get("problem"),
-        "solution": sections.get("solution"),
     }
 
 

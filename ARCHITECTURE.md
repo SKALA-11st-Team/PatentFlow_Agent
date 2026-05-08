@@ -34,29 +34,20 @@ final_v1/
 
 ## Runtime Flow
 
-현재 구현은 Agent 전체 그래프의 앞부분을 먼저 안정화하는 단계다.
+현재 구현된 전체 흐름은 다음과 같다.
 
 ```text
 사용자 특허 선택
 → patent_resolve_node
 → patent_fetch_node
+→ portfolio_sibling_node
 → common_preprocess_node
 → supervisor_node
-```
-
-목표 전체 흐름은 다음과 같다.
-
-```text
-특허 선택
-→ 특허 식별
-→ 특허 데이터 수집
-→ 공통 전처리
 → 요약 Agent
-→ 검색 계획 Node
 → 검색어 재작성 Node
 → Web/API 검색 Node
-→ 산업 리포트 RAG 검색 Node
-→ 근거 병합 Node
+→ 뉴스 필터링 / 산업 리포트 RAG 검색 / 근거 병합
+→ evidence compression Node
 → Supervisor 검증
 → 가치평가 Agent
 → Validation Node
@@ -102,7 +93,7 @@ Agent orchestration layer.
 LLM-based reasoning modules.
 
 - `summary.py`: 비전문가와 사업부서가 이해할 수 있는 특허 요약을 생성한다.
-- `valuation.py`: 권리성, 기술성, 시장성, 라이프사이클 경제성, 전략 적합성 평가를 수행한다.
+- `valuation.py`: 권리성, 기술성, 시장성, 라이프사이클 경제성, 사업 연계성 평가와 최종 Markdown 보고서를 생성한다.
 
 앞으로 Agent 개발 시 각 Agent는 전체 state를 통째로 문자열로 받지 않는다. `preprocessed_patent["agent_inputs"]`, `evidence_bundle`, 필요한 metadata만 adapter/render 단계에서 프롬프트로 변환해 호출한다.
 
@@ -112,6 +103,7 @@ External integrations and reusable domain services.
 
 - `patent/kipris_patent_service.py`: 로컬 `data/patents.sqlite3`에서 특허를 선택하고, KIPRIS API/PDF 데이터를 수집한다.
 - `patent/markdown_preprocess_service.py`: OpenDataLoader markdown과 KIPRIS API 결과를 Agent 입력용 구조화 객체로 만든다.
+- `patent/portfolio_service.py`: 동일 제품군 sibling 특허를 로컬 DB에서 찾고, KIPRIS API만으로 보강해 포트폴리오 evidence를 생성한다.
 - `evidence/external_search_service.py`: query rewriting 결과를 받아 Naver/GNews/DART/KIPRIS 검색을 실행하고 evidence로 병합한다.
 - `evidence/api_normalizers.py`: Naver News, GNews, DART, KIPRIS 검색 결과처럼 서로 다른 API 응답을 공통 evidence shape로 변환한다.
 - `evidence/news_article_extraction_service.py`: 뉴스 URL 본문을 가져와 snippet evidence를 가능한 경우 full text evidence로 보강한다.
@@ -171,13 +163,20 @@ Typed data models shared across workflow, agents, and services.
 
 Prompt templates used by agents and LLM-based nodes.
 
+현재 prompt는 역할별 하위 폴더로 관리한다.
+
+- `evidence/`: query rewriting, evidence compression, portfolio sibling summary
+- `summary/`: 특허 요약 보고서
+- `valuation/`: 공통 점수 기준, 5개 평가축, 최종 보고서
+- `supervisor/`: 단계별 supervisor check
+
 Supervisor는 하나지만, 단계별 판단 기준이 다르므로 prompt는 분리한다.
 
-- `supervisor_patent_check.md`: 특허 수집/전처리 결과 검증
-- `supervisor_summary_check.md`: 요약 결과 검증
-- `supervisor_evidence_check.md`: 검색/RAG 근거 충분성 검증
-- `supervisor_valuation_check.md`: 가치평가 결과 검증
-- `supervisor_final_check.md`: 최종 병합 전 검증
+- `supervisor/supervisor_patent_check.md`: 특허 수집/전처리 결과 검증
+- `supervisor/supervisor_summary_check.md`: 요약 결과 검증
+- `supervisor/supervisor_evidence_check.md`: 검색/RAG 근거 충분성 검증
+- `supervisor/supervisor_valuation_check.md`: 가치평가 결과 검증
+- `supervisor/supervisor_final_check.md`: 최종 병합 전 검증
 
 Rule-based check를 먼저 실행하고, 의미 판단이 필요한 부분만 LLM prompt로 넘긴다.
 
@@ -200,8 +199,11 @@ artifacts/runs/<run_id>/
 ├── preprocessed_patents/
 ├── api_evidence/
 ├── filtered_evidence/
+├── portfolio_evidence/
 ├── industry_rag/
 ├── compressed_evidence/
+├── valuation_inputs/
+├── summary/
 └── final/
 ```
 
@@ -209,9 +211,23 @@ artifacts/runs/<run_id>/
 - `preprocessed_patents/`: Agent 입력용 특허 JSON
 - `api_evidence/`: API별 정규화 evidence JSON
 - `filtered_evidence/`: rule-based 필터를 통과한 뉴스와 RAG evidence JSON
+- `portfolio_evidence/`: 동일 제품군 sibling 특허의 KIPRIS API 기반 포트폴리오 evidence JSON
 - `industry_rag/`: pgvector 검색 결과 JSON
 - `compressed_evidence/`: valuation 입력용 LLM 압축 evidence JSON
-- `final/`: 최종 보고서 JSON
+- `valuation_inputs/`: 5개 평가축과 최종 보고서 Agent에 전달된 입력 JSON
+- `summary/`: 요약 Agent 결과 JSON/Markdown
+- `final/`: 최종 가치평가 보고서 JSON/Markdown
+
+Batch 실행으로 모은 데모 보고서는 다음 위치에 저장한다. `artifacts/`는 전체가 `.gitignore` 대상이다.
+
+```text
+artifacts/batches/<batch_name>/
+├── summary_reports/
+├── valuation_reports/
+├── logs/
+├── manifest.json
+└── manifest.txt
+```
 
 ### tests/
 
@@ -222,6 +238,7 @@ Focused regression tests.
 - `test_patent_markdown_preprocess.py`: 특허 markdown/API 전처리
 - `test_industry_vector_store.py`: pgvector VectorDB build/search
 - `test_valuation.py`: 가치평가 구조
+- `test_api_server.py`: unified API error propagation
 
 ## Patent Data Strategy
 
@@ -248,7 +265,7 @@ Focused regression tests.
   "agent_inputs": {
     "summary": {},
     "valuation": {},
-    "search_planning": {}
+    "query_rewriting": {}
   },
   "validation": {}
 }
@@ -268,6 +285,7 @@ API raw response
 → 공통 evidence shape
 → artifacts/runs/<run_id>/api_evidence/에 source별 JSON 저장
 → rule-based news filter와 RAG score threshold 적용
+→ portfolio sibling branch에서 동일 제품군 특허를 KIPRIS API 기반으로 요약
 → LLM evidence compression 단계에서 valuation 입력용 key facts로 압축
 → Agent 입력
 ```
@@ -291,7 +309,7 @@ API raw response
 }
 ```
 
-`related_axis`는 검색 API 수집 단계에서 채우지 않는다. 어떤 근거가 권리성, 기술성, 시장성, 전략성 중 어디에 연결되는지는 valuation 단계에서 evidence 내용을 보고 판단한다.
+`related_axis`는 검색 API 수집 단계에서 채우지 않는다. 어떤 근거가 권리성, 기술성, 시장성, 라이프사이클 경제성, 사업 연계성 중 어디에 연결되는지는 valuation 단계에서 evidence 내용을 보고 판단한다.
 
 날짜는 두 종류를 구분한다.
 
@@ -304,11 +322,9 @@ API별 특수 필드는 공통 필드로 억지로 끌어올리지 않고 `metad
 
 Web/API 검색 근거와 산업 RAG 근거는 `EvidenceMerge` 단계에서 하나의 `evidence_bundle`로 합쳐지고, 가치평가 Agent는 평가축별로 `evidence_ids`를 연결해야 한다.
 
-## Search And Competitor Strategy
+## Search And Evidence Strategy
 
-검색어 재작성 Agent와 경쟁사 후보 추론 Agent는 아직 확정하지 않는다. 대신 downstream 구조가 흔들리지 않도록 아래 interface를 먼저 고정한다.
-
-검색어는 QueryRewriting Agent가 `prompts/query_rewriting.md`를 기반으로 생성한다.
+검색어는 QueryRewriting Agent가 `prompts/evidence/query_rewriting.md`를 기반으로 생성한다.
 
 출력 구조는 다음과 같다.
 
@@ -321,19 +337,9 @@ Web/API 검색 근거와 산업 RAG 근거는 `EvidenceMerge` 단계에서 하�
 
 `ko`는 Naver News, `en`은 GNews 검색에 사용한다.
 
-경쟁사는 처음부터 확정값으로 다루지 않는다. 초기에는 `competitor_candidates`로만 수집한다.
+관련제품, 권리자, 공동출원인 metadata가 있으면 검색어 후보에 반영한다. 재검색 loop에서는 `previous_queries`를 전달해 동일 검색어 반복을 줄인다.
 
-```json
-{
-  "company_name": "예시회사",
-  "reason": "동일 시장에서 유사 문제를 해결하는 제품 근거 발견",
-  "source_evidence_ids": ["news_001", "web_003"],
-  "confidence": 0.62,
-  "status": "candidate"
-}
-```
-
-경쟁사 후보의 기준은 “동일/인접 기술을 제품화했거나 동일 시장에서 유사 문제를 해결하는 기업”이다. 후보 확정 여부는 근거 병합 후 Supervisor 또는 별도 competitor inference Agent가 판단한다.
+GNews/Naver/KIPRIS 호출은 unified API 서버를 통해 실행한다. 외부 API의 HTTP error가 status code를 제공하면 가능한 한 원 status code를 유지하고, 일시 오류로 볼 수 있는 502/503/504는 짧은 backoff로 재시도한다.
 
 ## Supervisor Strategy
 
@@ -353,54 +359,62 @@ final_check
 - 근거의 의미적 충분성, 점수와 rationale의 일관성, 사업부서용 요약 품질 같은 판단은 LLM Supervisor prompt로 검토한다.
 - Supervisor는 결과를 직접 고치지 않고 `next_action`을 결정한다.
 
-## Implementation Roadmap
+## Current Implementation
 
-다음 Agent 개발 순서는 아래가 적절하다.
+현재 실행 흐름은 아래 순서다.
 
-1. `summary.py`: `preprocessed_patent["agent_inputs"]["summary"]` 기반 요약 생성
-2. `search_planning` Node: 특허 metadata, sections, claims 기반 검색 계획 생성
-3. `query_rewriting` Node: Web/API 검색어 생성
-4. `industry_rag_query` Node: pgvector VectorDB에서 산업 근거 검색
-5. `evidence_merge` Node: Web/API/RAG 근거 통합 및 `evidence_id` 부여
-6. `valuation.py`: 5개 평가축별 점수, 근거, 리스크, 추천 생성
-7. `validation` Node: valuation 결과와 evidence 연결 검증
-8. `final_merge_node`: 요약과 검증된 가치평가를 최종 보고서로 병합
+1. `patent_fetch_node`: 로컬 DB, KIPRIS API, KIPRIS PDF를 수집한다.
+2. `portfolio_sibling_node`: 동일 제품군/관리번호 batch 기반 유사·보완 특허군 evidence를 만든다.
+3. `common_preprocess_node`: KIPRIS API/PDF/DB metadata를 Agent 입력용 구조로 정리한다.
+4. `summary.py`: 특허 요약 Markdown을 생성한다.
+5. `query_rewriting_node`: Naver/GNews 검색어를 생성한다.
+6. `evidence_search_node`: 외부 API, 뉴스 필터, 산업 RAG, filtered evidence 저장을 수행한다.
+7. `evidence_compression_node`: valuation 입력용 evidence를 압축하고 portfolio evidence를 합친다.
+8. `valuation.py`: 5개 평가축별 LLM 평가와 최종 Markdown 보고서를 생성한다.
+9. `validation_node`: valuation 결과와 필수 축을 검증한다.
+10. `final_merge_node`: summary, valuation, evidence를 최종 state로 병합한다.
 
 ## Run Commands
 
 특허 워크플로우 실행:
 
 ```bash
-python -m app.main --patent-id 1 --collect-kipris-api
+venv/bin/python -m app.main --patent-id 1
 ```
 
-KIPRIS PDF까지 수집:
+관리번호로 실행:
 
 ```bash
-python -m app.main --patent-id 1 --collect-kipris-api --collect-pdf
+venv/bin/python -m app.main P202405001-KR0
+```
+
+KR 특허 20건 batch 보고서 생성:
+
+```bash
+venv/bin/python scripts/generate_kr20_reports.py --count 20
 ```
 
 산업 리포트 chunk 생성:
 
 ```bash
-python -m rag.industry_report_chunker
+venv/bin/python -m rag.industry_report_chunker
 ```
 
 산업 리포트 pgvector table 생성:
 
 ```bash
 export PGVECTOR_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/patent_rag"
-python -m rag.industry_vector_store
+venv/bin/python -m rag.industry_vector_store
 ```
 
 pgvector 검색 테스트:
 
 ```bash
-python -m rag.industry_vector_store --query "조선 LNG 운반선 수요 전망" --industry 조선 --top-k 3
+venv/bin/python -m rag.industry_vector_store --query "조선 LNG 운반선 수요 전망" --industry 조선 --top-k 3
 ```
 
 테스트:
 
 ```bash
-PYTHONPATH=. pytest tests
+venv/bin/python -m pytest tests
 ```

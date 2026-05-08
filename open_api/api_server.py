@@ -368,6 +368,12 @@ def gnews_search(
         res = requests.get("https://gnews.io/api/v4/search", params=params, timeout=15)
         res.raise_for_status()
         return res.json()
+    except requests.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(
+            status_code=status_code,
+            detail=f"GNews 요청 실패: {_sanitize_external_error(exc)}",
+        ) from exc
     except requests.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"GNews 요청 실패: {_sanitize_external_error(exc)}") from exc
 

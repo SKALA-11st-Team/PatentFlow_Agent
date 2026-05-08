@@ -157,7 +157,7 @@ def download_and_parse_patent_pdf(
 
     selected = _select_fulltext_pdf(
         client,
-        kipris_application_number,
+        fulltext_application_number_candidates(application_number),
         prefer_announcement=prefer_announcement,
     )
     pdf_path = _download_pdf_url(
@@ -172,6 +172,7 @@ def download_and_parse_patent_pdf(
     return {
         "application_number": application_number,
         "kipris_application_number": kipris_application_number,
+        "selected_application_number": selected["application_number"],
         "selected_type": selected["selected_type"],
         "doc_name": selected.get("doc_name"),
         "source_path": selected["path"],
@@ -303,40 +304,43 @@ def _int_or_none(value: Any) -> int | None:
 
 def _select_fulltext_pdf(
     client: Any,
-    application_number: str,
+    application_numbers: list[str],
     *,
     prefer_announcement: bool,
 ) -> dict[str, str | None]:
     errors: list[str] = []
     empty_responses: list[str] = []
-    if prefer_announcement:
-        try:
-            announcement = client.announcement_fulltext_pdf_path(application_number)
-            if announcement.path:
-                return {
-                    "selected_type": "ANNOUNCEMENT_FULLTEXT_PDF",
-                    "doc_name": announcement.doc_name,
-                    "path": announcement.path,
-                }
-            empty_responses.append(_summarize_document_response("announcement", announcement.raw))
-        except Exception as exc:
-            errors.append(f"announcement: {exc}")
+    for application_number in application_numbers:
+        if prefer_announcement:
+            try:
+                announcement = client.announcement_fulltext_pdf_path(application_number)
+                if announcement.path:
+                    return {
+                        "application_number": application_number,
+                        "selected_type": "ANNOUNCEMENT_FULLTEXT_PDF",
+                        "doc_name": announcement.doc_name,
+                        "path": announcement.path,
+                    }
+                empty_responses.append(_summarize_document_response(f"announcement:{application_number}", announcement.raw))
+            except Exception as exc:
+                errors.append(f"announcement:{application_number}: {exc}")
 
-    try:
-        publication = client.publication_fulltext_pdf_path(application_number)
-        if publication.path:
-            return {
-                "selected_type": "PUBLICATION_FULLTEXT_PDF",
-                "doc_name": publication.doc_name,
-                "path": publication.path,
-            }
-        empty_responses.append(_summarize_document_response("publication", publication.raw))
-    except Exception as exc:
-        errors.append(f"publication: {exc}")
+        try:
+            publication = client.publication_fulltext_pdf_path(application_number)
+            if publication.path:
+                return {
+                    "application_number": application_number,
+                    "selected_type": "PUBLICATION_FULLTEXT_PDF",
+                    "doc_name": publication.doc_name,
+                    "path": publication.path,
+                }
+            empty_responses.append(_summarize_document_response(f"publication:{application_number}", publication.raw))
+        except Exception as exc:
+            errors.append(f"publication:{application_number}: {exc}")
 
     raise RuntimeError(
         "Could not find KIPRIS fulltext PDF path. "
-        f"application_number={application_number}, errors={errors}, responses={empty_responses}"
+        f"application_numbers={application_numbers}, errors={errors}, responses={empty_responses}"
     )
 
 
@@ -367,6 +371,18 @@ def _safe_filename(value: str) -> str:
 
 def normalize_kipris_application_number(application_number: str) -> str:
     return re.sub(r"\D+", "", application_number)
+
+
+def fulltext_application_number_candidates(application_number: str) -> list[str]:
+    candidates = [
+        normalize_kipris_application_number(application_number),
+        " ".join(str(application_number or "").split()),
+    ]
+    result = []
+    for candidate in candidates:
+        if candidate and candidate not in result:
+            result.append(candidate)
+    return result
 
 
 def _summarize_document_response(label: str, raw: dict[str, Any]) -> str:
