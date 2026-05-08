@@ -95,6 +95,8 @@ LLM-based reasoning modules.
 - `summary.py`: 비전문가와 사업부서가 이해할 수 있는 특허 요약을 생성한다.
 - `valuation.py`: 권리성, 기술성, 시장성, 라이프사이클 경제성, 사업 연계성 평가와 최종 Markdown 보고서를 생성한다.
 
+요약 보고서, query rewriting, portfolio sibling 요약, 가치평가 5개 축, 최종 가치평가 보고서는 LLM-only로 동작한다. LLM이 비활성화되거나 응답이 없거나 필수 JSON 필드가 누락되면 deterministic fallback 결과를 만들지 않고 실패시킨다.
+
 앞으로 Agent 개발 시 각 Agent는 전체 state를 통째로 문자열로 받지 않는다. `preprocessed_patent["agent_inputs"]`, `evidence_bundle`, 필요한 metadata만 adapter/render 단계에서 프롬프트로 변환해 호출한다.
 
 ### services/

@@ -28,22 +28,19 @@ def run_summary_agent(state: PatentWorkflowState) -> PatentWorkflowState:
         ],
         "notes": [],
     }
-    summary_body = run_summary_llm_if_enabled(state, summary_result) or build_fallback_summary_body_markdown(
-        summary_result,
-        patent,
-    )
+    summary_body = run_summary_llm_required(state, summary_result)
     summary_result["summary_markdown"] = build_complete_summary_markdown(patent, summary_body)
     state.summary_result = summary_result
     state.current_stage = "summary_check"
     return state
 
 
-def run_summary_llm_if_enabled(state: PatentWorkflowState, summary_result: dict[str, Any]) -> str | None:
+def run_summary_llm_required(state: PatentWorkflowState, summary_result: dict[str, Any]) -> str:
     if state.user_input.get("use_llm_summary", True) is False:
-        return None
+        raise RuntimeError("LLM summary is required, but use_llm_summary is disabled.")
     markdown = call_llm(build_summary_prompt(state=state, summary_result=summary_result)).strip()
     if not markdown:
-        raise ValueError("Summary LLM response was empty")
+        raise RuntimeError("LLM summary response was empty.")
     return markdown
 
 
@@ -112,36 +109,6 @@ def build_summary_basic_info_markdown(patent: dict[str, Any]) -> str:
     ]
     for label, value in rows:
         lines.append(f"| {label} | {normalize_markdown_table_text(value) or 'N/A'} |")
-    return "\n".join(lines)
-
-
-def build_fallback_summary_body_markdown(summary_result: dict[str, Any], patent: dict[str, Any]) -> str:
-    metadata = patent.get("metadata") or {}
-    sections = patent.get("sections") or {}
-    claim_stats = patent.get("claim_stats") or {}
-    lines = [
-        "## 한 줄 요약",
-        "",
-        summary_result.get("plain_summary") or "정보 부족 있음",
-        "",
-        "## 핵심 내용",
-        "",
-        "### 핵심 포인트",
-        "",
-    ]
-    for point in summary_result.get("key_points", []):
-        lines.append(f"- {point}")
-    lines.extend(
-        [
-            f"- 활성 청구항 수: {claim_stats.get('active_claim_count') or 'N/A'}",
-            "",
-            "### 기술 내용",
-            "",
-            f"- 해결 과제: {sections.get('problem') or '추가 확인 필요'}",
-            f"- 해결 수단: {sections.get('solution') or '추가 확인 필요'}",
-            f"- 기대 효과: {sections.get('effect') or '추가 확인 필요'}",
-        ]
-    )
     return "\n".join(lines)
 
 

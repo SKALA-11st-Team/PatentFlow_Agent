@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 import json
 from pathlib import Path
 from typing import Any
@@ -23,57 +22,53 @@ AXIS_LABELS = {
     "business_fit": "사업 연계성",
 }
 
-BASE_AXIS_SCORES = {
-    "legal": 68,
-    "technology": 70,
-    "market": 64,
-    "economic": 62,
-    "business_fit": 58,
-}
-
 
 @trace(name="valuation_agent", run_type="chain")
 def run_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
+    if state.user_input.get("use_llm_valuation", True) is False:
+        raise RuntimeError("LLM valuation is required, but use_llm_valuation is disabled.")
+    if state.user_input.get("use_llm_final_report", True) is False:
+        raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
+
     axes: dict[str, dict[str, Any]] = {}
     for axis in VALUATION_AXES:
         evidence = select_axis_evidence(axis, state)
-        axes[axis] = run_axis_llm_if_enabled(axis, state=state, evidence=evidence) or evaluate_axis(
-            axis,
-            state=state,
-            evidence=evidence,
-            prior_axes=axes,
-        )
+        axes[axis] = run_axis_llm_required(axis, state=state, evidence=evidence)
 
     state.valuation_result = build_final_valuation_result(axes, state=state)
     state.current_stage = "valuation_check"
     return state
 
 
-def run_axis_llm_if_enabled(
+def run_axis_llm_required(
     axis: str,
     *,
     state: PatentWorkflowState,
     evidence: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    if state.user_input.get("use_llm_valuation", True) is False:
-        return None
+) -> dict[str, Any]:
     raw = call_llm(build_axis_prompt(axis, state=state, evidence=evidence))
     parsed = parse_json_object(raw)
     if not parsed:
-        raise ValueError(f"{axis} valuation LLM response was not valid JSON")
+        raise RuntimeError(f"LLM valuation response for {axis} was not valid JSON.")
     return normalize_axis_llm_result(axis, parsed, evidence=evidence)
 
 
 def build_axis_prompt(axis: str, *, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> str:
     common_template = load_prompt("valuation/common_valuation.md").strip()
     template = load_prompt(f"valuation/valuation_{axis}.md").strip()
-    payload = build_axis_input_payload(state=state, evidence=evidence)
+    payload = build_axis_input_payload(axis=axis, state=state, evidence=evidence)
     save_valuation_input_payload(state, f"{axis}_input", payload)
     return f"{common_template}\n\n{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
 
 
-def build_axis_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+def build_axis_input_payload(
+    *,
+    state: PatentWorkflowState,
+    evidence: list[dict[str, Any]],
+    axis: str | None = None,
+) -> dict[str, Any]:
     representative_claims = valuation_representative_claims(state)
+    full_claims = valuation_claims(state) if axis == "legal" else []
     claim_stats = ((state.kipris_api_data or {}).get("claim_stats") or {})
     return {
         "patent": {
@@ -81,9 +76,11 @@ def build_axis_input_payload(*, state: PatentWorkflowState, evidence: list[dict[
             "kipris_metadata": ((state.kipris_api_data or {}).get("metadata") or {}),
             "claim_stats": claim_stats,
             "representative_claims": representative_claims,
+            "claims": full_claims,
             "claim_availability": {
                 "claim_stats_provided": bool(claim_stats),
                 "representative_claims_provided": bool(representative_claims),
+                "full_claims_provided": bool(full_claims),
             },
         },
         "summary_result": state.summary_result,
@@ -91,13 +88,28 @@ def build_axis_input_payload(*, state: PatentWorkflowState, evidence: list[dict[
     }
 
 
-def valuation_representative_claims(state: PatentWorkflowState, *, limit: int = 3, text_limit: int = 1500) -> list[dict[str, Any]]:
+def valuation_claims(state: PatentWorkflowState) -> list[dict[str, Any]]:
     claims = []
     preprocessed = state.preprocessed_patent or {}
     if isinstance(preprocessed.get("claims"), list):
         claims = preprocessed["claims"]
     elif isinstance((state.kipris_api_data or {}).get("claims"), list):
         claims = (state.kipris_api_data or {})["claims"]
+
+    return [
+        {
+            "claim_no": claim.get("claim_no"),
+            "is_independent": claim.get("is_independent"),
+            "dependency": claim.get("dependency"),
+            "text": normalize_text(claim.get("text")),
+        }
+        for claim in claims
+        if claim.get("text")
+    ]
+
+
+def valuation_representative_claims(state: PatentWorkflowState, *, limit: int = 3, text_limit: int = 1500) -> list[dict[str, Any]]:
+    claims = valuation_claims(state)
 
     selected = [claim for claim in claims if claim.get("is_independent") and claim.get("text")]
     if not selected:
@@ -140,17 +152,21 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         for evidence_id in normalize_list(parsed.get("evidence_ids"))
         if evidence_id in known_evidence_ids
     ]
-    score = max(0, min(100, int(parsed.get("score") or BASE_AXIS_SCORES[axis])))
+    required_fields = ["score", "grade", "rationale", "confidence"]
+    missing_fields = [field for field in required_fields if parsed.get(field) in (None, "", [])]
+    if missing_fields:
+        raise RuntimeError(f"LLM valuation response for {axis} is missing: {', '.join(missing_fields)}.")
+    score = max(0, min(100, int(parsed["score"])))
     return {
         "axis": axis,
         "label": AXIS_LABELS[axis],
         "score": score,
-        "grade": normalize_text(parsed.get("grade")) or score_to_grade(score),
-        "rationale": normalize_text(parsed.get("rationale")) or f"{AXIS_LABELS[axis]} 축 LLM 평가 결과입니다.",
+        "grade": normalize_text(parsed.get("grade")),
+        "rationale": normalize_text(parsed.get("rationale")),
         "evidence_ids": evidence_ids,
-        "risk_factors": normalize_list(parsed.get("risk_factors")) or axis_risk_factors(axis, evidence=evidence),
+        "risk_factors": normalize_list(parsed.get("risk_factors")),
         "missing_information": normalize_list(parsed.get("missing_information")),
-        "confidence": max(0.0, min(1.0, float(parsed.get("confidence") or 0.5))),
+        "confidence": max(0.0, min(1.0, float(parsed["confidence"]))),
     }
 
 
@@ -190,19 +206,19 @@ def select_by_types_or_axes(
 def select_business_fit_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     keywords = business_fit_keywords(state)
     direct_matches = []
-    fallback = []
+    secondary_matches = []
     for item in items:
         source_type = item.get("source_type")
         if source_type in {"company_disclosure", "portfolio_context"}:
-            fallback.append(item)
+            secondary_matches.append(item)
         if source_type != "news":
             continue
         text = evidence_text(item)
         if any(keyword and keyword in text for keyword in keywords):
             direct_matches.append(item)
         else:
-            fallback.append(item)
-    return [*direct_matches, *fallback][:5]
+            secondary_matches.append(item)
+    return [*direct_matches, *secondary_matches][:5]
 
 
 def business_fit_keywords(state: PatentWorkflowState) -> list[str]:
@@ -222,137 +238,6 @@ def business_fit_keywords(state: PatentWorkflowState) -> list[str]:
     if isinstance(company_context, dict):
         raw_keywords.extend([company_context.get("company_name"), company_context.get("product_name")])
     return [normalize_text(keyword) for keyword in raw_keywords if normalize_text(keyword)]
-
-
-def evaluate_axis(
-    axis: str,
-    *,
-    state: PatentWorkflowState,
-    evidence: list[dict[str, Any]],
-    prior_axes: dict[str, dict[str, Any]],
-) -> dict[str, Any]:
-    patent = state.patent_structured or {}
-    score = axis_score(axis, state=state, evidence=evidence, prior_axes=prior_axes)
-    missing_information = axis_missing_information(axis, state=state, evidence=evidence)
-    confidence = axis_confidence(axis, evidence=evidence, missing_information=missing_information)
-    return {
-        "axis": axis,
-        "label": AXIS_LABELS[axis],
-        "score": score,
-        "grade": score_to_grade(score),
-        "rationale": axis_rationale(axis, patent=patent, evidence=evidence, score=score),
-        "evidence_ids": [item["evidence_id"] for item in evidence if item.get("evidence_id")],
-        "risk_factors": axis_risk_factors(axis, evidence=evidence),
-        "missing_information": missing_information,
-        "confidence": confidence,
-    }
-
-
-def axis_score(
-    axis: str,
-    *,
-    state: PatentWorkflowState,
-    evidence: list[dict[str, Any]],
-    prior_axes: dict[str, dict[str, Any]],
-) -> int:
-    score = BASE_AXIS_SCORES[axis]
-    score += min(len(evidence), 3) * 4
-    if any(item.get("source_type") == "portfolio_context" for item in evidence):
-        score += 4
-    if axis == "economic":
-        score += lifecycle_bonus(state.patent_structured or {})
-        market_score = (prior_axes.get("market") or {}).get("score")
-        technology_score = (prior_axes.get("technology") or {}).get("score")
-        for prior_score in [market_score, technology_score]:
-            if isinstance(prior_score, int) and prior_score >= 70:
-                score += 3
-    if axis == "business_fit" and has_direct_business_context(evidence, state):
-        score += 8
-    return max(0, min(100, score))
-
-
-def lifecycle_bonus(patent: dict[str, Any]) -> int:
-    expiration_date = parse_iso_date(patent.get("expected_expiration_date"))
-    if not expiration_date:
-        return 0
-    remaining_years = (expiration_date - date.today()).days / 365
-    if remaining_years >= 8:
-        return 8
-    if remaining_years >= 4:
-        return 5
-    if remaining_years >= 1:
-        return 2
-    return -8
-
-
-def axis_missing_information(
-    axis: str,
-    *,
-    state: PatentWorkflowState,
-    evidence: list[dict[str, Any]],
-) -> list[str]:
-    patent = state.patent_structured or {}
-    missing: list[str] = []
-    if axis == "legal":
-        if not ((state.kipris_api_data or {}).get("claim_stats") or patent.get("claim_stats")):
-            missing.append("청구항 구조 추가 확인 필요")
-        missing.append("무효/분쟁 이력 추가 확인 필요")
-    elif axis == "technology":
-        missing.extend(["전방 인용 수 추가 확인 필요", "실제 구현 단계 추가 확인 필요"])
-    elif axis == "market":
-        if not evidence:
-            missing.append("시장/산업 근거 정보 부족 있음")
-    elif axis == "economic":
-        if not patent.get("expected_expiration_date"):
-            missing.append("예상 소멸일 추가 확인 필요")
-        if not patent.get("status"):
-            missing.append("등록/존속 상태 추가 확인 필요")
-        if not evidence:
-            missing.append("시장/기술 활용 맥락 추가 확인 필요")
-    elif axis == "business_fit":
-        if not has_direct_business_context(evidence, state):
-            missing.append("현재 제품/서비스 적용 여부 확인 필요")
-            missing.append("사업부 적용 계획 확인 필요")
-    return missing
-
-
-def axis_confidence(axis: str, *, evidence: list[dict[str, Any]], missing_information: list[str]) -> float:
-    confidence = 0.55 + min(len(evidence), 3) * 0.08
-    if axis == "business_fit" and missing_information:
-        confidence -= 0.12
-    if missing_information:
-        confidence -= min(len(missing_information), 3) * 0.04
-    return round(max(0.2, min(0.9, confidence)), 2)
-
-
-def axis_rationale(axis: str, *, patent: dict[str, Any], evidence: list[dict[str, Any]], score: int) -> str:
-    label = AXIS_LABELS[axis]
-    product = patent.get("related_product") or "대상 제품/서비스"
-    if axis == "business_fit":
-        return (
-            f"{label}은 {product} 및 관련 뉴스/공시/포트폴리오 맥락을 기준으로 임시 평가했다. "
-            "제품명이 있다는 이유만으로 실제 적용을 단정하지 않았다."
-        )
-    if axis == "economic":
-        return (
-            f"{label}은 남은 보호기간, 등록 상태, 시장/기술 맥락, 포트폴리오 보호 효과를 중심으로 "
-            f"정성 평가했다. 현재 점수는 {score}점이다."
-        )
-    return f"{label}은 특허 메타데이터와 {len(evidence)}건의 관련 근거를 바탕으로 초기 평가했다."
-
-
-def axis_risk_factors(axis: str, *, evidence: list[dict[str, Any]]) -> list[str]:
-    if axis == "legal":
-        return ["법적 안정성은 별도 무효/분쟁 이력 검토가 필요함"]
-    if axis == "technology":
-        return ["citation 및 실제 구현 단계 정보가 부족할 수 있음"]
-    if axis == "market":
-        return ["시장 근거가 뉴스/리포트 맥락에 의존할 수 있음"]
-    if axis == "economic":
-        return ["정량 재무 수치가 아닌 정성적 경제성 추정임"]
-    if axis == "business_fit":
-        return ["내부 적용 여부 확인 전까지 사업 연계성은 임시 판단임"]
-    return ["추가 정밀 분석 필요"]
 
 
 def build_final_valuation_result(
@@ -383,24 +268,22 @@ def build_final_valuation_result(
     result["final_report_markdown"] = (
         build_complete_final_report_markdown(
             state,
-            run_final_report_llm_if_enabled(state, result),
+            run_final_report_llm_required(state, result),
             result,
         )
-        if state
-        else build_fallback_final_report_markdown(result)
     )
     return result
 
 
-def run_final_report_llm_if_enabled(
+def run_final_report_llm_required(
     state: PatentWorkflowState | None,
     valuation_result: dict[str, Any],
-) -> str | None:
-    if not state or state.user_input.get("use_llm_final_report", True) is False:
-        return None
+) -> str:
+    if not state:
+        raise RuntimeError("LLM final report requires workflow state.")
     markdown = call_llm(build_final_report_prompt(state=state, valuation_result=valuation_result)).strip()
     if not markdown:
-        raise ValueError("Final report LLM response was empty")
+        raise RuntimeError("LLM final report response was empty.")
     return markdown
 
 
@@ -428,12 +311,13 @@ def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_re
 
 def build_complete_final_report_markdown(
     state: PatentWorkflowState,
-    body_markdown: str | None,
+    body_markdown: str,
     valuation_result: dict[str, Any],
 ) -> str:
+    del valuation_result
     body = (body_markdown or "").strip()
     if not body:
-        body = build_fallback_final_report_markdown(valuation_result)
+        raise RuntimeError("LLM final report body was empty.")
     return "\n\n".join(
         section
         for section in [
@@ -534,48 +418,6 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
-def build_fallback_final_report_markdown(valuation_result: dict[str, Any]) -> str:
-    axes = valuation_result.get("axes") or {}
-    lines = [
-        "# 특허 가치판단 종합 보고서",
-        "",
-        "## 최종 판단",
-        "",
-        f"- 최종 종합 지표: {valuation_result.get('final_indicator')}",
-        f"- 종합 점수: {valuation_result.get('total_score')} / 500",
-        f"- AI 권고: {valuation_result.get('recommendation')}",
-        "",
-        "## 축별 평가",
-        "",
-        "| 평가축 | 점수 | 등급 | 요약 |",
-        "| --- | ---: | --- | --- |",
-    ]
-    for axis in VALUATION_AXES:
-        axis_result = axes.get(axis) or {}
-        lines.append(
-            "| {label} | {score} | {grade} | {rationale} |".format(
-                label=axis_result.get("label") or AXIS_LABELS[axis],
-                score=axis_result.get("score", "N/A"),
-                grade=axis_result.get("grade", "N/A"),
-                rationale=normalize_markdown_table_text(axis_result.get("rationale")),
-            )
-        )
-    lines.extend(["", "## 판단 근거"])
-    for rationale in valuation_result.get("decision_rationale", []):
-        lines.append(f"- {rationale}")
-    required_actions = valuation_result.get("required_actions") or []
-    if required_actions:
-        lines.extend(["", "## 후속 확인 필요"])
-        for action in required_actions:
-            lines.append(f"- {action}")
-    missing_information = valuation_result.get("missing_information") or []
-    if missing_information:
-        lines.extend(["", "## 부족 정보"])
-        for item in missing_information:
-            lines.append(f"- {item}")
-    return "\n".join(lines)
-
-
 def total_score_to_indicator(total_score: int) -> str:
     if total_score >= 400:
         return "유지"
@@ -602,29 +444,6 @@ def build_decision_rationale(axes: dict[str, dict[str, Any]], total_score: int, 
         f"가장 강한 축은 {strongest.get('label')}({strongest.get('score')}점)이다.",
         f"보완이 필요한 축은 {weakest.get('label')}({weakest.get('score')}점)이다.",
     ]
-
-
-def score_to_grade(score: int) -> str:
-    if score >= 85:
-        return "A"
-    if score >= 70:
-        return "B"
-    if score >= 60:
-        return "C"
-    return "D"
-
-
-def has_direct_business_context(evidence: list[dict[str, Any]], state: PatentWorkflowState) -> bool:
-    keywords = business_fit_keywords(state)
-    for item in evidence:
-        if item.get("source_type") == "company_disclosure":
-            return True
-        if item.get("source_type") != "news":
-            continue
-        text = evidence_text(item)
-        if any(keyword and keyword in text for keyword in keywords):
-            return True
-    return False
 
 
 def evidence_text(item: dict[str, Any]) -> str:
@@ -659,10 +478,3 @@ def unique_texts(values: Any) -> list[str]:
         if text and text not in result:
             result.append(text)
     return result
-
-
-def parse_iso_date(value: Any) -> date | None:
-    try:
-        return date.fromisoformat(normalize_text(value))
-    except ValueError:
-        return None

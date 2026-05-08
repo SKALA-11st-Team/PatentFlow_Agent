@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from agents.valuation import run_valuation_agent, select_axis_evidence
 from app.main import build_parser, build_user_input, save_outputs
 from workflow.supervisor import check_valuation_result
@@ -7,8 +9,13 @@ from workflow.state import PatentWorkflowState
 
 
 def test_run_valuation_agent_sets_result():
+    def fake_call_llm(prompt):
+        if "Return ONLY Markdown" in prompt:
+            return "# LLM 최종 보고서"
+        return '{"score":70,"grade":"B","rationale":"LLM 평가","evidence_ids":[],"risk_factors":["추가 확인"],"missing_information":[],"confidence":0.7}'
+
     state = PatentWorkflowState(
-        user_input={"use_llm_valuation": False, "use_llm_final_report": False},
+        user_input={"no_save": True},
         patent_structured={
             "id": 1,
             "title_final": "문서변환 특허",
@@ -34,7 +41,16 @@ def test_run_valuation_agent_sets_result():
             },
         ],
     )
-    result = run_valuation_agent(state)
+
+    from agents import valuation
+
+    original_call_llm = valuation.call_llm
+    valuation.call_llm = fake_call_llm
+    try:
+        result = run_valuation_agent(state)
+    finally:
+        valuation.call_llm = original_call_llm
+
     assert result.valuation_result is not None
     axes = result.valuation_result["axes"]
     assert set(axes) == {"legal", "technology", "market", "economic", "business_fit"}
@@ -45,8 +61,13 @@ def test_run_valuation_agent_sets_result():
 
 
 def test_economic_missing_information_does_not_require_financial_numbers():
+    def fake_call_llm(prompt):
+        if "Return ONLY Markdown" in prompt:
+            return "# LLM 최종 보고서"
+        return '{"score":70,"grade":"B","rationale":"LLM 평가","evidence_ids":[],"risk_factors":[],"missing_information":[],"confidence":0.7}'
+
     state = PatentWorkflowState(
-        user_input={"use_llm_valuation": False, "use_llm_final_report": False},
+        user_input={"no_save": True},
         patent_structured={
             "status": "등록",
             "expected_expiration_date": "2032-01-01",
@@ -61,7 +82,15 @@ def test_economic_missing_information_does_not_require_financial_numbers():
         ],
     )
 
-    result = run_valuation_agent(state)
+    from agents import valuation
+
+    original_call_llm = valuation.call_llm
+    valuation.call_llm = fake_call_llm
+    try:
+        result = run_valuation_agent(state)
+    finally:
+        valuation.call_llm = original_call_llm
+
     missing = result.valuation_result["axes"]["economic"]["missing_information"]
 
     assert all("연차료" not in item for item in missing)
@@ -100,17 +129,15 @@ def test_business_fit_selects_news_with_company_or_product_context():
     assert selected[0]["evidence_id"] == "news_001"
 
 
-def test_business_fit_missing_information_when_no_direct_business_context():
+def test_valuation_fails_when_llm_valuation_is_disabled():
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": False, "use_llm_final_report": False},
         patent_structured={"related_product": "문서변환 SW"},
         evidence_bundle=[],
     )
 
-    result = run_valuation_agent(state)
-    missing = result.valuation_result["axes"]["business_fit"]["missing_information"]
-
-    assert "현재 제품/서비스 적용 여부 확인 필요" in missing
+    with pytest.raises(RuntimeError, match="use_llm_valuation is disabled"):
+        run_valuation_agent(state)
 
 
 def test_supervisor_requires_business_fit_axis():
@@ -139,11 +166,13 @@ def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
 
     def fake_call_llm(prompt):
         captured_prompts.append(prompt)
+        if "Return ONLY Markdown" not in prompt:
+            return '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"missing_information":[],"confidence":0.7}'
         return "## 1. 의사결정 요약\n\n- AI 권고: 추가 정보 필요"
 
     monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
     state = PatentWorkflowState(
-        user_input={"use_llm_valuation": False, "use_llm_final_report": True},
+        user_input={"use_llm_valuation": True, "use_llm_final_report": True},
         patent_structured={"title_final": "문서변환 특허", "related_product": "문서변환 SW"},
         evidence_bundle=[
             {
@@ -163,10 +192,11 @@ def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
     assert "### 문서변환 특허" in markdown
     assert "## 1. 의사결정 요약" in markdown
     assert "## 사용된 외부 근거" not in markdown
-    assert "Return ONLY Markdown" in captured_prompts[0]
-    assert "본문에는 작성하지 마세요" in captured_prompts[0]
-    assert "citation_title" in captured_prompts[0]
-    assert "valuation_result" in captured_prompts[0]
+    final_prompt = captured_prompts[-1]
+    assert "Return ONLY Markdown" in final_prompt
+    assert "본문에는 작성하지 마세요" in final_prompt
+    assert "citation_title" in final_prompt
+    assert "valuation_result" in final_prompt
 
 
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
@@ -180,7 +210,7 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
 
     monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
     state = PatentWorkflowState(
-        user_input={"use_llm_valuation": True, "use_llm_final_report": False, "no_save": True},
+        user_input={"use_llm_valuation": True, "use_llm_final_report": True, "no_save": True},
         patent_structured={"related_product": "문서변환 SW"},
     )
 
@@ -270,6 +300,34 @@ def test_axis_input_includes_representative_claims(tmp_path):
     assert payload["patent"]["claim_availability"]["representative_claims_provided"] is True
     assert payload["patent"]["representative_claims"][0]["claim_no"] == 1
     assert payload["patent"]["representative_claims"][0]["text"] == "대표 청구항 내용"
+    assert payload["patent"]["claim_availability"]["full_claims_provided"] is False
+    assert payload["patent"]["claims"] == []
+
+
+def test_legal_axis_input_includes_full_claims(tmp_path):
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        kipris_api_data={
+            "claim_stats": {"active_claim_count": 2},
+        },
+        preprocessed_patent={
+            "claims": [
+                {"claim_no": 1, "text": "독립항 전체 내용", "is_independent": True, "dependency": None},
+                {"claim_no": 2, "text": "종속항 전체 내용", "is_independent": False, "dependency": 1},
+            ]
+        },
+    )
+
+    from agents.valuation import build_axis_input_payload
+
+    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
+    market_payload = build_axis_input_payload(axis="market", state=state, evidence=[])
+
+    assert [claim["claim_no"] for claim in legal_payload["patent"]["claims"]] == [1, 2]
+    assert legal_payload["patent"]["claims"][1]["text"] == "종속항 전체 내용"
+    assert legal_payload["patent"]["claim_availability"]["full_claims_provided"] is True
+    assert market_payload["patent"]["claims"] == []
+    assert market_payload["patent"]["claim_availability"]["full_claims_provided"] is False
 
 
 def test_valuation_llm_inputs_respect_no_save(monkeypatch, tmp_path):

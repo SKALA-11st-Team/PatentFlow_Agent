@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from schemas.evidence import Evidence
 from services.evidence.api_normalizers import (
     normalize_dart_disclosures,
@@ -163,22 +165,20 @@ def test_save_filtered_evidence_bundle_groups_news_and_industry(tmp_path):
     assert payload["industry_report"][0]["evidence_id"] == "chunk_1"
 
 
-def test_query_rewriting_generates_english_gnews_queries():
-    rewritten = rewrite_search_queries(
-        {
-            "metadata": {
-                "title": "강화학습 자산배분",
-                "title_eng": "Asset allocation with reinforcement learning",
-                "ipc": ["G06Q 40/06"],
+def test_query_rewriting_fails_when_llm_is_disabled():
+    with pytest.raises(RuntimeError, match="use_llm is disabled"):
+        rewrite_search_queries(
+            {
+                "metadata": {
+                    "title": "강화학습 자산배분",
+                    "title_eng": "Asset allocation with reinforcement learning",
+                    "ipc": ["G06Q 40/06"],
+                },
+                "sections": {"abstract": "AI 기반 투자 포트폴리오"},
             },
-            "sections": {"abstract": "AI 기반 투자 포트폴리오"},
-        },
-        missing_evidence=["market evidence 부족", "competitor evidence 부족"],
-        use_llm=False,
-    )
-
-    assert rewritten["ko"] == []
-    assert rewritten["en"] == []
+            missing_evidence=["market evidence 부족", "competitor evidence 부족"],
+            use_llm=False,
+        )
 
 
 def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
@@ -186,7 +186,7 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
         return {
             "ko": ["금융 데이터 전처리 AI", "기준금리 발표 시장 변동성", "에스케이 주식회사 금융데이터"],
             "en": ["financial data preprocessing", "market volatility AI"],
-        }, None
+        }
 
     monkeypatch.setattr(
         "services.evidence.external_search_service.llm_rewrite_search_queries",
@@ -214,7 +214,7 @@ def test_llm_query_rewriting_includes_owner_and_joint_applicant_queries(monkeypa
         return {
             "ko": ["CMP 패드 자동 적재", "CMP 패드 커팅 에이징 자동화", "CMP 패드 트레이 셔틀"],
             "en": ["CMP pad automatic loading", "wafer polishing pad handling"],
-        }, None
+        }
 
     monkeypatch.setattr(
         "services.evidence.external_search_service.llm_rewrite_search_queries",

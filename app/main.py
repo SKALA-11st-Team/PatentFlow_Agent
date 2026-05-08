@@ -88,17 +88,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-llm-valuation",
         action="store_true",
-        help="Disable LLM prompts for axis-level valuation and use deterministic fallback results.",
+        help="Disable LLM prompts for axis-level valuation. Valuation will fail because deterministic fallback is not supported.",
     )
     parser.add_argument(
         "--no-llm-final-report",
         action="store_true",
-        help="Disable the LLM final report prompt and use deterministic Markdown fallback.",
+        help="Disable the LLM final report prompt. Valuation will fail because deterministic fallback is not supported.",
     )
     parser.add_argument(
         "--no-llm-summary",
         action="store_true",
-        help="Disable the LLM summary prompt and use deterministic Markdown fallback.",
+        help="Disable the LLM summary prompt. Summary generation will fail because deterministic fallback is not supported.",
     )
     return parser
 

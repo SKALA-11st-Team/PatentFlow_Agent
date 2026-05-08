@@ -37,55 +37,44 @@ def rewrite_search_queries(
     missing_evidence: list[str] | None = None,
     previous_queries: list[str] | None = None,
     retry_count: int = 0,
-    use_llm: bool = False,
+    use_llm: bool = True,
 ) -> dict[str, Any]:
     previous = set(previous_queries or [])
-    rewritten_ko: list[str] = []
-    rewritten_en: list[str] = []
+    if not use_llm:
+        raise RuntimeError("LLM query rewriting is required, but use_llm is disabled.")
 
-    rewrite_source = "rule_based"
-    llm_error: str | None = None
-    product_query_enforced = False
+    llm_result = llm_rewrite_search_queries(
+        preprocessed_patent=preprocessed_patent,
+        missing_evidence=missing_evidence or [],
+        previous_queries=previous_queries or [],
+        retry_count=retry_count,
+    )
+    rewritten_ko = [query for query in compact_queries(llm_result.get("ko", []))[:MAX_SEARCH_QUERIES] if query not in previous]
+    rewritten_en = [query for query in compact_queries(llm_result.get("en", []))[:MAX_SEARCH_QUERIES] if query not in previous]
 
-    if use_llm:
-        llm_result, llm_error = llm_rewrite_search_queries(
-            preprocessed_patent=preprocessed_patent,
-            missing_evidence=missing_evidence or [],
-            previous_queries=previous_queries or [],
-            retry_count=retry_count,
-        )
-        if llm_result:
-            rewritten_ko = [query for query in compact_queries(llm_result.get("ko", []))[:MAX_SEARCH_QUERIES] if query not in previous]
-            rewritten_en = [query for query in compact_queries(llm_result.get("en", []))[:MAX_SEARCH_QUERIES] if query not in previous]
-            rewrite_source = "llm"
-        else:
-            rewrite_source = "fallback_empty"
-
-        rewritten_ko, product_query_enforced = ensure_related_product_query(
-            rewritten_ko,
-            preprocessed_patent,
-            previous,
-        )
-        rewritten_ko, company_query_meta = ensure_applicant_context_queries(
-            rewritten_ko,
-            preprocessed_patent,
-            previous,
-        )
-    else:
-        company_query_meta = {"owner_query_enforced": False, "joint_applicant_query_enforced": False}
+    rewritten_ko, product_query_enforced = ensure_related_product_query(
+        rewritten_ko,
+        preprocessed_patent,
+        previous,
+    )
+    rewritten_ko, company_query_meta = ensure_applicant_context_queries(
+        rewritten_ko,
+        preprocessed_patent,
+        previous,
+    )
 
     rewritten_en = enforce_english_queries(
         rewritten_en,
         preprocessed_patent,
-        fill_to=MAX_SEARCH_QUERIES if use_llm else None,
+        fill_to=MAX_SEARCH_QUERIES,
     )
 
     return {
         "ko": rewritten_ko,
         "en": rewritten_en,
         "meta": {
-            "rewrite_source": rewrite_source,
-            "llm_error": llm_error,
+            "rewrite_source": "llm",
+            "llm_error": None,
             "product_query_enforced": product_query_enforced,
             **company_query_meta,
         },
@@ -251,7 +240,7 @@ def collect_external_evidence(
         "rewrite_meta": rewrite_meta,
         "items": merged,
         "saved_collections": saved_paths,
-        "warnings": warnings + ([f"query rewriting fallback: {rewrite_meta.get('llm_error')}"] if rewrite_meta.get("llm_error") else []),
+        "warnings": warnings,
     }
 
 
@@ -463,7 +452,7 @@ def llm_rewrite_search_queries(
     missing_evidence: list[str],
     previous_queries: list[str],
     retry_count: int = 0,
-) -> tuple[dict[str, list[str]] | None, str | None]:
+) -> dict[str, list[str]]:
     prompt_template = load_prompt("evidence/query_rewriting.md").replace(
         "{{search_query_count}}",
         str(MAX_SEARCH_QUERIES),
@@ -482,14 +471,11 @@ def llm_rewrite_search_queries(
     }
     prompt = f"{prompt_template.strip()}\n\n입력 데이터(JSON):\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
 
-    try:
-        raw = call_llm(prompt)
-    except Exception as exc:
-        return None, f"llm_call_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
+    raw = call_llm(prompt)
     parsed = parse_query_rewrite_response(raw)
     if not parsed:
-        return None, "llm_parse_failed"
-    return parsed, None
+        raise RuntimeError("LLM query rewriting response was not valid JSON.")
+    return parsed
 
 
 def parse_query_rewrite_response(raw: str) -> dict[str, list[str]] | None:

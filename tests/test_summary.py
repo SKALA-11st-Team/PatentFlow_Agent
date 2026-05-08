@@ -1,9 +1,11 @@
+import pytest
+
 from agents.summary import run_summary_agent
 from app.main import save_outputs
 from workflow.state import PatentWorkflowState
 
 
-def test_run_summary_agent_sets_markdown_with_fallback():
+def test_run_summary_agent_fails_when_llm_summary_is_disabled():
     state = PatentWorkflowState(
         user_input={"use_llm_summary": False},
         preprocessed_patent={
@@ -23,13 +25,8 @@ def test_run_summary_agent_sets_markdown_with_fallback():
         },
     )
 
-    result = run_summary_agent(state)
-
-    assert result.summary_result["title"] == "문서 자동 생성 특허"
-    assert result.summary_result["summary_markdown"].startswith("# 특허 요약")
-    assert "### 문서 자동 생성 특허" in result.summary_result["summary_markdown"]
-    assert "| 출원인/권리자 | 에스케이 주식회사 |" in result.summary_result["summary_markdown"]
-    assert "| IPC/CPC | G06F; G06F 40/00 |" in result.summary_result["summary_markdown"]
+    with pytest.raises(RuntimeError, match="use_llm_summary is disabled"):
+        run_summary_agent(state)
 
 
 def test_run_summary_agent_uses_llm_markdown(monkeypatch):

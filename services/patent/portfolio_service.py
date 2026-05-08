@@ -240,17 +240,11 @@ def build_portfolio_evidence(
     enriched_siblings: list[dict[str, Any]],
     llm: Callable[[str], str] = call_llm,
 ) -> tuple[dict[str, Any], str | None]:
-    parsed: dict[str, Any] | None = None
-    warning = None
-    try:
-        raw = llm(build_portfolio_prompt(target_patent=target_patent, enriched_siblings=enriched_siblings))
-        parsed = parse_json_object(raw)
-    except Exception as exc:
-        warning = f"portfolio_llm_failed:{exc.__class__.__name__}:{str(exc)[:200]}"
+    raw = llm(build_portfolio_prompt(target_patent=target_patent, enriched_siblings=enriched_siblings))
+    parsed = parse_json_object(raw)
 
     if not parsed:
-        parsed = fallback_portfolio_summary(target_patent, enriched_siblings)
-        warning = warning or "portfolio_llm_parse_failed"
+        raise RuntimeError("Portfolio sibling summary response was not valid JSON.")
 
     siblings = normalize_sibling_summaries(parsed.get("sibling_patents"), enriched_siblings)
     evidence = {
@@ -268,7 +262,7 @@ def build_portfolio_evidence(
         "key_facts": normalize_text_list(parsed.get("key_facts")),
         "collected_at": now_iso(),
     }
-    return evidence, warning
+    return evidence, None
 
 
 def build_portfolio_prompt(
@@ -342,35 +336,6 @@ def empty_result(target_patent: dict[str, Any], *, reason: str) -> dict[str, Any
     }
 
 
-def fallback_portfolio_summary(
-    target_patent: dict[str, Any],
-    enriched_siblings: list[dict[str, Any]],
-) -> dict[str, Any]:
-    related_product = target_patent.get("related_product") or "동일 제품군"
-    titles = [str(sibling.get("title") or sibling.get("application_number") or "제목 없음") for sibling in enriched_siblings]
-    return {
-        "compressed_summary": (
-            f"{related_product} 관련 sibling 특허 {len(enriched_siblings)}건이 존재하며, "
-            "동일 제품군의 여러 기능을 포트폴리오 단위로 보호할 가능성이 있다."
-        ),
-        "key_facts": [
-            f"동일 related_product 기준 sibling 특허 {len(enriched_siblings)}건이 확인됐다.",
-            f"대상 특허와 같은 application_date인 sibling 특허는 {count_same_date(target_patent, enriched_siblings)}건이다.",
-        ],
-        "sibling_patents": [
-            {
-                "patent_id": sibling.get("patent_id"),
-                "application_number": sibling.get("application_number"),
-                "title": title,
-                "portfolio_role": "KIPRIS API 또는 DB metadata 기반 추가 역할 분석 필요",
-                "covered_capability": sibling.get("technology_area") or "미분류",
-                "relation_to_target": "동일 제품군 내 보완 특허 후보",
-            }
-            for sibling, title in zip(enriched_siblings, titles, strict=False)
-        ],
-    }
-
-
 def normalize_sibling_summaries(value: Any, enriched_siblings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_application = {str(sibling.get("application_number")): sibling for sibling in enriched_siblings}
     by_id = {str(sibling.get("patent_id")): sibling for sibling in enriched_siblings}
@@ -390,7 +355,9 @@ def normalize_sibling_summaries(value: Any, enriched_siblings: list[dict[str, An
                 "relation_to_target": normalize_text(item.get("relation_to_target")),
             }
         )
-    return normalized or fallback_portfolio_summary({}, enriched_siblings)["sibling_patents"]
+    if not normalized:
+        raise RuntimeError("Portfolio sibling summary response must include sibling_patents.")
+    return normalized
 
 
 def build_portfolio_evidence_id(target_patent: dict[str, Any]) -> str:
@@ -401,11 +368,6 @@ def build_portfolio_evidence_id(target_patent: dict[str, Any]) -> str:
         re.sub(r"[^0-9]", "", str(target_patent.get("application_date") or "")) or "date",
     ]
     return "_".join(parts)
-
-
-def count_same_date(target_patent: dict[str, Any], siblings: list[dict[str, Any]]) -> int:
-    application_date = target_patent.get("application_date")
-    return sum(1 for sibling in siblings if sibling.get("application_date") == application_date)
 
 
 def normalize_text(value: Any) -> str:
