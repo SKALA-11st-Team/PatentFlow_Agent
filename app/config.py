@@ -3,32 +3,46 @@ from os import getenv
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-
 load_dotenv()
-
 
 class Settings(BaseModel):
     project_root: Path = Path(__file__).resolve().parents[1]
     data_dir: Path = project_root / "data"
     artifacts_dir: Path = project_root / "artifacts"
     run_outputs_dir: Path = artifacts_dir / "runs"
+    
+    # 기존 SQLite 경로는 로컬 단일 테스트용으로 유지하되, 실제 운영/도커 환경에서는 pgvector를 메인으로 사용합니다.
     patent_db_path: Path = data_dir / "patents.sqlite3"
+    
     patent_pdf_dir: Path = data_dir / "patent_pdf"
     output_dir: Path = run_outputs_dir / "manual"
     patent_markdown_dir: Path = output_dir / "patent_markdown"
     preprocessed_output_dir: Path = output_dir / "preprocessed_patents"
+    
+    # LangSmith observability 설정
     langsmith_tracing: bool = getenv("LANGSMITH_TRACING", "false").lower() == "true"
     langsmith_api_key: str | None = getenv("LANGSMITH_API_KEY")
     langsmith_project: str = getenv("LANGSMITH_PROJECT", "patent-agent-valuation")
+    
+    # OpenAI 모델 및 인증 설정
     openai_api_key: str | None = getenv("OPENAI_API_KEY")
     openai_chat_model: str = getenv("OPENAI_CHAT_MODEL") or getenv("OPENAI_MODEL", "gpt-5-mini")
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    unified_api_base_url: str = getenv("UNIFIED_API_BASE_URL", "http://127.0.0.1:8000")
+    
+    # Spring Boot(BE) 통신용 기본 주소.
+    # 로컬 직접 실행은 localhost를 기본으로 두고, Docker Compose에서는 UNIFIED_API_BASE_URL로 서비스명을 주입합니다.
+    unified_api_base_url: str = getenv("UNIFIED_API_BASE_URL", "http://localhost:8080")
+    
     search_query_count: int = int(getenv("SEARCH_QUERY_COUNT", "3"))
     max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
-    pgvector_database_url: str | None = getenv("PGVECTOR_DATABASE_URL") or getenv("DATABASE_URL")
+    
+    # Vector DB (pgvector) 접속 정보.
+    # 로컬 직접 실행은 localhost를 기본으로 두고, Docker Compose에서는 PGVECTOR_DATABASE_URL로 서비스명을 주입합니다.
+    pgvector_database_url: str | None = getenv(
+        "PGVECTOR_DATABASE_URL",
+        getenv("DATABASE_URL", "postgresql://patentflow:patentflow@localhost:5432/patentflow"),
+    )
     pgvector_table_name: str = getenv("PGVECTOR_TABLE_NAME", "industry_report_chunks")
-
 
 settings = Settings()

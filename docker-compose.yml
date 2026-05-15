@@ -1,0 +1,39 @@
+services:
+  patentflow-agent:
+    build: .
+    container_name: patentflow-agent
+    ports:
+      - "8000:8000"
+    environment:
+      PGVECTOR_DATABASE_URL: postgresql://patentflow:patentflow@postgres:5432/patentflow
+      UNIFIED_API_BASE_URL: ${UNIFIED_API_BASE_URL:-http://host.docker.internal:8080}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      KIPRIS_API_KEY: ${KIPRIS_API_KEY:-}
+      DART_KEY: ${DART_KEY:-}
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      GNEWS_API_KEY: ${GNEWS_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: ankane/pgvector:v0.5.1
+    container_name: patentflow-agent-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: patentflow
+      POSTGRES_USER: patentflow
+      POSTGRES_PASSWORD: patentflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U patentflow -d patentflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres-data:
