@@ -31,9 +31,17 @@ docker compose up -d postgres
 로컬 Python 실행에서는 DB와 BE 주소를 `localhost` 기준으로 둡니다.
 
 ```bash
-export PGVECTOR_DATABASE_URL="postgresql://patentflow:patentflow@localhost:5432/patentflow"
-export UNIFIED_API_BASE_URL="http://localhost:8080"
+cp .env.example .env
 ```
+
+복사한 `.env`에서 필요한 API key를 채웁니다. 기본 로컬 DB/BE 주소는 아래 값입니다.
+
+```bash
+PGVECTOR_DATABASE_URL=postgresql://patentflow:patentflow@localhost:5432/patentflow
+UNIFIED_API_BASE_URL=http://localhost:8080
+```
+
+`docker compose`로 Agent를 실행할 때는 compose가 컨테이너 내부 주소(`postgres`, `patentflow-api`)를 주입합니다. 로컬에서 Python으로 직접 실행할 때는 `.env`의 `localhost` 값을 사용합니다.
 
 ## 2. FastAPI 서버 실행: `app.api`
 Spring Boot가 Agent를 HTTP로 호출하거나 Swagger에서 API를 확인할 때 사용하는 실행 방식입니다.
