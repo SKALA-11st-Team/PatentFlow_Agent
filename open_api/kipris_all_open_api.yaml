@@ -244,6 +244,37 @@ paths:
         - 등록일자
         - 등록상태
         - 법적상태
+  /kipris/patent-utility/detail/family:
+    get:
+      tags:
+      - Patent Detail
+      operationId: getAppNoPatFamInfoSearch
+      summary: 패밀리 특허 정보 조회
+      description: '출원번호 하나를 기준으로 패밀리 특허 정보를 조회합니다. workflow에서는 패밀리 코드의 국가코드와
+        등록번호를 우선 사용합니다.
+
+        원천 오퍼레이션: 특허 패밀리 / 특허패밀리정보조회(국내출원번호) - getAppNoPatFamInfoSearch
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 출원번호
+      responses:
+        '200':
+          description: 패밀리 특허 정보
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FamilyPatentRegistrationResponse'
+      x-evaluation-usage:
+        시장성:
+        - 해외 패밀리 보유 국가
+        - 패밀리 등록번호 기반 해외 권리화 범위 확인
   /kipris/patent-utility/search/ipc:
     get:
       tags:
@@ -801,6 +832,43 @@ paths:
         operationName: getAnnFullTextInfoSearch
         actualPath: /kipo-api/kipi/patUtiModInfoSearchSevice/getAnnFullTextInfoSearch
         requestExample: http://plus.kipris.or.kr/kipo-api/kipi/patUtiModInfoSearchSevice/getAnnFullTextInfoSearch?applicationNumber=1020050050026&ServiceKey=서비스키
+  /kipo-api/kipi/patFamInfoSearchService/getAppNoPatFamInfoSearch:
+    get:
+      tags:
+      - Patent Detail
+      operationId: getKiprisAppNoPatFamInfoSearch
+      summary: 패밀리 특허 정보 조회 (KIPRISPlus 실제 경로)
+      description: KIPRISPlus 원천 Request URL 경로를 그대로 노출하는 경우 사용하는 엔드포인트입니다. workflow에서는
+        응답 중 공보국가코드와 등록공보번호를 우선 사용합니다.
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+          example: '1020050050026'
+        description: 출원번호
+      responses:
+        '200':
+          description: 패밀리 특허 정보 조회 성공
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/PatentFamilyInfoResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatentFamilyInfoResponse'
+      x-kipris-menu:
+        category: 특허 패밀리
+        section: REST
+        name: 특허패밀리정보조회(국내출원번호)
+      x-source-operation:
+        service: 특허 패밀리
+        category: REST
+        operationName: getAppNoPatFamInfoSearch
+        actualPath: /kipo-api/kipi/patFamInfoSearchService/getAppNoPatFamInfoSearch
+        requestExample: http://plus.kipris.or.kr/kipo-api/kipi/patFamInfoSearchService/getAppNoPatFamInfoSearch?applicationNumber=1020050082226&ServiceKey=서비스키
   /kipris/evaluation-data/{applicationNumber}/snapshot:
     get:
       tags:
@@ -1127,6 +1195,76 @@ components:
         familyApplicationNumber:
           type: string
           description: 패밀리출원번호
+    PatentFamilyInfoResponse:
+      type: object
+      properties:
+        response:
+          type: object
+          properties:
+            header:
+              $ref: '#/components/schemas/KiprisResponseHeader'
+            body:
+              type: object
+              properties:
+                items:
+                  type: object
+                  properties:
+                    item:
+                      type: array
+                      items:
+                        $ref: '#/components/schemas/FamilyPatentInfo'
+    FamilyPatentRegistrationResponse:
+      type: object
+      properties:
+        applicationNumber:
+          type: string
+          description: 조회 기준 국내 출원번호
+        familyPatents:
+          type: array
+          items:
+            $ref: '#/components/schemas/FamilyPatentRegistration'
+    FamilyPatentRegistration:
+      type: object
+      properties:
+        countryCode:
+          type: string
+          description: 패밀리 등록공보 국가코드
+          example: JP
+        registrationNumber:
+          type: string
+          description: 패밀리 등록번호
+          example: '6739622'
+    FamilyPatentInfo:
+      type: object
+      properties:
+        docdbFamilyID:
+          type: string
+          description: DOCDB FAMILY ID
+        applicationCountryCode:
+          type: string
+          description: DOCDB 출원국가코드
+        applicationDate:
+          type: string
+          description: DOCDB 출원일자
+        applicationKindCode:
+          type: string
+          description: DOCDB 출원종류코드
+        applicationNumber:
+          type: string
+          description: DOCDB 출원번호
+        publicationCountryCode:
+          type: string
+          description: DOCDB 공보국가코드
+          example: US
+        publicationDate:
+          type: string
+          description: DOCDB 공보일자
+        publicationKindCode:
+          type: string
+          description: DOCDB 공보종류코드. 등록공보는 보통 B 또는 B2 계열입니다.
+        publicationNumber:
+          type: string
+          description: DOCDB 공보번호. 등록공보의 경우 workflow에서 등록번호로 사용합니다.
     AbstractInfo:
       type: object
       properties:
@@ -1400,6 +1538,10 @@ components:
           $ref: '#/components/schemas/PatentSearchItem'
         bibliographyDetail:
           $ref: '#/components/schemas/BibliographyDetailResponse'
+        familyPatents:
+          type: array
+          items:
+            $ref: '#/components/schemas/FamilyPatentInfo'
         publicFullTextPdf:
           $ref: '#/components/schemas/PdfPathItem'
         announcementFullTextPdf:

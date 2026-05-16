@@ -55,6 +55,7 @@ def test_patent_fetch_continues_when_kipris_pdf_is_missing(monkeypatch):
             "source_type": "kipris_bibliography_detail",
             "metadata": {"application_number": application_number},
             "claim_stats": {},
+            "family_patents": [{"country_code": "US", "registration_number": "1234567"}],
         },
     )
 
@@ -68,6 +69,7 @@ def test_patent_fetch_continues_when_kipris_pdf_is_missing(monkeypatch):
     result = patent_fetch_node(state)
 
     assert result.kipris_api_data is not None
+    assert result.kipris_family_patents == [{"country_code": "US", "registration_number": "1234567"}]
     assert result.parsed_pdf is None
     assert result.patent_structured["pdf"]["warning"].startswith("pdf_fetch_failed:RuntimeError")
 
