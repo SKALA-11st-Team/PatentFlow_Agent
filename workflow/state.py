@@ -6,6 +6,8 @@ class PatentWorkflowState(BaseModel):
     # Run control
     user_input: dict[str, Any] = Field(default_factory=dict)
     current_stage: str | None = None
+    current_team: str | None = None
+    team_status: dict[str, Any] = Field(default_factory=dict)
     retry_count: int = 0
 
     # Patent source data
