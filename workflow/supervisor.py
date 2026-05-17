@@ -27,23 +27,143 @@ def decide_next_step(state: PatentWorkflowState) -> str:
 
 @trace(name="supervisor_agent", run_type="chain")
 def supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    stage = state.current_stage or "patent_check"
-    prompt_name = STAGE_PROMPTS.get(stage, "supervisor/supervisor_final_check.md")
-    prompt = load_prompt(prompt_name)
+    stage = state.current_stage
+    if stage in {"patent_check", "summary_check", "evidence_check"}:
+        return _with_legacy_research_action(research_supervisor_node(state))
+    if stage == "valuation_check":
+        return _with_legacy_valuation_action(valuation_supervisor_node(state))
+    if stage == "final_check":
+        return writing_supervisor_node(state)
+    return top_supervisor_node(state)
 
-    rule_decision = run_rule_based_check(state, stage)
-    if not rule_decision.passed:
-        state.supervisor_decision = rule_decision.model_dump()
-        state.missing_evidence = rule_decision.missing_evidence
-        return state
 
-    # TODO: Pass `prompt` and state into the LLM supervisor when llm_service is implemented.
+def _with_legacy_research_action(state: PatentWorkflowState) -> PatentWorkflowState:
+    decision = state.supervisor_decision or {}
+    if decision.get("next_team") == "valuation" and decision.get("next_action") == "valuation_team":
+        decision["next_action"] = "valuation"
+        state.supervisor_decision = decision
+    return state
+
+
+def _with_legacy_valuation_action(state: PatentWorkflowState) -> PatentWorkflowState:
+    decision = state.supervisor_decision or {}
+    legacy_actions = {
+        ("writing", "writing_team"): "validation",
+        ("valuation", "valuation_team"): "valuation_retry",
+        ("research", "research_team"): "query_rewriting",
+    }
+    legacy_action = legacy_actions.get((decision.get("next_team"), decision.get("next_action")))
+    if legacy_action:
+        decision["next_action"] = legacy_action
+        state.supervisor_decision = decision
+    return state
+
+
+@trace(name="top_supervisor_agent", run_type="chain")
+def top_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    state.current_team = "top"
+    previous = state.supervisor_decision or {}
+    requested_team = previous.get("next_team")
+    requested_action = previous.get("next_action")
+
+    if requested_team in {"research", "valuation", "writing", "final"}:
+        next_team = requested_team
+        next_action = requested_action or f"{next_team}_team"
+    elif not state.patent_structured or not state.preprocessed_patent or not state.summary_result:
+        next_team = "research"
+        next_action = "research_team"
+    elif not state.valuation_result:
+        next_team = "valuation"
+        next_action = "valuation_team"
+    elif not state.final_report:
+        next_team = "writing"
+        next_action = "writing_team"
+    else:
+        next_team = "final"
+        next_action = "final_merge"
+
     state.supervisor_decision = SupervisorDecision(
         passed=True,
-        next_action=rule_decision.next_action,
-        reason=f"Rule-based checks passed. Loaded prompt: {prompt_name}",
-        metadata={"prompt_preview": prompt[:120]},
+        current_team="top",
+        next_team=next_team,
+        next_action=next_action,
+        route_reason=f"Top supervisor routed workflow to {next_team}.",
     ).model_dump()
+    return state
+
+
+@trace(name="research_supervisor_agent", run_type="chain")
+def research_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    state.current_team = "research"
+    for stage, checker in [
+        ("patent_check", check_patent_data),
+        ("summary_check", check_summary_result),
+        ("evidence_check", check_evidence_bundle),
+    ]:
+        decision = checker(state)
+        if not decision.passed:
+            decision.current_team = "research"
+            decision.next_team = "research"
+            decision.stage = stage
+            state.current_stage = stage
+            state.supervisor_decision = decision.model_dump()
+            state.missing_evidence = decision.missing_evidence
+            return state
+
+    state.supervisor_decision = SupervisorDecision(
+        passed=True,
+        current_team="research",
+        next_team="valuation",
+        stage="evidence_check",
+        next_action="valuation_team",
+        reason="Research outputs are ready for valuation.",
+    ).model_dump()
+    return state
+
+
+@trace(name="valuation_supervisor_agent", run_type="chain")
+def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    state.current_team = "valuation"
+    decision = check_valuation_result(state)
+    has_unknown_evidence = any("references unknown evidence_id" in issue for issue in decision.issues)
+    decision.current_team = "valuation"
+    decision.stage = "valuation_check"
+    if decision.passed:
+        decision.next_team = "writing"
+        decision.next_action = "writing_team"
+    elif has_unknown_evidence:
+        decision.next_team = "research"
+        decision.next_action = "research_team"
+    else:
+        decision.next_team = "valuation"
+        decision.next_action = "valuation_team"
+    state.supervisor_decision = decision.model_dump()
+    return state
+
+
+def check_writing_result(state: PatentWorkflowState) -> SupervisorDecision:
+    issues = []
+    summary_markdown = (state.summary_result or {}).get("summary_markdown")
+    final_report_markdown = (state.valuation_result or {}).get("final_report_markdown")
+    if not summary_markdown:
+        issues.append("Missing summary_markdown")
+    if not final_report_markdown:
+        issues.append("Missing final_report_markdown")
+    return SupervisorDecision(
+        passed=not issues,
+        current_team="writing",
+        next_team="final" if not issues else "writing",
+        stage="writing_check",
+        next_action="final_merge" if not issues else "writing_team",
+        issues=issues,
+        reason="Writing output check completed.",
+    )
+
+
+@trace(name="writing_supervisor_agent", run_type="chain")
+def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    state.current_team = "writing"
+    state.supervisor_decision = check_writing_result(state).model_dump()
     return state
 
 
