@@ -47,9 +47,9 @@ app.add_middleware(
 )
 
 
-def _client() -> KiprisClient:
+def _client(service_key: str | None = None) -> KiprisClient:
     try:
-        return KiprisClient()
+        return KiprisClient(service_key=service_key)
     except ValueError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -64,7 +64,17 @@ def _kipris_http(fn: Any) -> Any:
 
 
 def _strip_service_key(q: dict[str, Any]) -> dict[str, Any]:
-    return {k: v for k, v in q.items() if k != "ServiceKey"}
+    return {k: v for k, v in q.items() if k not in ("ServiceKey", "serviceKey")}
+
+
+def _service_key_from_query(q: dict[str, Any]) -> str | None:
+    value = q.get("ServiceKey") or q.get("serviceKey")
+    return str(value) if value else None
+
+
+def _kipris_request_context(request: Request) -> tuple[KiprisClient, dict[str, str]]:
+    query = _query_as_single_dict(request)
+    return _client(_service_key_from_query(query)), _strip_service_key(query)
 
 
 def _query_as_single_dict(request: Request) -> dict[str, str]:
@@ -87,12 +97,20 @@ def _coerce_patent_search_query(q: dict[str, str]) -> dict[str, Any]:
 
 def _evaluation_snapshot_openapi_shape(client: KiprisClient, application_number: str) -> dict[str, Any]:
     detail = client.bibliography_detail(application_number)
+    family_patents = client.family_patents(application_number)
     pdf = client.publication_fulltext_pdf_path(application_number)
     return {
         "applicationNumber": application_number,
         "source": "KIPRISPlus",
         "kipris": {
             "bibliographyDetail": detail,
+            "familyPatents": [
+                {
+                    "countryCode": family.country_code,
+                    "registrationNumber": family.registration_number,
+                }
+                for family in family_patents
+            ],
             "publicFullTextPdf": {"docName": pdf.doc_name, "path": pdf.path},
         },
         "externalData": {},
@@ -402,15 +420,15 @@ def _sanitize_external_error(exc: Exception) -> str:
 # -------------------------
 @app.get("/kipris/patent-utility/search/advanced", tags=["KIPRIS Patent Search"])
 def get_advanced_search(request: Request) -> Any:
-    client = _client()
-    query = _coerce_patent_search_query(_strip_service_key(_query_as_single_dict(request)))
+    client, raw_query = _kipris_request_context(request)
+    query = _coerce_patent_search_query(raw_query)
     return _kipris_http(lambda: client.advanced_search(**query))
 
 
 @app.get("/kipris/patent-utility/search/application-number", tags=["KIPRIS Patent Search"])
 def application_number_search_info(request: Request) -> Any:
-    client = _client()
-    query = _coerce_patent_search_query(_strip_service_key(_query_as_single_dict(request)))
+    client, raw_query = _kipris_request_context(request)
+    query = _coerce_patent_search_query(raw_query)
     app_no = query.pop("applicationNumber", None)
     if not app_no:
         raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
@@ -419,18 +437,37 @@ def application_number_search_info(request: Request) -> Any:
 
 @app.get("/kipris/patent-utility/detail/bibliography", tags=["KIPRIS Patent Detail"])
 def get_bibliography_detail_info_search(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     app_no = query.get("applicationNumber")
     if not app_no:
         raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
     return _kipris_http(lambda: client.bibliography_detail(str(app_no)))
 
 
+@app.get("/kipris/patent-utility/detail/family", tags=["KIPRIS Patent Detail"])
+def family_info_v2(request: Request) -> Any:
+    client, query = _kipris_request_context(request)
+    app_no = query.get("applicationNumber")
+    if not app_no:
+        raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
+    application_number = str(app_no)
+    family_patents = _kipris_http(lambda: client.family_patents(application_number))
+    return {
+        "applicationNumber": application_number,
+        "familyPatents": [
+            {
+                "countryCode": family.country_code,
+                "registrationNumber": family.registration_number,
+            }
+            for family in family_patents
+        ],
+    }
+
+
 @app.get("/kipris/patent-utility/search/ipc", tags=["KIPRIS Classification"])
 def ipc_search_info(request: Request) -> Any:
-    client = _client()
-    query = _coerce_patent_search_query(_strip_service_key(_query_as_single_dict(request)))
+    client, raw_query = _kipris_request_context(request)
+    query = _coerce_patent_search_query(raw_query)
     ipc = query.pop("ipcNumber", None)
     if not ipc:
         raise HTTPException(status_code=400, detail="ipcNumber는 필수입니다.")
@@ -439,8 +476,8 @@ def ipc_search_info(request: Request) -> Any:
 
 @app.get("/kipris/patent-utility/search/cpc", tags=["KIPRIS Classification"])
 def cpc_search_info(request: Request) -> Any:
-    client = _client()
-    query = _coerce_patent_search_query(_strip_service_key(_query_as_single_dict(request)))
+    client, raw_query = _kipris_request_context(request)
+    query = _coerce_patent_search_query(raw_query)
     cpc = query.pop("cpcNumber", None)
     if not cpc:
         raise HTTPException(status_code=400, detail="cpcNumber는 필수입니다.")
@@ -449,8 +486,8 @@ def cpc_search_info(request: Request) -> Any:
 
 @app.get("/kipris/patent-utility/search/applicant", tags=["KIPRIS Applicant Search"])
 def applicant_name_search_info(request: Request) -> Any:
-    client = _client()
-    query = _coerce_patent_search_query(_strip_service_key(_query_as_single_dict(request)))
+    client, raw_query = _kipris_request_context(request)
+    query = _coerce_patent_search_query(raw_query)
     applicant = query.pop("applicant", None)
     if not applicant:
         raise HTTPException(status_code=400, detail="applicant는 필수입니다.")
@@ -459,8 +496,8 @@ def applicant_name_search_info(request: Request) -> Any:
 
 @app.get("/kipris/patent-utility/search/right-holder", tags=["KIPRIS Applicant Search"])
 def right_holer_search_info(request: Request) -> Any:
-    client = _client()
-    query = _coerce_patent_search_query(_strip_service_key(_query_as_single_dict(request)))
+    client, raw_query = _kipris_request_context(request)
+    query = _coerce_patent_search_query(raw_query)
     right_holer = query.pop("rightHoler", None)
     if not right_holer:
         raise HTTPException(status_code=400, detail="rightHoler는 필수입니다.")
@@ -469,8 +506,7 @@ def right_holer_search_info(request: Request) -> Any:
 
 @app.get("/kipris/patent-utility/admin-history/transfers", tags=["KIPRIS Admin History"])
 def transfer_list_info(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     for key in ("kind", "searchRight", "transferDate"):
         if key not in query or not query[key]:
             raise HTTPException(status_code=400, detail=f"{key}는 필수입니다.")
@@ -485,8 +521,7 @@ def transfer_list_info(request: Request) -> Any:
 
 @app.get("/kipris/overseas-patent/bibliography/claims", tags=["KIPRIS Overseas Citation"])
 def demand_paragraph_info(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     literature_number = query.get("literatureNumber")
     country_code = query.get("countryCode")
     if not literature_number or not country_code:
@@ -496,8 +531,7 @@ def demand_paragraph_info(request: Request) -> Any:
 
 @app.get("/kipris/overseas-patent/citations/domestic-documents", tags=["KIPRIS Overseas Citation"])
 def us_patent_documents_info(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     literature_number = query.get("literatureNumber")
     country_code = query.get("countryCode")
     if not literature_number or not country_code:
@@ -509,8 +543,7 @@ def us_patent_documents_info(request: Request) -> Any:
 
 @app.get("/kipris/overseas-patent/citations/foreign-documents", tags=["KIPRIS Overseas Citation"])
 def foreign_patent_documents_info(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     literature_number = query.get("literatureNumber")
     country_code = query.get("countryCode")
     if not literature_number or not country_code:
@@ -522,8 +555,7 @@ def foreign_patent_documents_info(request: Request) -> Any:
 
 @app.get("/kipris/patent-utility/documents/publication-fulltext-pdf", tags=["KIPRIS Documents"])
 def get_patent_publication_full_text_pdf_path(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     app_no = query.get("applicationNumber")
     if not app_no:
         raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
@@ -532,8 +564,7 @@ def get_patent_publication_full_text_pdf_path(request: Request) -> Any:
 
 @app.get("/kipris/patent-utility/documents/announcement-fulltext-pdf", tags=["KIPRIS Documents"])
 def get_patent_announcement_full_text_pdf_path(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     app_no = query.get("applicationNumber")
     if not app_no:
         raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
@@ -542,8 +573,7 @@ def get_patent_announcement_full_text_pdf_path(request: Request) -> Any:
 
 @app.get("/kipris/patent-utility/documents/preferred-fulltext-pdf", tags=["KIPRIS Documents"])
 def get_preferred_patent_full_text_pdf_path(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     app_no = query.get("applicationNumber")
     if not app_no:
         raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
@@ -574,8 +604,7 @@ def get_preferred_patent_full_text_pdf_path(request: Request) -> Any:
 
 @app.get("/kipo-api/kipi/patUtiModInfoSearchSevice/getPubFullTextInfoSearch", tags=["KIPRIS Documents"])
 def get_kipris_pub_full_text_info_search(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     app_no = query.get("applicationNumber")
     if not app_no:
         raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
@@ -590,8 +619,7 @@ def get_kipris_pub_full_text_info_search(request: Request) -> Any:
 
 @app.get("/kipo-api/kipi/patUtiModInfoSearchSevice/getAnnFullTextInfoSearch", tags=["KIPRIS Documents"])
 def get_kipris_ann_full_text_info_search(request: Request) -> Any:
-    client = _client()
-    query = _strip_service_key(_query_as_single_dict(request))
+    client, query = _kipris_request_context(request)
     app_no = query.get("applicationNumber")
     if not app_no:
         raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
@@ -604,9 +632,18 @@ def get_kipris_ann_full_text_info_search(request: Request) -> Any:
     )
 
 
+@app.get("/kipo-api/kipi/patFamInfoSearchService/getAppNoPatFamInfoSearch", tags=["KIPRIS Patent Detail"])
+def get_kipris_app_no_pat_fam_info_search(request: Request) -> Any:
+    client, query = _kipris_request_context(request)
+    app_no = query.get("applicationNumber")
+    if not app_no:
+        raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
+    return _kipris_http(lambda: client.family_info(str(app_no)))
+
+
 @app.get("/kipris/evaluation-data/{applicationNumber}/snapshot", tags=["KIPRIS Evaluation Data"])
-def get_kipris_evaluation_data_snapshot(applicationNumber: str) -> Any:
-    client = _client()
+def get_kipris_evaluation_data_snapshot(applicationNumber: str, request: Request) -> Any:
+    client, _query = _kipris_request_context(request)
     return _kipris_http(lambda: _evaluation_snapshot_openapi_shape(client, applicationNumber))
 
 

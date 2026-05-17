@@ -40,12 +40,14 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.patent_structured = patent
     if patent and (state.user_input.get("collect_kipris_api") or state.user_input.get("collect_pdf")):
         state.kipris_api_data = fetch_kipris_bibliography(patent["application_number"])
+        state.kipris_family_patents = state.kipris_api_data.get("family_patents", [])
         state.patent_structured = {
             **patent,
             "kipris_api": {
                 "source_type": state.kipris_api_data["source_type"],
                 "metadata": state.kipris_api_data["metadata"],
                 "claim_stats": state.kipris_api_data["claim_stats"],
+                "family_patents": state.kipris_family_patents,
             },
         }
     if patent and state.user_input.get("collect_pdf"):
