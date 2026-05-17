@@ -87,7 +87,17 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
     client = _kipris_client()
     kipris_application_number = normalize_kipris_application_number(application_number)
     raw = client.bibliography_detail(kipris_application_number)
-    return normalize_kipris_bibliography(raw, application_number=application_number)
+    result = normalize_kipris_bibliography(raw, application_number=application_number)
+    try:
+        result["family_patents"] = _normalize_kipris_family_patents(
+            client.family_patents(kipris_application_number)
+        )
+    except Exception as exc:
+        result["family_patents"] = []
+        result.setdefault("warnings", []).append(
+            f"family_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
+        )
+    return result
 
 
 def normalize_kipris_bibliography(raw: dict[str, Any], *, application_number: str) -> dict[str, Any]:
@@ -259,6 +269,23 @@ def _build_api_claim_stats(reported_claim_count: int | None, claims: list[dict[s
         "deleted_claim_numbers": deleted_numbers,
         "has_deleted_claims_gap": bool(expected_numbers - set(active_numbers)) if expected_numbers else False,
     }
+
+
+def _normalize_kipris_family_patents(raw_family_patents: list[Any]) -> list[dict[str, Any]]:
+    result = []
+    for family in raw_family_patents:
+        country_code = getattr(family, "country_code", None)
+        registration_number = getattr(family, "registration_number", None)
+        if not country_code and not registration_number:
+            continue
+        result.append(
+            {
+                "country_code": country_code,
+                "registration_number": _strip_register_suffix(registration_number),
+                "source": "kipris_family_info_v2",
+            }
+        )
+    return result
 
 
 def _ensure_list(value: Any) -> list[Any]:

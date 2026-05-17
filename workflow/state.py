@@ -7,6 +7,7 @@ class PatentWorkflowState(BaseModel):
     current_stage: str | None = None
     patent_structured: dict[str, Any] | None = None
     kipris_api_data: dict[str, Any] | None = None
+    kipris_family_patents: list[dict[str, Any]] = Field(default_factory=list)
     pdf_paths: list[str] = Field(default_factory=list)
     parsed_pdf: dict[str, Any] | None = None
     preprocessed_patent: dict[str, Any] | None = None

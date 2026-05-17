@@ -27,6 +27,7 @@ DEFAULT_BASE_URL = "http://plus.kipris.or.kr"
 PAT_UTI_SERVICE_PATH = "/kipo-api/kipi/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
 OVERSEAS_PATENT_SERVICE_PATH = "/kipo-api/kipi/overseasPatentSearchSevice"
+PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
 
 
 class KiprisError(RuntimeError):
@@ -37,6 +38,13 @@ class KiprisError(RuntimeError):
 class KiprisDocumentPath:
     doc_name: str | None
     path: str | None
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class KiprisFamilyPatent:
+    country_code: str | None
+    registration_number: str | None
     raw: dict[str, Any]
 
 
@@ -78,6 +86,22 @@ def _get_nested(data: Mapping[str, Any], *keys: str) -> Any:
             return None
         cur = cur.get(key)
     return cur
+
+
+def _first_present(data: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _iter_mappings(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, Mapping)]
+    return []
 
 
 class KiprisClient:
@@ -156,6 +180,43 @@ class KiprisClient:
             "getBibliographyDetailInfoSearch",
             {"applicationNumber": application_number},
         )
+
+    def family_info(self, application_number: str) -> dict[str, Any]:
+        """특허패밀리정보조회(국내출원번호) - getAppNoPatFamInfoSearch"""
+        return self.request(
+            "getAppNoPatFamInfoSearch",
+            {"applicationNumber": application_number},
+            service_path=PAT_FAMILY_SERVICE_PATH,
+        )
+
+    def family_patents(self, application_number: str) -> list[KiprisFamilyPatent]:
+        """패밀리정보에서 국가코드와 등록번호만 정규화합니다."""
+        raw = self.family_info(application_number)
+        family_items = (
+            _get_nested(raw, "response", "body", "items", "item")
+            or _get_nested(raw, "response", "body", "item")
+            or {}
+        )
+        families = []
+        for family in _iter_mappings(family_items):
+            publication_kind_code = str(family.get("publicationKindCode") or "")
+            if publication_kind_code and not publication_kind_code.startswith("B"):
+                continue
+            families.append(family)
+        return [
+            KiprisFamilyPatent(
+                country_code=_first_present(
+                    family,
+                    ("publicationCountryCode", "countryCode", "applicationCountryCode", "country"),
+                ),
+                registration_number=_first_present(
+                    family,
+                    ("publicationNumber", "registrationNumber", "registerNumber"),
+                ),
+                raw=dict(family),
+            )
+            for family in families
+        ]
 
     def search_by_ipc(self, ipc_number: str, **params: Any) -> dict[str, Any]:
         """IPC 검색 - ipcSearchInfo"""
@@ -296,11 +357,19 @@ def build_evaluation_snapshot(client: KiprisClient, application_number: str) -> 
     Wrapper API가 아니라, 로컬 코드에서 여러 KIPRIS 원천 API를 직접 호출해 묶는 함수입니다.
     """
     detail = client.bibliography_detail(application_number)
+    family_patents = client.family_patents(application_number)
     pdf = client.publication_fulltext_pdf_path(application_number)
     return {
         "source": "KIPRISPlus",
         "applicationNumber": application_number,
         "bibliographyDetail": detail,
+        "familyPatents": [
+            {
+                "countryCode": family.country_code,
+                "registrationNumber": family.registration_number,
+            }
+            for family in family_patents
+        ],
         "documents": {
             "publicationFullTextPdf": {
                 "docName": pdf.doc_name,
