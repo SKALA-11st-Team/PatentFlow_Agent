@@ -35,8 +35,8 @@ Review target identification
   - 권리성
   - 기술성
   - 시장성
-  - 라이프사이클 경제성
-- Do not include `사업 연계성` as a current scoring axis, enum value, checklist total, or AI score category unless explicitly requested.
+  - 사업 연계성
+- Do not include `라이프사이클 경제성` as a current scoring axis, enum value, checklist total, or AI score category unless explicitly requested.
 - Business opinion categories are `유지` and `포기`.
 - AI report recommendation labels are:
   - 유지 권고
@@ -166,7 +166,7 @@ type EvaluationCategory =
   | "RIGHTS"
   | "TECHNOLOGY"
   | "MARKET"
-  | "LIFECYCLE_ECONOMICS";
+  | "BUSINESS_FIT";
 ```
 
 ## Shared API Expectations
