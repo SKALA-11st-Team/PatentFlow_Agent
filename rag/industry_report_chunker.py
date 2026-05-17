@@ -115,18 +115,19 @@ def extract_pdf_text_without_tables(pdf_path: Path) -> str:
 
     pages: list[str] = []
     table_count = 0
-    for page_index, page in enumerate(pdfplumber.open(str(pdf_path)).pages, start=1):
-        table_bboxes = [table.bbox for table in page.find_tables()]
-        table_count += len(table_bboxes)
-        words = page.extract_words(
-            x_tolerance=1,
-            y_tolerance=3,
-            keep_blank_chars=False,
-            use_text_flow=True,
-        )
-        kept_words = [word for word in words if not is_word_inside_any_bbox(word, table_bboxes)]
-        text = words_to_text(kept_words)
-        pages.append(f"\n# Page {page_index}\n\n{text.strip()}")
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for page_index, page in enumerate(pdf.pages, start=1):
+            table_bboxes = [table.bbox for table in page.find_tables()]
+            table_count += len(table_bboxes)
+            words = page.extract_words(
+                x_tolerance=1,
+                y_tolerance=3,
+                keep_blank_chars=False,
+                use_text_flow=True,
+            )
+            kept_words = [word for word in words if not is_word_inside_any_bbox(word, table_bboxes)]
+            text = words_to_text(kept_words)
+            pages.append(f"\n# Page {page_index}\n\n{text.strip()}")
     return "\n\n".join(pages).strip() + f"\n\n<!-- removed_tables: {table_count} -->\n"
 
 
