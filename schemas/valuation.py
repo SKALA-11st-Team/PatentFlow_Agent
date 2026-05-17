@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-ValuationAxis = Literal["legal", "technology", "market", "economic", "business_fit"]
+ValuationAxis = Literal["legal", "technology", "market", "business_fit"]
 
 
 class AxisValuationResult(BaseModel):

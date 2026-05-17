@@ -12,13 +12,12 @@ from services.observability.langsmith_service import trace
 from workflow.state import PatentWorkflowState
 
 
-VALUATION_AXES = ["legal", "technology", "market", "economic", "business_fit"]
+VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
 
 AXIS_LABELS = {
     "legal": "권리성",
     "technology": "기술성",
     "market": "시장성",
-    "economic": "라이프사이클 경제성",
     "business_fit": "사업 연계성",
 }
 
@@ -182,8 +181,6 @@ def select_axis_evidence(axis: str, state: PatentWorkflowState) -> list[dict[str
             source_types={"news", "industry_report", "company_disclosure"},
             axes={axis},
         )
-    if axis == "economic":
-        return select_by_types_or_axes(items, source_types={"portfolio_context", "industry_report"}, axes={axis, "market", "technology"})
     if axis == "business_fit":
         return select_business_fit_evidence(items, state)
     return []
@@ -419,11 +416,11 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
 
 
 def total_score_to_indicator(total_score: int) -> str:
-    if total_score >= 400:
-        return "유지"
     if total_score >= 320:
-        return "조건부 유지"
+        return "유지"
     if total_score >= 240:
+        return "조건부 유지"
+    if total_score >= 160:
         return "포기 검토"
     return "매각 후보"
 
@@ -440,7 +437,7 @@ def build_decision_rationale(axes: dict[str, dict[str, Any]], total_score: int, 
     strongest = max(axes.values(), key=lambda axis: axis.get("score", 0))
     weakest = min(axes.values(), key=lambda axis: axis.get("score", 0))
     return [
-        f"5개 평가축 합산 점수는 {total_score}점이며 최종 종합 지표는 {final_indicator}이다.",
+        f"4개 평가축 합산 점수는 {total_score}점이며 최종 종합 지표는 {final_indicator}이다.",
         f"가장 강한 축은 {strongest.get('label')}({strongest.get('score')}점)이다.",
         f"보완이 필요한 축은 {weakest.get('label')}({weakest.get('score')}점)이다.",
     ]

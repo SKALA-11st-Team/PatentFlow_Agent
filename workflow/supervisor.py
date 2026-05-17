@@ -130,7 +130,7 @@ def check_valuation_result(state: PatentWorkflowState) -> SupervisorDecision:
     valuation = state.valuation_result or {}
     evidence_ids = {evidence.get("evidence_id") for evidence in state.evidence_bundle}
     axes = valuation.get("axes") or {}
-    required_axes = ["legal", "technology", "market", "economic", "business_fit"]
+    required_axes = ["legal", "technology", "market", "business_fit"]
     issues: list[str] = []
 
     for axis in required_axes:

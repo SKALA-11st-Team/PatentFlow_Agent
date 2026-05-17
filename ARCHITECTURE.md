@@ -93,9 +93,9 @@ Agent orchestration layer.
 LLM-based reasoning modules.
 
 - `summary.py`: 비전문가와 사업부서가 이해할 수 있는 특허 요약을 생성한다.
-- `valuation.py`: 권리성, 기술성, 시장성, 라이프사이클 경제성, 사업 연계성 평가와 최종 Markdown 보고서를 생성한다.
+- `valuation.py`: 권리성, 기술성, 시장성, 사업 연계성 평가와 최종 Markdown 보고서를 생성한다.
 
-요약 보고서, query rewriting, portfolio sibling 요약, 가치평가 5개 축, 최종 가치평가 보고서는 LLM-only로 동작한다. LLM이 비활성화되거나 응답이 없거나 필수 JSON 필드가 누락되면 deterministic fallback 결과를 만들지 않고 실패시킨다.
+요약 보고서, query rewriting, portfolio sibling 요약, 가치평가 4개 축, 최종 가치평가 보고서는 LLM-only로 동작한다. LLM이 비활성화되거나 응답이 없거나 필수 JSON 필드가 누락되면 deterministic fallback 결과를 만들지 않고 실패시킨다.
 
 앞으로 Agent 개발 시 각 Agent는 전체 state를 통째로 문자열로 받지 않는다. `preprocessed_patent["agent_inputs"]`, `evidence_bundle`, 필요한 metadata만 adapter/render 단계에서 프롬프트로 변환해 호출한다.
 
@@ -169,7 +169,7 @@ Prompt templates used by agents and LLM-based nodes.
 
 - `evidence/`: query rewriting, evidence compression, portfolio sibling summary
 - `summary/`: 특허 요약 보고서
-- `valuation/`: 공통 점수 기준, 5개 평가축, 최종 보고서
+- `valuation/`: 공통 점수 기준, 4개 평가축, 최종 보고서
 - `supervisor/`: 단계별 supervisor check
 
 Supervisor는 하나지만, 단계별 판단 기준이 다르므로 prompt는 분리한다.
@@ -216,7 +216,7 @@ artifacts/runs/<run_id>/
 - `portfolio_evidence/`: 동일 제품군 sibling 특허의 KIPRIS API 기반 포트폴리오 evidence JSON
 - `industry_rag/`: pgvector 검색 결과 JSON
 - `compressed_evidence/`: valuation 입력용 LLM 압축 evidence JSON
-- `valuation_inputs/`: 5개 평가축과 최종 보고서 Agent에 전달된 입력 JSON
+- `valuation_inputs/`: 4개 평가축과 최종 보고서 Agent에 전달된 입력 JSON
 - `summary/`: 요약 Agent 결과 JSON/Markdown
 - `final/`: 최종 가치평가 보고서 JSON/Markdown
 
@@ -311,7 +311,7 @@ API raw response
 }
 ```
 
-`related_axis`는 검색 API 수집 단계에서 채우지 않는다. 어떤 근거가 권리성, 기술성, 시장성, 라이프사이클 경제성, 사업 연계성 중 어디에 연결되는지는 valuation 단계에서 evidence 내용을 보고 판단한다.
+`related_axis`는 검색 API 수집 단계에서 채우지 않는다. 어떤 근거가 권리성, 기술성, 시장성, 사업 연계성 중 어디에 연결되는지는 valuation 단계에서 evidence 내용을 보고 판단한다.
 
 날짜는 두 종류를 구분한다.
 
@@ -372,7 +372,7 @@ final_check
 5. `query_rewriting_node`: Naver/GNews 검색어를 생성한다.
 6. `evidence_search_node`: 외부 API, 뉴스 필터, 산업 RAG, filtered evidence 저장을 수행한다.
 7. `evidence_compression_node`: valuation 입력용 evidence를 압축하고 portfolio evidence를 합친다.
-8. `valuation.py`: 5개 평가축별 LLM 평가와 최종 Markdown 보고서를 생성한다.
+8. `valuation.py`: 4개 평가축별 LLM 평가와 최종 Markdown 보고서를 생성한다.
 9. `validation_node`: valuation 결과와 필수 축을 검증한다.
 10. `final_merge_node`: summary, valuation, evidence를 최종 state로 병합한다.
 

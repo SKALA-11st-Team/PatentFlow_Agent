@@ -12,7 +12,6 @@ Allowed related_axes values:
 - legal
 - technology
 - market
-- economic
 - business_fit
 - strategy
 

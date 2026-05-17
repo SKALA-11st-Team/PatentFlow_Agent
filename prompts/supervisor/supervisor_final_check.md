@@ -14,7 +14,7 @@
 다음 항목을 확인하세요.
 
 1. summary_result가 존재하고 특허 핵심 내용을 설명하는가?
-2. valuation_result가 존재하고 5개 평가축 결과를 포함하는가?
+2. valuation_result가 존재하고 4개 평가축 결과를 포함하는가?
 3. validation_result가 통과 상태인가?
 4. final_report에 들어갈 핵심 근거가 evidence_id로 추적 가능한가?
 5. 유지/보류/폐기 검토 추천이 요약 및 평가 내용과 충돌하지 않는가?
@@ -26,4 +26,3 @@
   "issues": [],
   "reason": ""
 }
-

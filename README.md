@@ -91,7 +91,6 @@ artifacts/runs/<run_id>/valuation_inputs/
 ├── legal_input.json
 ├── technology_input.json
 ├── market_input.json
-├── economic_input.json
 ├── business_fit_input.json
 └── final_report_input.json
 ```
@@ -106,7 +105,7 @@ artifacts/runs/<run_id>/final/
 └── <patent_id>_final_report.md
 ```
 
-요약 보고서, query rewriting, portfolio sibling 요약, 가치평가 5개 축, 최종 가치평가 보고서는 LLM 응답이 필수입니다. LLM 호출이 실패하거나 관련 LLM 옵션이 비활성화되면 deterministic fallback 결과를 생성하지 않고 실행을 중단합니다.
+요약 보고서, query rewriting, portfolio sibling 요약, 가치평가 4개 축, 최종 가치평가 보고서는 LLM 응답이 필수입니다. LLM 호출이 실패하거나 관련 LLM 옵션이 비활성화되면 deterministic fallback 결과를 생성하지 않고 실행을 중단합니다.
 
 ## Query Rewriting Output
 

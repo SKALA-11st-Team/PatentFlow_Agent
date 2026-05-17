@@ -229,6 +229,7 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
         application_number=patent.get("application_number"),
         query_limit_per_axis=MAX_SEARCH_QUERIES,
+        include_kipris=False,
         ko_queries_override=query_plan.get("ko_queries", []),
         en_queries_override=query_plan.get("en_queries", []),
         output_dir=artifact_subdir(state, "api_evidence"),
@@ -474,7 +475,7 @@ def valuation_node(state: PatentWorkflowState) -> PatentWorkflowState:
 def validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
     valuation = state.valuation_result or {}
     axes = valuation.get("axes") or {}
-    required_axes = ["legal", "technology", "market", "economic", "business_fit"]
+    required_axes = ["legal", "technology", "market", "business_fit"]
     passed = all(axes.get(axis) for axis in required_axes) and "strategy" not in axes
     state.validation_result = {
         "passed": passed,
