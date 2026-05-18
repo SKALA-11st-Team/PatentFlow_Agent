@@ -25,6 +25,7 @@ class PatentEvaluationRequest(BaseModel):
     registrationNumber: str | None = None
     title: str | None = None
     noSave: bool = False
+    useLlmSupervisor: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -36,10 +37,8 @@ class PatentEvaluationScore(BaseModel):
 
 class PatentEvaluationResponse(BaseModel):
     patentId: str
-    summary: str
     scores: list[PatentEvaluationScore]
     recommendation: str
-    rawMarkdown: str
     summaryMarkdown: str | None = None
     valuationReportMarkdown: str | None = None
     artifactDir: str | None = None
@@ -79,10 +78,8 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
 
     return PatentEvaluationResponse(
         patentId=patent_id,
-        summary=summary_text(final_state),
         scores=valuation_scores(valuation_result),
         recommendation=valuation_result.get("recommendation") or "추가 정보 필요",
-        rawMarkdown=valuation_markdown,
         summaryMarkdown=summary_markdown or None,
         valuationReportMarkdown=valuation_markdown or None,
         artifactDir=str(final_state.user_input.get("artifact_dir") or "") or None,
@@ -92,10 +89,13 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
 
 
 def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> dict[str, Any]:
+    management_number = normalize_optional_identifier(request.managementNumber)
+    application_number = normalize_optional_identifier(request.applicationNumber)
+    registration_number = normalize_optional_identifier(request.registrationNumber)
     identifier = (
-        request.managementNumber
-        or request.applicationNumber
-        or request.registrationNumber
+        management_number
+        or application_number
+        or registration_number
         or patent_id
     )
     artifact_dir = settings.run_outputs_dir / f"{api_run_timestamp()}_{safe_identifier(identifier)}"
@@ -107,19 +107,26 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
         "use_llm_summary": True,
         "use_llm_valuation": True,
         "use_llm_final_report": True,
-        "use_llm_supervisor": True,
+        "use_llm_supervisor": request.useLlmSupervisor,
     }
-    if request.managementNumber:
-        user_input["management_number"] = request.managementNumber
-    elif request.applicationNumber:
-        user_input["application_number"] = request.applicationNumber
-    elif request.registrationNumber:
-        user_input["registration_number"] = request.registrationNumber
+    if management_number:
+        user_input["management_number"] = management_number
+    elif application_number:
+        user_input["application_number"] = application_number
+    elif registration_number:
+        user_input["registration_number"] = registration_number
     elif patent_id.isdigit():
         user_input["patent_id"] = int(patent_id)
     else:
         user_input["management_number"] = patent_id
     return user_input
+
+
+def normalize_optional_identifier(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text or text.lower() == "string":
+        return None
+    return text
 
 
 def api_run_timestamp() -> str:
@@ -128,15 +135,6 @@ def api_run_timestamp() -> str:
 
 def safe_identifier(value: str) -> str:
     return str(value).replace("/", "_").replace(" ", "_")
-
-
-def summary_text(state: PatentWorkflowState) -> str:
-    summary_result = state.summary_result or {}
-    return (
-        summary_result.get("plain_summary")
-        or summary_result.get("title")
-        or "요약 결과가 생성되지 않았습니다."
-    )
 
 
 def valuation_scores(valuation_result: dict[str, Any]) -> list[PatentEvaluationScore]:

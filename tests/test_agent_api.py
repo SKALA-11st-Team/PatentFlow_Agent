@@ -54,13 +54,13 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     body = response.json()
     assert body["patentId"] == "PAT-TEST"
     assert body["recommendation"] == "유지 권고"
-    assert body["summary"] == "테스트 특허 요약"
+    assert "summary" not in body
     assert len(body["scores"]) == 4
     assert body["scores"][3]["category"] == "사업 연계성"
     assert body["totalScore"] == 280
     assert body["summaryMarkdown"].startswith("# 요약")
     assert body["valuationReportMarkdown"].startswith("# 특허 가치판단 종합 보고서")
-    assert body["rawMarkdown"].startswith("# 특허 가치판단 종합 보고서")
+    assert "rawMarkdown" not in body
 
 
 def test_evaluate_patent_builds_patent_id_input(monkeypatch):
@@ -83,3 +83,54 @@ def test_evaluate_patent_builds_patent_id_input(monkeypatch):
     assert captured["collect_kipris_api"] is True
     assert captured["use_llm_supervisor"] is True
     assert captured["no_save"] is True
+
+
+def test_evaluate_patent_can_disable_llm_supervisor(monkeypatch):
+    captured = {}
+
+    def fake_run_workflow(state: PatentWorkflowState):
+        captured.update(state.user_input)
+        state.summary_result = {"plain_summary": "요약"}
+        state.valuation_result = {"axes": {}, "final_report_markdown": "보고서"}
+        return state
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", lambda state: {})
+
+    response = client.post(
+        "/api/v1/ai/patents/P202405001-KR0/evaluate",
+        json={"noSave": True, "useLlmSupervisor": False},
+    )
+
+    assert response.status_code == 200
+    assert captured["management_number"] == "P202405001-KR0"
+    assert captured["use_llm_supervisor"] is False
+
+
+def test_evaluate_patent_ignores_swagger_placeholder_identifiers(monkeypatch):
+    captured = {}
+
+    def fake_run_workflow(state: PatentWorkflowState):
+        captured.update(state.user_input)
+        state.summary_result = {"plain_summary": "요약"}
+        state.valuation_result = {"axes": {}, "final_report_markdown": "보고서"}
+        return state
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", lambda state: {})
+
+    response = client.post(
+        "/api/v1/ai/patents/P202405001-KR0/evaluate",
+        json={
+            "managementNumber": "string",
+            "applicationNumber": "string",
+            "registrationNumber": "string",
+            "title": "string",
+            "useLlmSupervisor": False,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["management_number"] == "P202405001-KR0"
+    assert "application_number" not in captured
+    assert "registration_number" not in captured

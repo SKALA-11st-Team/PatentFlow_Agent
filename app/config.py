@@ -27,6 +27,7 @@ class Settings(BaseModel):
     # OpenAI 모델 및 인증 설정
     openai_api_key: str | None = getenv("OPENAI_API_KEY")
     openai_chat_model: str = getenv("OPENAI_CHAT_MODEL") or getenv("OPENAI_MODEL", "gpt-5-mini")
+    openai_supervisor_model: str | None = getenv("OPENAI_SUPERVISOR_MODEL")
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Spring Boot(BE) 통신용 기본 주소.
@@ -34,6 +35,8 @@ class Settings(BaseModel):
     unified_api_base_url: str = getenv("UNIFIED_API_BASE_URL", "http://localhost:8080")
     
     search_query_count: int = int(getenv("SEARCH_QUERY_COUNT", "3"))
+    industry_rag_query_count: int = int(getenv("INDUSTRY_RAG_QUERY_COUNT", "1"))
+    industry_rag_top_k: int = int(getenv("INDUSTRY_RAG_TOP_K", "3"))
     max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
     

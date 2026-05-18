@@ -16,6 +16,7 @@ from services.evidence.store_service import (
 from services.evidence.external_search_service import (
     MAX_SEARCH_QUERIES,
     collect_external_evidence,
+    parse_query_rewrite_response,
     rewrite_search_queries,
 )
 
@@ -186,6 +187,7 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
         return {
             "ko": ["금융 데이터 전처리 AI", "기준금리 발표 시장 변동성", "에스케이 주식회사 금융데이터"],
             "en": ["financial data preprocessing", "market volatility AI"],
+            "industry_rag": ["웰스테크 AI 에이전트 디지털 자문"],
         }
 
     monkeypatch.setattr(
@@ -206,7 +208,27 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
 
     assert len(rewritten["ko"]) <= MAX_SEARCH_QUERIES
     assert any("MarketCaster" in query for query in rewritten["ko"])
+    assert rewritten["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
     assert rewritten["meta"]["product_query_enforced"] is True
+
+
+def test_query_rewriting_parses_industry_rag_queries():
+    parsed = parse_query_rewrite_response(
+        json.dumps(
+            {
+                "ko": ["AI 투자 서비스"],
+                "en": ["ai investing"],
+                "industry_rag": [
+                    "웰스테크 AI 에이전트 디지털 자문",
+                    "로보어드바이저 자산관리 투자자문",
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert parsed is not None
+    assert parsed["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
 
 
 def test_llm_query_rewriting_includes_owner_and_joint_applicant_queries(monkeypatch):

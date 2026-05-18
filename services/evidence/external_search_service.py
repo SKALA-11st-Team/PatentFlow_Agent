@@ -27,6 +27,7 @@ from services.evidence.store_service import (
 
 DEFAULT_UNIFIED_API_BASE_URL = settings.unified_api_base_url
 MAX_SEARCH_QUERIES = settings.search_query_count
+MAX_INDUSTRY_RAG_QUERIES = settings.industry_rag_query_count
 API_REQUEST_MAX_ATTEMPTS = 3
 API_REQUEST_RETRY_STATUS_CODES = {502, 503, 504}
 
@@ -68,10 +69,16 @@ def rewrite_search_queries(
         preprocessed_patent,
         fill_to=MAX_SEARCH_QUERIES,
     )
+    rewritten_industry_rag = [
+        query
+        for query in compact_queries(llm_result.get("industry_rag", []))[:MAX_INDUSTRY_RAG_QUERIES]
+        if query not in previous
+    ]
 
     return {
         "ko": rewritten_ko,
         "en": rewritten_en,
+        "industry_rag": rewritten_industry_rag,
         "meta": {
             "rewrite_source": "llm",
             "llm_error": None,
@@ -453,9 +460,10 @@ def llm_rewrite_search_queries(
     previous_queries: list[str],
     retry_count: int = 0,
 ) -> dict[str, list[str]]:
-    prompt_template = load_prompt("evidence/query_rewriting.md").replace(
-        "{{search_query_count}}",
-        str(MAX_SEARCH_QUERIES),
+    prompt_template = (
+        load_prompt("evidence/query_rewriting.md")
+        .replace("{{search_query_count}}", str(MAX_SEARCH_QUERIES))
+        .replace("{{industry_rag_query_count}}", str(MAX_INDUSTRY_RAG_QUERIES))
     )
     payload = {
         "metadata": preprocessed_patent.get("metadata") or {},
@@ -499,17 +507,22 @@ def parse_query_rewrite_response(raw: str) -> dict[str, list[str]] | None:
     if not isinstance(parsed, dict):
         return None
 
-    result: dict[str, list[str]] = {"ko": [], "en": []}
-    for lang in ("ko", "en"):
+    result: dict[str, list[str]] = {"ko": [], "en": [], "industry_rag": []}
+    limits = {
+        "ko": MAX_SEARCH_QUERIES,
+        "en": MAX_SEARCH_QUERIES,
+        "industry_rag": MAX_INDUSTRY_RAG_QUERIES,
+    }
+    for lang, limit in limits.items():
         section = parsed.get(lang)
         if isinstance(section, list):
-            result[lang] = compact_queries([str(query) for query in section if str(query).strip()])[:MAX_SEARCH_QUERIES]
+            result[lang] = compact_queries([str(query) for query in section if str(query).strip()])[:limit]
         elif isinstance(section, dict):
             flattened: list[str] = []
             for value in section.values():
                 if isinstance(value, list):
                     flattened.extend(str(query) for query in value if str(query).strip())
-            result[lang] = compact_queries(flattened)[:MAX_SEARCH_QUERIES]
+            result[lang] = compact_queries(flattened)[:limit]
     return result
 
 

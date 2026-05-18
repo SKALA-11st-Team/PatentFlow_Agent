@@ -243,6 +243,7 @@ def build_final_valuation_result(
     state: PatentWorkflowState | None = None,
 ) -> dict[str, Any]:
     total_score = sum(int(axis.get("score") or 0) for axis in axes.values())
+    average_score = round(total_score / len(axes), 1) if axes else 0
     final_indicator = total_score_to_indicator(total_score)
     missing_information = unique_texts(
         item for axis in axes.values() for item in axis.get("missing_information", [])
@@ -256,9 +257,10 @@ def build_final_valuation_result(
     result = {
         "axes": axes,
         "total_score": total_score,
+        "average_score": average_score,
         "final_indicator": final_indicator,
         "recommendation": indicator_to_recommendation(final_indicator, missing_information),
-        "decision_rationale": build_decision_rationale(axes, total_score, final_indicator),
+        "decision_rationale": build_decision_rationale(axes, total_score, average_score, final_indicator),
         "required_actions": unique_texts(required_actions),
         "missing_information": missing_information,
     }
@@ -433,11 +435,16 @@ def indicator_to_recommendation(final_indicator: str, missing_information: list[
     return "포기 검토"
 
 
-def build_decision_rationale(axes: dict[str, dict[str, Any]], total_score: int, final_indicator: str) -> list[str]:
+def build_decision_rationale(
+    axes: dict[str, dict[str, Any]],
+    total_score: int,
+    average_score: float,
+    final_indicator: str,
+) -> list[str]:
     strongest = max(axes.values(), key=lambda axis: axis.get("score", 0))
     weakest = min(axes.values(), key=lambda axis: axis.get("score", 0))
     return [
-        f"4개 평가축 합산 점수는 {total_score}점이며 최종 종합 지표는 {final_indicator}이다.",
+        f"4개 평가축 합산 점수는 {total_score}/400점, 평균 점수는 {average_score:g}/100점이며 최종 종합 지표는 {final_indicator}이다.",
         f"가장 강한 축은 {strongest.get('label')}({strongest.get('score')}점)이다.",
         f"보완이 필요한 축은 {weakest.get('label')}({weakest.get('score')}점)이다.",
     ]

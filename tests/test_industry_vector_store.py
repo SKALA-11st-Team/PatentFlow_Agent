@@ -34,6 +34,18 @@ class _Store:
         return [_SearchResult()]
 
 
+class _QueryCaptureStore:
+    queries = []
+
+    def __init__(self, database_url, embedding_model=None):
+        self.database_url = database_url
+        self.embedding_model = embedding_model
+
+    def search(self, query, top_k=5, industry=None):
+        self.__class__.queries.append(query)
+        return [_SearchResult()]
+
+
 def test_prepare_chunks_and_pgvector_embedding_payload():
     chunks = [
         {
@@ -71,6 +83,27 @@ def test_industry_rag_evidence_keeps_single_context_field(monkeypatch):
     assert "summary" not in items[0]
     assert "raw_text" not in items[0]
     assert "content" not in items[0]
+
+
+def test_patent_industry_rag_uses_rewritten_query(monkeypatch, tmp_path):
+    _QueryCaptureStore.queries = []
+    monkeypatch.setattr(industry_rag_service, "IndustryVectorStore", _QueryCaptureStore)
+
+    result = industry_rag_service.search_and_save_patent_industry_evidence(
+        preprocessed_patent={
+            "metadata": {"title": "상품 트렌드 예측을 반영한 자산배분 시스템"},
+            "sections": {"abstract": "강화학습 기반 투자 포트폴리오 기술"},
+        },
+        patent_id="KR10-TEST",
+        rag_queries=["웰스테크 AI 에이전트 디지털 자문"],
+        database_url="unused",
+        output_dir=tmp_path,
+    )
+
+    assert _QueryCaptureStore.queries == ["웰스테크 AI 에이전트 디지털 자문"]
+    assert result["queries"] == ["웰스테크 AI 에이전트 디지털 자문"]
+    assert result["items"][0]["rag_query"] == "웰스테크 AI 에이전트 디지털 자문"
+    assert result["output_path"] is not None
 
 
 def test_machine_whitepaper_year_is_inferred_as_2025():
