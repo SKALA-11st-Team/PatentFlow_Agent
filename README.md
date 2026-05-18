@@ -2,16 +2,70 @@
 
 사용자가 선택한 특허를 기반으로 특허 요약, 외부 근거 수집, 산업 RAG 검색, 가치평가, 검증, 최종 보고서를 생성하는 Agent 오케스트레이션 프로젝트입니다.
 
-## Setup
+
+## 실행 방식
+
+- `app.api`: FastAPI 서버용입니다. Spring Boot나 브라우저가 HTTP로 Agent를 호출할 때 사용합니다.
+- `app.main`: CLI 워크플로우 실행용입니다. 터미널에서 특허 ID를 넣고 AI 평가 workflow를 직접 돌릴 때 사용합니다.
+
+두 실행 방식 모두 같은 가상환경(`venv`)과 같은 환경변수를 사용합니다. `app.api`를 띄운다고 `app.main`이 같이 실행되는 것은 아니며, `app.main`은 별도 명령으로 한 번 실행하고 종료되는 CLI입니다.
+
+## 1. 공통 로컬 환경 설정
+`PatentFlow_Agent` 폴더에서 아래 명령을 실행합니다.
+
+### Python 가상환경
+```bash
+python3.11 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### DB 실행
+pgvector/RAG 기능을 테스트할 때만 DB가 필요합니다. `/health`, `/docs`, 기본 평가 API 확인만 할 때는 DB 없이도 서버 기동을 확인할 수 있습니다.
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+docker compose up -d postgres
+```
+
+### 환경변수
+로컬 Python 실행에서는 DB와 BE 주소를 `localhost` 기준으로 둡니다.
+
+```bash
 cp .env.example .env
 ```
 
-## Run
+복사한 `.env`에서 필요한 API key를 채웁니다. 기본 로컬 DB/BE 주소는 아래 값입니다.
+
+```bash
+PGVECTOR_DATABASE_URL=postgresql://patentflow:patentflow@localhost:5432/patentflow
+UNIFIED_API_BASE_URL=http://localhost:8080
+```
+
+`docker compose`로 Agent를 실행할 때는 compose가 컨테이너 내부 주소(`postgres`, `patentflow-api`)를 주입합니다. 로컬에서 Python으로 직접 실행할 때는 `.env`의 `localhost` 값을 사용합니다.
+
+## 2. FastAPI 서버 실행: `app.api`
+Spring Boot가 Agent를 HTTP로 호출하거나 Swagger에서 API를 확인할 때 사용하는 실행 방식입니다.
+
+```bash
+venv/bin/uvicorn app.api:app --reload --port 8000
+```
+
+실행 후 다음 주소로 접속 가능합니다.
+
+- API 서버: http://localhost:8000
+- Swagger Docs: http://localhost:8000/docs
+- Health Check: http://localhost:8000/health
+
+현재 기본 평가 API는 BE 연동 확인용 응답을 반환합니다. 실제 workflow 연결 시 이 엔드포인트에서 `run_workflow(...)`를 호출하도록 확장합니다.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/ai/patents/PAT-TEST/evaluate \
+  -H "Content-Type: application/json" \
+  -d '{"managementNumber":"P202405001-KR0","title":"테스트 특허"}'
+```
+
+## 3. CLI workflow 실행: `app.main`
+기존 Agent workflow를 터미널에서 직접 실행하는 방식입니다. 서버처럼 계속 떠 있지 않고, 실행 후 종료됩니다.
 
 ```bash
 venv/bin/python -m app.main --patent-id 1
@@ -91,7 +145,6 @@ artifacts/runs/<run_id>/valuation_inputs/
 ├── legal_input.json
 ├── technology_input.json
 ├── market_input.json
-├── economic_input.json
 ├── business_fit_input.json
 └── final_report_input.json
 ```
@@ -106,7 +159,7 @@ artifacts/runs/<run_id>/final/
 └── <patent_id>_final_report.md
 ```
 
-요약 보고서, query rewriting, portfolio sibling 요약, 가치평가 5개 축, 최종 가치평가 보고서는 LLM 응답이 필수입니다. LLM 호출이 실패하거나 관련 LLM 옵션이 비활성화되면 deterministic fallback 결과를 생성하지 않고 실행을 중단합니다.
+요약 보고서, query rewriting, portfolio sibling 요약, 가치평가 4개 축, 최종 가치평가 보고서는 LLM 응답이 필수입니다. LLM 호출이 실패하거나 관련 LLM 옵션이 비활성화되면 deterministic fallback 결과를 생성하지 않고 실행을 중단합니다.
 
 ## Query Rewriting Output
 
@@ -192,10 +245,10 @@ chunk 원본은 실행 산출물이 아니라 Vector DB 입력 자산이므로 �
 data/vector_db/industry_report_chunks.jsonl
 ```
 
-산업 리포트 RAG 저장소는 PostgreSQL pgvector를 사용합니다.
+산업 리포트 RAG 저장소는 PostgreSQL pgvector를 사용합니다. 로컬 통합 DB를 사용할 때는 다음 URL을 사용합니다.
 
 ```bash
-export PGVECTOR_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/patent_rag"
+export PGVECTOR_DATABASE_URL="postgresql://patentflow:patentflow@localhost:5432/patentflow"
 venv/bin/python -m rag.industry_vector_store
 ```
 

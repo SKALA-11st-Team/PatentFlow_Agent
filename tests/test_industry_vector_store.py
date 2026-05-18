@@ -6,6 +6,8 @@ from rag.industry_vector_store import (
     to_pgvector_literal,
     validate_embeddings,
 )
+from rag.chunkers.ai_index_chunker import is_noise_section, strip_embedded_chart_ocr_tail
+from rag.industry_report_chunker import Section, infer_published_year
 from services.rag import industry_rag_service
 
 
@@ -69,3 +71,80 @@ def test_industry_rag_evidence_keeps_single_context_field(monkeypatch):
     assert "summary" not in items[0]
     assert "raw_text" not in items[0]
     assert "content" not in items[0]
+
+
+def test_machine_whitepaper_year_is_inferred_as_2025():
+    source_name = "기계산업_디지털전환_기술백서_한국기계연구원.pdf"
+
+    assert infer_published_year(source_name) == 2025
+
+
+def test_ai_index_filters_ocr_figure_axis_noise():
+    section = Section(
+        heading="T u F u a",
+        industry="AI",
+        page=106,
+        text=(
+            "P p 4 p Cl s G O k O u p e o e O d Gr d u u e a a d Cl Cl u a Cl "
+            "Model Figure 2.5.827 27 Data source: https://www.vals.ai/benchmarks/tax_eval_v2. 106"
+        ),
+    )
+
+    assert is_noise_section(section) is True
+
+
+def test_ai_index_filters_short_data_source_footnote():
+    section = Section(
+        heading="Page 114",
+        industry="AI",
+        page=114,
+        text=(
+            "35 Data source: https://docs.google.com/spreadsheets/d/example/edit. "
+            "36 Data source: https://github.com/openai/mle-bench. 114"
+        ),
+    )
+
+    assert is_noise_section(section) is True
+
+
+def test_ai_index_filters_short_axis_label_noise_without_source_marker():
+    section = Section(
+        heading="3.9 SECURIT Y AND SAFET Y",
+        industry="AI",
+        page=166,
+        text=(
+            "2 2 0 K 0 0 T M B u e str ( T 1. 2 ( ( Gr m e nit Pr 2 ( ( 2 2 2 "
+            "D str v ct P m u ni ( ct ( o1 et S D S M- I 3- et u ( 2- 5.1 et "
+            "( mi ( ( 5 L o k ct ni o ct E) str 4.1 0 ni 3"
+        ),
+    )
+
+    assert is_noise_section(section) is True
+
+
+def test_ai_index_strips_embedded_chart_ocr_tail_from_meaningful_section():
+    text = (
+        "The 2025 results show continued improvement but also increasing compression "
+        "at the top (Figure 3.9.2). HELM Safety: mean score Source: HELM, 2026 | "
+        "Chart: 2026 AI Index report 1 0.8 e or c 0.6 s n a e 0.4 M 0.2 0 "
+        "3) B) ct B) 4 B) B) d s 7) B) 01) 8) 2 2 0 K 0 0 T M B"
+    )
+
+    cleaned = strip_embedded_chart_ocr_tail(text)
+
+    assert "The 2025 results show continued improvement" in cleaned
+    assert "2 2 0 K 0 0 T M B" not in cleaned
+
+
+def test_ai_index_filters_short_report_heading_only_section():
+    section = Section(
+        heading="6.2 CLINICAL APPLICATIONS",
+        industry="AI",
+        page=274,
+        text=(
+            "6.2 CLINICAL APPLICATIONS | MEDICINE | AI INDEX REPORT 2026 "
+            "FDA 510(k)-cleared AI/ML-enabled imaging-related medical devices, 2011-25"
+        ),
+    )
+
+    assert is_noise_section(section) is True

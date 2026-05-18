@@ -17,7 +17,12 @@ from workflow.nodes import (
     validation_node,
     valuation_node,
 )
-from workflow.supervisor import supervisor_node
+from workflow.supervisor import (
+    research_supervisor_node,
+    top_supervisor_node,
+    valuation_supervisor_node,
+    writing_supervisor_node,
+)
 from workflow.state import PatentWorkflowState
 
 
@@ -31,62 +36,116 @@ def _run_node(payload: dict[str, Any], fn: Any) -> dict[str, Any]:
     return next_state.model_dump()
 
 
-def _route_after_supervisor(payload: dict[str, Any]) -> str:
+def _route_after_top_supervisor(payload: dict[str, Any]) -> str:
     state = _as_state(payload)
-    decision = state.supervisor_decision or {}
-    action = decision.get("next_action")
+    action = (state.supervisor_decision or {}).get("next_action")
+    if action in {"research_team", "valuation_team", "writing_team", "final_merge"}:
+        return action
+    return "end"
 
-    if action in {"summary"}:
-        return "summary"
-    if action in {"evidence_check", "query_rewriting"}:
+
+def _route_after_research_supervisor(payload: dict[str, Any]) -> str:
+    state = _as_state(payload)
+    action = (state.supervisor_decision or {}).get("next_action")
+    if action == "common_preprocess" and not state.parsed_pdf and not state.kipris_api_data:
+        return "end"
+    if action == "summary" and not state.preprocessed_patent:
+        return "end"
+    if action in {"patent_fetch", "common_preprocess", "summary", "query_rewriting"}:
         if action == "query_rewriting" and state.retry_count >= settings.max_evidence_search_rounds:
-            return "valuation"
-        return "query_rewriting"
-    if action in {"valuation", "valuation_retry"}:
-        return "valuation"
-    if action == "validation":
-        return "validation"
-    if action == "final_merge":
-        return "final_merge"
+            return "valuation_team"
+        return action
+    if action == "valuation_team":
+        return "top_supervisor"
+    return "end"
+
+
+def _route_after_valuation_supervisor(payload: dict[str, Any]) -> str:
+    state = _as_state(payload)
+    action = (state.supervisor_decision or {}).get("next_action")
+    if action in {"research_team", "valuation_team", "writing_team"}:
+        return action
+    return "end"
+
+
+def _route_after_writing_supervisor(payload: dict[str, Any]) -> str:
+    state = _as_state(payload)
+    action = (state.supervisor_decision or {}).get("next_action")
+    if action in {"writing_team", "final_merge"}:
+        return action
     return "end"
 
 
 def _build_graph() -> Any:
     graph = StateGraph(dict)
+    graph.add_node("top_supervisor", lambda payload: _run_node(payload, top_supervisor_node))
     graph.add_node("patent_resolve", lambda payload: _run_node(payload, patent_resolve_node))
     graph.add_node("patent_fetch", lambda payload: _run_node(payload, patent_fetch_node))
     graph.add_node("portfolio_sibling", lambda payload: _run_node(payload, portfolio_sibling_node))
     graph.add_node("common_preprocess", lambda payload: _run_node(payload, common_preprocess_node))
-    graph.add_node("supervisor", lambda payload: _run_node(payload, supervisor_node))
+    graph.add_node("research_supervisor", lambda payload: _run_node(payload, research_supervisor_node))
     graph.add_node("summary", lambda payload: _run_node(payload, summary_node))
     graph.add_node("query_rewriting", lambda payload: _run_node(payload, query_rewriting_node))
     graph.add_node("evidence_search", lambda payload: _run_node(payload, evidence_search_node))
     graph.add_node("evidence_compression", lambda payload: _run_node(payload, evidence_compression_node))
     graph.add_node("valuation", lambda payload: _run_node(payload, valuation_node))
+    graph.add_node("valuation_supervisor", lambda payload: _run_node(payload, valuation_supervisor_node))
     graph.add_node("validation", lambda payload: _run_node(payload, validation_node))
+    graph.add_node("writing_supervisor", lambda payload: _run_node(payload, writing_supervisor_node))
     graph.add_node("final_merge", lambda payload: _run_node(payload, final_merge_node))
 
-    graph.add_edge(START, "patent_resolve")
+    graph.add_edge(START, "top_supervisor")
     graph.add_edge("patent_resolve", "patent_fetch")
     graph.add_edge("patent_fetch", "portfolio_sibling")
     graph.add_edge("portfolio_sibling", "common_preprocess")
-    graph.add_edge("common_preprocess", "supervisor")
-    graph.add_edge("summary", "supervisor")
+    graph.add_edge("common_preprocess", "research_supervisor")
+    graph.add_edge("summary", "research_supervisor")
     graph.add_edge("query_rewriting", "evidence_search")
     graph.add_edge("evidence_search", "evidence_compression")
-    graph.add_edge("evidence_compression", "supervisor")
-    graph.add_edge("valuation", "supervisor")
-    graph.add_edge("validation", "supervisor")
+    graph.add_edge("evidence_compression", "research_supervisor")
+    graph.add_edge("valuation", "valuation_supervisor")
+    graph.add_edge("validation", "writing_supervisor")
     graph.add_edge("final_merge", END)
 
     graph.add_conditional_edges(
-        "supervisor",
-        _route_after_supervisor,
+        "top_supervisor",
+        _route_after_top_supervisor,
         {
+            "research_team": "patent_resolve",
+            "valuation_team": "valuation",
+            "writing_team": "validation",
+            "final_merge": "final_merge",
+            "end": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "research_supervisor",
+        _route_after_research_supervisor,
+        {
+            "patent_fetch": "patent_fetch",
+            "common_preprocess": "common_preprocess",
             "summary": "summary",
             "query_rewriting": "query_rewriting",
-            "valuation": "valuation",
-            "validation": "validation",
+            "valuation_team": "valuation",
+            "top_supervisor": "top_supervisor",
+            "end": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "valuation_supervisor",
+        _route_after_valuation_supervisor,
+        {
+            "research_team": "patent_resolve",
+            "valuation_team": "valuation",
+            "writing_team": "validation",
+            "end": END,
+        },
+    )
+    graph.add_conditional_edges(
+        "writing_supervisor",
+        _route_after_writing_supervisor,
+        {
+            "writing_team": "validation",
             "final_merge": "final_merge",
             "end": END,
         },

@@ -9,6 +9,7 @@ import io
 import json
 import re
 import subprocess
+import unicodedata
 
 from app.config import settings
 
@@ -115,18 +116,19 @@ def extract_pdf_text_without_tables(pdf_path: Path) -> str:
 
     pages: list[str] = []
     table_count = 0
-    for page_index, page in enumerate(pdfplumber.open(str(pdf_path)).pages, start=1):
-        table_bboxes = [table.bbox for table in page.find_tables()]
-        table_count += len(table_bboxes)
-        words = page.extract_words(
-            x_tolerance=1,
-            y_tolerance=3,
-            keep_blank_chars=False,
-            use_text_flow=True,
-        )
-        kept_words = [word for word in words if not is_word_inside_any_bbox(word, table_bboxes)]
-        text = words_to_text(kept_words)
-        pages.append(f"\n# Page {page_index}\n\n{text.strip()}")
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for page_index, page in enumerate(pdf.pages, start=1):
+            table_bboxes = [table.bbox for table in page.find_tables()]
+            table_count += len(table_bboxes)
+            words = page.extract_words(
+                x_tolerance=1,
+                y_tolerance=3,
+                keep_blank_chars=False,
+                use_text_flow=True,
+            )
+            kept_words = [word for word in words if not is_word_inside_any_bbox(word, table_bboxes)]
+            text = words_to_text(kept_words)
+            pages.append(f"\n# Page {page_index}\n\n{text.strip()}")
     return "\n\n".join(pages).strip() + f"\n\n<!-- removed_tables: {table_count} -->\n"
 
 
@@ -183,44 +185,112 @@ def chunk_industry_reports(
         source_text = markdown_path.read_text(encoding="utf-8", errors="ignore")
         source_name = infer_source_name(markdown_path)
         published_year = infer_published_year(source_name)
-        chapter_ranges = extract_chapter_ranges(source_text)
-        sections = split_by_headings(clean_markdown(source_text), chapter_ranges=chapter_ranges)
-        sections = [section for section in sections if keep_section(section)]
-
-        per_industry_counter: dict[str, int] = {}
-        for section in sections:
-            industry = section.industry or infer_industry(section.heading) or "공통"
-            sub_chunks = [
-                normalize_section_text(remove_table_artifact_lines(chunk))
-                for chunk in split_long_text(section.text, token_limit=token_limit, overlap=token_overlap)
-                if keep_chunk(chunk)
-            ]
-            for sub_index, sub_text in enumerate(sub_chunks, start=1):
-                per_industry_counter[industry] = per_industry_counter.get(industry, 0) + 1
-                page_part = f"p{section.page}" if section.page else "p000"
-                chunk_no = per_industry_counter[industry]
-                chunk_id = build_chunk_id(source_name, published_year, industry, page_part, chunk_no)
-                chunks.append(
-                    {
-                        "chunk_id": chunk_id,
-                        "text": sub_text,
-                        "metadata": {
-                            "source_type": "industry_report",
-                            "source_name": source_name,
-                            "published_year": published_year,
-                            "industry": industry,
-                            "chunk_id": chunk_id,
-                            "heading": section.heading,
-                            "page": section.page,
-                        },
-                    }
-                )
+        chunks.extend(
+            chunk_report_by_type(
+                markdown_path=markdown_path,
+                source_text=source_text,
+                source_name=source_name,
+                published_year=published_year,
+                token_limit=token_limit,
+                token_overlap=token_overlap,
+            )
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(
         "\n".join(json.dumps(chunk, ensure_ascii=False) for chunk in chunks),
         encoding="utf-8",
     )
+    return chunks
+
+
+def chunk_report_by_type(
+    *,
+    markdown_path: Path,
+    source_text: str,
+    source_name: str,
+    published_year: int | None,
+    token_limit: int,
+    token_overlap: int,
+) -> list[dict[str, Any]]:
+    report_type = detect_report_type(source_name)
+    if report_type == "kiet":
+        from rag.chunkers.kiet_chunker import chunk_report
+    elif report_type == "ai_index":
+        from rag.chunkers.ai_index_chunker import chunk_report
+    elif report_type == "kpmg_ai":
+        from rag.chunkers.kpmg_ai_chunker import chunk_report
+    elif report_type == "kpmg_fintech":
+        from rag.chunkers.kpmg_fintech_chunker import chunk_report
+    elif report_type == "machine_whitepaper":
+        from rag.chunkers.machine_whitepaper_chunker import chunk_report
+    else:
+        from rag.chunkers.generic_chunker import chunk_report
+
+    return chunk_report(
+        markdown_path=markdown_path,
+        source_text=source_text,
+        source_name=source_name,
+        published_year=published_year,
+        token_limit=token_limit,
+        token_overlap=token_overlap,
+    )
+
+
+def detect_report_type(source_name: str) -> str:
+    normalized = source_name.casefold()
+    if "kiet" in normalized or "경제ㆍ산업_전망" in source_name or "경제산업_전망" in source_name:
+        return "kiet"
+    if "ai_index" in normalized or "ai index" in normalized:
+        return "ai_index"
+    if "kpmg" in normalized and ("ai" in normalized or "수익" in source_name):
+        return "kpmg_ai"
+    if "kpmg" in normalized or "핀테크" in source_name:
+        return "kpmg_fintech"
+    if "기계산업" in source_name or "기계산업" in source_name:
+        return "machine_whitepaper"
+    return "generic"
+
+
+def build_chunks_from_sections(
+    *,
+    sections: list[Section],
+    source_name: str,
+    published_year: int | None,
+    token_limit: int,
+    token_overlap: int,
+    default_industry: str = "공통",
+) -> list[dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+    per_industry_counter: dict[str, int] = {}
+
+    for section in sections:
+        industry = section.industry or infer_industry(section.heading) or default_industry
+        sub_chunks = [
+            normalize_section_text(remove_table_artifact_lines(chunk))
+            for chunk in split_long_text(section.text, token_limit=token_limit, overlap=token_overlap)
+            if keep_chunk(chunk)
+        ]
+        for sub_text in sub_chunks:
+            per_industry_counter[industry] = per_industry_counter.get(industry, 0) + 1
+            page_part = f"p{section.page}" if section.page else "p000"
+            chunk_no = per_industry_counter[industry]
+            chunk_id = build_chunk_id(source_name, published_year, industry, page_part, chunk_no)
+            chunks.append(
+                {
+                    "chunk_id": chunk_id,
+                    "text": sub_text,
+                    "metadata": {
+                        "source_type": "industry_report",
+                        "source_name": source_name,
+                        "published_year": published_year,
+                        "industry": industry,
+                        "chunk_id": chunk_id,
+                        "heading": section.heading,
+                        "page": section.page,
+                    },
+                }
+            )
     return chunks
 
 
@@ -295,6 +365,38 @@ def split_by_headings(text: str, chapter_ranges: list[ChapterRange] | None = Non
                 current_industry = detected_industry
             continue
 
+        buffer.append(stripped)
+
+    flush()
+    return sections
+
+
+def split_pages(text: str) -> list[Section]:
+    sections: list[Section] = []
+    current_page: int | None = None
+    buffer: list[str] = []
+
+    def flush() -> None:
+        nonlocal buffer
+        content = normalize_section_text("\n".join(buffer))
+        if content:
+            sections.append(
+                Section(
+                    heading=f"Page {current_page}" if current_page else "문서 개요",
+                    industry=None,
+                    page=current_page,
+                    text=content,
+                )
+            )
+        buffer = []
+
+    for line in text.splitlines():
+        stripped = line.strip()
+        page = detect_page(stripped)
+        if page is not None:
+            flush()
+            current_page = page
+            continue
         buffer.append(stripped)
 
     flush()
@@ -570,6 +672,9 @@ def infer_source_name(path: Path) -> str:
 
 def infer_published_year(source_name: str) -> int | None:
     years = [int(year) for year in re.findall(r"20\d{2}", source_name)]
+    normalized_name = unicodedata.normalize("NFC", source_name)
+    if not years and "기계산업" in normalized_name and "기술백서" in normalized_name:
+        return 2025
     return max(years) if years else None
 
 
@@ -580,8 +685,10 @@ def build_chunk_id(
     page_part: str,
     chunk_no: int,
 ) -> str:
-    source_key = re.sub(r"[^0-9A-Za-z가-힣]+", "_", Path(source_name).stem).strip("_")
-    industry_key = re.sub(r"[^0-9A-Za-z가-힣]+", "_", industry).strip("_")
+    source_key = re.sub(r"[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣᄀ-ᇿ]+", "_", Path(source_name).stem).strip("_")
+    industry_key = re.sub(r"[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣᄀ-ᇿ]+", "_", industry).strip("_")
+    if not source_key:
+        source_key = "industry_report"
     year = published_year or "unknown"
     return f"{source_key}_{year}_{industry_key}_{page_part}_{chunk_no:03d}"
 

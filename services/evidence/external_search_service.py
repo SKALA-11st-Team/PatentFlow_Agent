@@ -90,7 +90,7 @@ def collect_external_evidence(
     query_limit_per_axis: int = 1,
     include_naver: bool = True,
     include_gnews: bool = True,
-    include_kipris: bool = True,
+    include_kipris: bool = False,
     dart_corp_code: str | None = None,
     dart_bgn_de: str | None = None,
     dart_end_de: str | None = None,

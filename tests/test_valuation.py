@@ -53,49 +53,11 @@ def test_run_valuation_agent_sets_result():
 
     assert result.valuation_result is not None
     axes = result.valuation_result["axes"]
-    assert set(axes) == {"legal", "technology", "market", "economic", "business_fit"}
+    assert set(axes) == {"legal", "technology", "market", "business_fit"}
     assert "strategy" not in axes
     assert axes["business_fit"]["label"] == "사업 연계성"
     assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
     assert result.valuation_result["final_report_markdown"].startswith("# 특허 가치판단 종합 보고서")
-
-
-def test_economic_missing_information_does_not_require_financial_numbers():
-    def fake_call_llm(prompt):
-        if "Return ONLY Markdown" in prompt:
-            return "# LLM 최종 보고서"
-        return '{"score":70,"grade":"B","rationale":"LLM 평가","evidence_ids":[],"risk_factors":[],"missing_information":[],"confidence":0.7}'
-
-    state = PatentWorkflowState(
-        user_input={"no_save": True},
-        patent_structured={
-            "status": "등록",
-            "expected_expiration_date": "2032-01-01",
-        },
-        evidence_bundle=[
-            {
-                "evidence_id": "portfolio_001",
-                "source": "kipris_api",
-                "source_type": "portfolio_context",
-                "compressed_summary": "포트폴리오 보호 효과가 있다.",
-            }
-        ],
-    )
-
-    from agents import valuation
-
-    original_call_llm = valuation.call_llm
-    valuation.call_llm = fake_call_llm
-    try:
-        result = run_valuation_agent(state)
-    finally:
-        valuation.call_llm = original_call_llm
-
-    missing = result.valuation_result["axes"]["economic"]["missing_information"]
-
-    assert all("연차료" not in item for item in missing)
-    assert all("매출" not in item for item in missing)
-    assert all("비용절감" not in item for item in missing)
 
 
 def test_business_fit_selects_news_with_company_or_product_context():
@@ -148,7 +110,6 @@ def test_supervisor_requires_business_fit_axis():
                 "legal": {"score": 70, "grade": "B", "rationale": "r", "evidence_ids": [], "risk_factors": ["r"], "confidence": 0.6},
                 "technology": {"score": 70, "grade": "B", "rationale": "r", "evidence_ids": [], "risk_factors": ["r"], "confidence": 0.6},
                 "market": {"score": 70, "grade": "B", "rationale": "r", "evidence_ids": [], "risk_factors": ["r"], "confidence": 0.6},
-                "economic": {"score": 70, "grade": "B", "rationale": "r", "evidence_ids": [], "risk_factors": ["r"], "confidence": 0.6},
                 "strategy": {"score": 70, "grade": "B", "rationale": "r", "evidence_ids": [], "risk_factors": ["r"], "confidence": 0.6},
             }
         },
@@ -217,7 +178,7 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     run_valuation_agent(state)
 
     axis_prompts = [prompt for prompt in captured_prompts if "Return ONLY one JSON object" in prompt]
-    assert len(axis_prompts) == 5
+    assert len(axis_prompts) == 4
     assert all(prompt.index("# Common Valuation Axis Rules") < prompt.index("# Valuation") for prompt in axis_prompts)
 
 
@@ -267,7 +228,7 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
     assert (input_dir / "legal_input.json").exists()
     assert (input_dir / "technology_input.json").exists()
     assert (input_dir / "market_input.json").exists()
-    assert (input_dir / "economic_input.json").exists()
+    assert not (input_dir / "economic_input.json").exists()
     assert (input_dir / "business_fit_input.json").exists()
     assert (input_dir / "final_report_input.json").exists()
     market_input = json.loads((input_dir / "market_input.json").read_text(encoding="utf-8"))
@@ -371,6 +332,7 @@ def test_cli_user_input_enables_llm_valuation_by_default():
     assert user_input["use_llm_summary"] is True
     assert user_input["use_llm_valuation"] is True
     assert user_input["use_llm_final_report"] is True
+    assert user_input["use_llm_supervisor"] is True
 
 
 def test_cli_positional_identifier_is_management_number():
@@ -393,3 +355,4 @@ def test_cli_user_input_can_disable_llm_for_debug():
     assert user_input["use_llm_summary"] is False
     assert user_input["use_llm_valuation"] is False
     assert user_input["use_llm_final_report"] is False
+    assert user_input["use_llm_supervisor"] is False
