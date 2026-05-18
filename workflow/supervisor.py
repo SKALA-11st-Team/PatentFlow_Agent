@@ -19,6 +19,9 @@ STAGE_PROMPTS = {
     "final_check": "supervisor/supervisor_final_check.md",
 }
 
+VALUATION_SUPERVISOR_RETRY_LIMIT = 2
+WRITING_SUPERVISOR_RETRY_LIMIT = 1
+
 
 def decide_next_step(state: PatentWorkflowState) -> str:
     if state.supervisor_decision:
@@ -168,6 +171,17 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
             "valuation_retry": ("valuation", "valuation_team"),
         },
     )
+    decision = apply_supervisor_retry_limit(
+        state,
+        decision,
+        scope="valuation",
+        retry_action="valuation_team",
+        retry_limit=VALUATION_SUPERVISOR_RETRY_LIMIT,
+        fallback_team="writing",
+        fallback_action="writing_team",
+        fallback_reason="Valuation supervisor retry limit reached; continuing with structurally valid valuation result.",
+        allow_fallback=check_valuation_result(state).passed,
+    )
     state.supervisor_decision = decision.model_dump()
     return state
 
@@ -205,8 +219,78 @@ def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
             "supervisor": ("writing", "writing_team"),
         },
     )
+    decision = apply_supervisor_retry_limit(
+        state,
+        decision,
+        scope="writing",
+        retry_action="writing_team",
+        retry_limit=WRITING_SUPERVISOR_RETRY_LIMIT,
+        fallback_team="final",
+        fallback_action="final_merge",
+        fallback_reason="Writing supervisor retry limit reached; final report markdown is structurally present.",
+        allow_fallback=check_writing_result(state).passed,
+    )
     state.supervisor_decision = decision.model_dump()
     return state
+
+
+def apply_supervisor_retry_limit(
+    state: PatentWorkflowState,
+    decision: SupervisorDecision,
+    *,
+    scope: str,
+    retry_action: str,
+    retry_limit: int,
+    fallback_team: str,
+    fallback_action: str,
+    fallback_reason: str,
+    allow_fallback: bool,
+) -> SupervisorDecision:
+    if decision.next_action != retry_action:
+        reset_supervisor_retry_count(state, scope)
+        return decision
+
+    retry_count = increment_supervisor_retry_count(state, scope)
+    if retry_count <= retry_limit or not allow_fallback:
+        return decision
+
+    metadata = dict(decision.metadata)
+    metadata["supervisor_retry_limit"] = {
+        "scope": scope,
+        "retry_count": retry_count,
+        "retry_limit": retry_limit,
+        "fallback_action": fallback_action,
+    }
+    return SupervisorDecision(
+        passed=True,
+        current_team=decision.current_team,
+        next_team=fallback_team,
+        stage=decision.stage,
+        next_action=fallback_action,
+        issues=decision.issues,
+        missing_evidence=decision.missing_evidence,
+        reason=fallback_reason,
+        route_reason=fallback_reason,
+        metadata=metadata,
+    )
+
+
+def increment_supervisor_retry_count(state: PatentWorkflowState, scope: str) -> int:
+    team_status = dict(state.team_status or {})
+    retry_counts = dict(team_status.get("supervisor_retry_counts") or {})
+    retry_counts[scope] = int(retry_counts.get(scope) or 0) + 1
+    team_status["supervisor_retry_counts"] = retry_counts
+    state.team_status = team_status
+    return retry_counts[scope]
+
+
+def reset_supervisor_retry_count(state: PatentWorkflowState, scope: str) -> None:
+    team_status = dict(state.team_status or {})
+    retry_counts = dict(team_status.get("supervisor_retry_counts") or {})
+    if scope in retry_counts:
+        retry_counts.pop(scope)
+        team_status["supervisor_retry_counts"] = retry_counts
+        state.team_status = team_status
 
 
 def run_llm_supervisor_check(

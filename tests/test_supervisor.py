@@ -206,7 +206,7 @@ def test_valuation_supervisor_uses_llm_judge_to_retry_valuation(monkeypatch):
                     "grade": "B",
                     "rationale": "known 근거 기반 평가",
                     "evidence_ids": ["known"],
-                    "risk_factors": [],
+                    "risk_factors": ["리스크"],
                     "confidence": 0.7,
                 }
                 for axis in ["legal", "technology", "market", "business_fit"]
@@ -219,6 +219,43 @@ def test_valuation_supervisor_uses_llm_judge_to_retry_valuation(monkeypatch):
     assert result.supervisor_decision["passed"] is False
     assert result.supervisor_decision["next_team"] == "valuation"
     assert result.supervisor_decision["next_action"] == "valuation_team"
+
+
+def test_valuation_supervisor_retry_limit_continues_when_rule_check_passes(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.supervisor.call_llm",
+        lambda prompt: (
+            '{"passed": false, "next_action": "valuation_retry", '
+            '"issues": ["평가 논리 재검토 필요"], "reason": "재시도 요청"}'
+        ),
+    )
+    evidence = [{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}]
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        team_status={"supervisor_retry_counts": {"valuation": 2}},
+        patent_structured={"id": 1, "title_final": "테스트 특허"},
+        evidence_bundle=evidence,
+        valuation_result={
+            "axes": {
+                axis: {
+                    "score": 70,
+                    "grade": "B",
+                    "rationale": "known 근거 기반 평가",
+                    "evidence_ids": ["known"],
+                    "risk_factors": ["리스크"],
+                    "confidence": 0.7,
+                }
+                for axis in ["legal", "technology", "market", "business_fit"]
+            }
+        },
+    )
+
+    result = valuation_supervisor_node(state)
+
+    assert result.supervisor_decision["passed"] is True
+    assert result.supervisor_decision["next_team"] == "writing"
+    assert result.supervisor_decision["next_action"] == "writing_team"
+    assert result.supervisor_decision["metadata"]["supervisor_retry_limit"]["scope"] == "valuation"
 
 
 def test_writing_supervisor_routes_complete_documents_to_final():
@@ -253,3 +290,26 @@ def test_writing_supervisor_uses_llm_judge_to_retry_document(monkeypatch):
     assert result.supervisor_decision["passed"] is False
     assert result.supervisor_decision["next_team"] == "writing"
     assert result.supervisor_decision["next_action"] == "writing_team"
+
+
+def test_writing_supervisor_retry_limit_finishes_when_outputs_exist(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.supervisor.call_llm",
+        lambda prompt: (
+            '{"passed": false, "next_action": "supervisor", '
+            '"issues": ["문서 보완 필요"], "reason": "재검토 요청"}'
+        ),
+    )
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        team_status={"supervisor_retry_counts": {"writing": 1}},
+        summary_result={"summary_markdown": "# 특허 요약\n\n본문"},
+        valuation_result={"final_report_markdown": "# 특허 가치평가 리포트\n\n본문"},
+    )
+
+    result = writing_supervisor_node(state)
+
+    assert result.supervisor_decision["passed"] is True
+    assert result.supervisor_decision["next_team"] == "final"
+    assert result.supervisor_decision["next_action"] == "final_merge"
+    assert result.supervisor_decision["metadata"]["supervisor_retry_limit"]["scope"] == "writing"

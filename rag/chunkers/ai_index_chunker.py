@@ -41,9 +41,18 @@ def chunk_report(
     del markdown_path
     sections = split_ai_index_sections(clean_markdown(source_text))
     sections = merge_short_sections(
-        [section for section in sections if keep_section(section) and not is_noise_section(section)]
+        [
+            Section(
+                heading=section.heading,
+                industry=section.industry,
+                page=section.page,
+                text=strip_embedded_chart_ocr_tail(section.text),
+            )
+            for section in sections
+            if keep_section(section) and not is_noise_section(section)
+        ]
     )
-    return build_chunks_from_sections(
+    chunks = build_chunks_from_sections(
         sections=sections,
         source_name=source_name,
         published_year=published_year,
@@ -51,6 +60,7 @@ def chunk_report(
         token_overlap=min(token_overlap, AI_INDEX_TOKEN_OVERLAP),
         default_industry="AI",
     )
+    return [chunk for chunk in chunks if not is_ai_index_chunk_noise(chunk.get("text", ""))]
 
 
 def split_ai_index_sections(text: str) -> list[Section]:
@@ -80,9 +90,60 @@ def is_noise_section(section: Section) -> bool:
         return True
     if is_figure_only_section(section.text):
         return True
+    if is_chart_ocr_noise(section.text):
+        return True
+    if is_data_source_only_section(section.text):
+        return True
     if is_footnote_only_section(section.text):
         return True
+    if is_report_heading_only_section(section.text):
+        return True
     return False
+
+
+def is_ai_index_chunk_noise(text: str) -> bool:
+    return (
+        is_figure_only_section(text)
+        or is_chart_ocr_noise(text)
+        or is_data_source_only_section(text)
+        or is_footnote_only_section(text)
+        or is_report_heading_only_section(text)
+    )
+
+
+def strip_embedded_chart_ocr_tail(text: str) -> str:
+    normalized = normalize_section_text(text)
+    for marker in (" Source:", " Data source:"):
+        marker_index = normalized.find(marker)
+        while marker_index >= 0:
+            tail = normalized[marker_index:]
+            if is_probable_embedded_chart_tail(tail):
+                sentence_end = normalized.rfind(". ", 0, marker_index)
+                if sentence_end >= 0 and marker_index - sentence_end <= 180:
+                    return normalized[: sentence_end + 1].strip()
+                return normalized[:marker_index].strip()
+            marker_index = normalized.find(marker, marker_index + len(marker))
+    return normalized
+
+
+def is_probable_embedded_chart_tail(text: str) -> bool:
+    normalized = normalize_section_text(text)
+    tokens = normalized.split()
+    if len(tokens) < 25:
+        return False
+    single_alpha_tokens = sum(1 for token in tokens if re.fullmatch(r"[A-Za-z]", token))
+    short_tokens = sum(1 for token in tokens if len(token) <= 2)
+    has_chart_marker = "Chart:" in normalized or "Figure " in normalized or "Data source:" in normalized
+    if not has_chart_marker:
+        return False
+    return single_alpha_tokens / len(tokens) >= 0.15 or short_tokens / len(tokens) >= 0.45
+
+
+def is_report_heading_only_section(text: str) -> bool:
+    normalized = normalize_section_text(text)
+    if len(normalized) >= 220:
+        return False
+    return "AI INDEX REPORT" in normalized and ". " not in normalized
 
 
 def is_figure_only_section(text: str) -> bool:
@@ -92,7 +153,47 @@ def is_figure_only_section(text: str) -> bool:
     figure_count = normalized.count("Figure ")
     table_count = normalized.count("Table ")
     sentence_count = normalized.count(". ")
-    return figure_count + table_count >= 3 and sentence_count <= 2
+    if figure_count + table_count >= 3 and sentence_count <= 2:
+        return True
+    if figure_count + table_count >= 2 and sentence_count <= 1:
+        return True
+    if len(normalized) < 180 and "Figure " in normalized and "Source:" in normalized:
+        return True
+    return False
+
+
+def is_chart_ocr_noise(text: str) -> bool:
+    normalized = normalize_section_text(text)
+    if len(normalized) > 260:
+        return False
+    tokens = normalized.split()
+    if len(tokens) < 18:
+        return False
+    single_alpha_tokens = sum(1 for token in tokens if re.fullmatch(r"[A-Za-z]", token))
+    short_tokens = sum(1 for token in tokens if len(token) <= 2)
+    has_chart_marker = "Figure " in normalized or "Data source:" in normalized or "Source:" in normalized
+    if single_alpha_tokens / len(tokens) >= 0.35:
+        return True
+    if short_tokens / len(tokens) >= 0.75:
+        return True
+    return has_chart_marker and single_alpha_tokens / len(tokens) >= 0.25
+
+
+def is_data_source_only_section(text: str) -> bool:
+    normalized = normalize_section_text(text)
+    if len(normalized) > 260:
+        return False
+    if normalized.count("Data source:") >= 1 and re.match(r"^\d+\s+Data source:", normalized):
+        return True
+    lowered = normalized.casefold()
+    return bool(
+        re.match(r"^\d+\s+", normalized)
+        and (
+            "for the sake of brevity" in lowered
+            or "figures may not add up" in lowered
+            or "percentage points are rounded" in lowered
+        )
+    )
 
 
 def is_footnote_only_section(text: str) -> bool:

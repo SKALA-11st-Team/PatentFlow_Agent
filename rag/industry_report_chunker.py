@@ -9,6 +9,7 @@ import io
 import json
 import re
 import subprocess
+import unicodedata
 
 from app.config import settings
 
@@ -671,6 +672,9 @@ def infer_source_name(path: Path) -> str:
 
 def infer_published_year(source_name: str) -> int | None:
     years = [int(year) for year in re.findall(r"20\d{2}", source_name)]
+    normalized_name = unicodedata.normalize("NFC", source_name)
+    if not years and "기계산업" in normalized_name and "기술백서" in normalized_name:
+        return 2025
     return max(years) if years else None
 
 
