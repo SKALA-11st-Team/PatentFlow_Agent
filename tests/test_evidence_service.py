@@ -264,6 +264,7 @@ def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
     saved_queries = []
 
     def fake_request_json(base_url, path, params, *, timeout=20):
+        assert base_url == "http://unified.test"
         assert path == "/api/v4/search"
         query = params["q"]
         return {
@@ -284,6 +285,10 @@ def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
 
     monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
     monkeypatch.setattr("services.evidence.external_search_service.save_evidence_collection", fake_save_collection)
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.settings.unified_api_base_url",
+        "http://unified.test",
+    )
     result = collect_external_evidence(
         preprocessed_patent={
             "metadata": {
