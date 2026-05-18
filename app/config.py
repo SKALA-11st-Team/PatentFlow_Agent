@@ -27,6 +27,7 @@ class Settings(BaseModel):
     # OpenAI 모델 및 인증 설정
     openai_api_key: str | None = getenv("OPENAI_API_KEY")
     openai_chat_model: str = getenv("OPENAI_CHAT_MODEL") or getenv("OPENAI_MODEL", "gpt-5-mini")
+    openai_supervisor_model: str | None = getenv("OPENAI_SUPERVISOR_MODEL")
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Spring Boot(BE) 통신용 기본 주소.

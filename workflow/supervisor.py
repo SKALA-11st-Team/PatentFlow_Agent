@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.config import settings
 from services.evidence.compression_service import parse_json_object
 from services.llm.client_service import call_llm
 from services.observability.langsmith_service import trace
@@ -307,7 +308,10 @@ def run_llm_supervisor_check(
         return rule_decision
 
     try:
-        raw = call_llm(build_supervisor_judge_prompt(state, prompt_name=prompt_name))
+        raw = call_llm(
+            build_supervisor_judge_prompt(state, prompt_name=prompt_name),
+            model=settings.openai_supervisor_model,
+        )
         parsed = parse_json_object(raw)
         if not parsed:
             raise ValueError("LLM supervisor response was not valid JSON.")

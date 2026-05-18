@@ -74,7 +74,7 @@ def test_research_supervisor_routes_sufficient_evidence_to_valuation():
 def test_research_supervisor_uses_llm_judge_after_rule_pass(monkeypatch):
     monkeypatch.setattr(
         "workflow.supervisor.call_llm",
-        lambda prompt: (
+        lambda prompt, **kwargs: (
             '{"passed": false, "next_action": "query_rewriting", '
             '"missing_evidence": ["market_signal"], '
             '"issues": ["시장성 직접 근거가 부족함"], "reason": "시장 근거 보강 필요"}'
@@ -107,6 +107,41 @@ def test_research_supervisor_uses_llm_judge_after_rule_pass(monkeypatch):
     assert result.supervisor_decision["next_team"] == "research"
     assert result.supervisor_decision["next_action"] == "query_rewriting"
     assert result.missing_evidence == ["market_signal"]
+
+
+def test_supervisor_llm_uses_dedicated_model_setting(monkeypatch):
+    captured = {}
+
+    def fake_call_llm(prompt, **kwargs):
+        captured.update(kwargs)
+        return '{"passed": true, "next_action": "valuation", "issues": [], "reason": "통과"}'
+
+    monkeypatch.setattr("workflow.supervisor.settings.openai_supervisor_model", "gpt-5-nano")
+    monkeypatch.setattr("workflow.supervisor.call_llm", fake_call_llm)
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        patent_structured={
+            "id": 1,
+            "application_number": "10-2023-0000001",
+            "registration_number": "10-2000000",
+            "title_final": "테스트 특허",
+            "status": "등록",
+            "application_date": "2023-01-01",
+            "registration_date": "2024-01-01",
+        },
+        preprocessed_patent={"metadata": {"title": "테스트 특허"}},
+        summary_result={"title": "테스트", "plain_summary": "요약", "key_points": ["핵심"]},
+        evidence_bundle=[
+            {"evidence_id": "news_1", "source": "naver", "source_type": "news", "content": "본문"},
+            {"evidence_id": "news_2", "source": "naver", "source_type": "news", "content": "본문"},
+            {"evidence_id": "news_3", "source": "gnews", "source_type": "news", "content": "본문"},
+            {"evidence_id": "rag_1", "source": "report", "source_type": "industry_report", "context": "근거"},
+        ],
+    )
+
+    research_supervisor_node(state)
+
+    assert captured["model"] == "gpt-5-nano"
 
 
 def test_supervisor_node_keeps_legacy_action_for_research_success():
@@ -190,7 +225,7 @@ def test_supervisor_node_keeps_legacy_action_for_valuation_unknown_evidence():
 def test_valuation_supervisor_uses_llm_judge_to_retry_valuation(monkeypatch):
     monkeypatch.setattr(
         "workflow.supervisor.call_llm",
-        lambda prompt: (
+        lambda prompt, **kwargs: (
             '{"passed": false, "next_action": "valuation_retry", '
             '"issues": ["권리성 점수 논리가 근거와 맞지 않음"], "reason": "평가 논리 보완 필요"}'
         ),
@@ -225,7 +260,7 @@ def test_valuation_supervisor_uses_llm_judge_to_retry_valuation(monkeypatch):
 def test_valuation_supervisor_retry_limit_continues_when_rule_check_passes(monkeypatch):
     monkeypatch.setattr(
         "workflow.supervisor.call_llm",
-        lambda prompt: (
+        lambda prompt, **kwargs: (
             '{"passed": false, "next_action": "valuation_retry", '
             '"issues": ["평가 논리 재검토 필요"], "reason": "재시도 요청"}'
         ),
@@ -275,7 +310,7 @@ def test_writing_supervisor_routes_complete_documents_to_final():
 def test_writing_supervisor_uses_llm_judge_to_retry_document(monkeypatch):
     monkeypatch.setattr(
         "workflow.supervisor.call_llm",
-        lambda prompt: (
+        lambda prompt, **kwargs: (
             '{"passed": false, "next_action": "supervisor", '
             '"issues": ["AI 평가와 최종 판단 구분이 불명확함"], "reason": "문서 분리 필요"}'
         ),
@@ -296,7 +331,7 @@ def test_writing_supervisor_uses_llm_judge_to_retry_document(monkeypatch):
 def test_writing_supervisor_retry_limit_finishes_when_outputs_exist(monkeypatch):
     monkeypatch.setattr(
         "workflow.supervisor.call_llm",
-        lambda prompt: (
+        lambda prompt, **kwargs: (
             '{"passed": false, "next_action": "supervisor", '
             '"issues": ["문서 보완 필요"], "reason": "재검토 요청"}'
         ),
