@@ -25,7 +25,7 @@ from services.evidence.store_service import (
 )
 
 
-DEFAULT_UNIFIED_API_BASE_URL = "http://127.0.0.1:8000"
+DEFAULT_UNIFIED_API_BASE_URL = settings.unified_api_base_url
 MAX_SEARCH_QUERIES = settings.search_query_count
 API_REQUEST_MAX_ATTEMPTS = 3
 API_REQUEST_RETRY_STATUS_CODES = {502, 503, 504}
@@ -86,7 +86,7 @@ def collect_external_evidence(
     preprocessed_patent: dict[str, Any],
     patent_id: str | int | None = None,
     application_number: str | None = None,
-    api_base_url: str = DEFAULT_UNIFIED_API_BASE_URL,
+    api_base_url: str | None = None,
     query_limit_per_axis: int = 1,
     include_naver: bool = True,
     include_gnews: bool = True,
@@ -126,7 +126,7 @@ def collect_external_evidence(
     selected_queries = ko_queries[:safe_limit]
     selected_gnews_queries = en_queries[:safe_limit]
 
-    api_base_url = api_base_url.rstrip("/")
+    api_base_url = (api_base_url or settings.unified_api_base_url).rstrip("/")
     sources: list[list[dict[str, Any]]] = []
     saved_paths: list[str] = []
     warnings: list[str] = []
