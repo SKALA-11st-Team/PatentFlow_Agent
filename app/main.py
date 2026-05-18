@@ -127,6 +127,9 @@ def build_user_input(args: argparse.Namespace) -> dict[str, Any]:
         "use_llm_summary": not args.no_llm_summary,
         "use_llm_valuation": not args.no_llm_valuation,
         "use_llm_final_report": not args.no_llm_final_report,
+        "use_llm_supervisor": not (
+            args.no_llm_summary or args.no_llm_valuation or args.no_llm_final_report
+        ),
     }
     if args.patent_id is not None:
         user_input["patent_id"] = args.patent_id

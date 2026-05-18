@@ -332,6 +332,7 @@ def test_cli_user_input_enables_llm_valuation_by_default():
     assert user_input["use_llm_summary"] is True
     assert user_input["use_llm_valuation"] is True
     assert user_input["use_llm_final_report"] is True
+    assert user_input["use_llm_supervisor"] is True
 
 
 def test_cli_positional_identifier_is_management_number():
@@ -354,3 +355,4 @@ def test_cli_user_input_can_disable_llm_for_debug():
     assert user_input["use_llm_summary"] is False
     assert user_input["use_llm_valuation"] is False
     assert user_input["use_llm_final_report"] is False
+    assert user_input["use_llm_supervisor"] is False

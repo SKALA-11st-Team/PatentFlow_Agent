@@ -1,3 +1,10 @@
+from __future__ import annotations
+
+import json
+from typing import Any
+
+from services.evidence.compression_service import parse_json_object
+from services.llm.client_service import call_llm
 from services.observability.langsmith_service import trace
 from services.llm.prompt_service import load_prompt
 from schemas.supervisor import SupervisorDecision
@@ -110,14 +117,27 @@ def research_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
             state.missing_evidence = decision.missing_evidence
             return state
 
-    state.supervisor_decision = SupervisorDecision(
+    decision = SupervisorDecision(
         passed=True,
         current_team="research",
         next_team="valuation",
         stage="evidence_check",
         next_action="valuation_team",
         reason="Research outputs are ready for valuation.",
-    ).model_dump()
+    )
+    decision = run_llm_supervisor_check(
+        state,
+        decision,
+        prompt_name="supervisor/supervisor_evidence_check.md",
+        allowed_next_actions={"valuation", "query_rewriting", "industry_rag_query"},
+        team_action_map={
+            "valuation": ("valuation", "valuation_team"),
+            "query_rewriting": ("research", "query_rewriting"),
+            "industry_rag_query": ("research", "query_rewriting"),
+        },
+    )
+    state.supervisor_decision = decision.model_dump()
+    state.missing_evidence = decision.missing_evidence
     return state
 
 
@@ -137,6 +157,17 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
     else:
         decision.next_team = "valuation"
         decision.next_action = "valuation_team"
+    decision = run_llm_supervisor_check(
+        state,
+        decision,
+        prompt_name="supervisor/supervisor_valuation_check.md",
+        allowed_next_actions={"validation", "query_rewriting", "valuation_retry"},
+        team_action_map={
+            "validation": ("writing", "writing_team"),
+            "query_rewriting": ("research", "research_team"),
+            "valuation_retry": ("valuation", "valuation_team"),
+        },
+    )
     state.supervisor_decision = decision.model_dump()
     return state
 
@@ -163,8 +194,117 @@ def check_writing_result(state: PatentWorkflowState) -> SupervisorDecision:
 @trace(name="writing_supervisor_agent", run_type="chain")
 def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "writing"
-    state.supervisor_decision = check_writing_result(state).model_dump()
+    decision = check_writing_result(state)
+    decision = run_llm_supervisor_check(
+        state,
+        decision,
+        prompt_name="supervisor/supervisor_final_check.md",
+        allowed_next_actions={"final_merge", "supervisor"},
+        team_action_map={
+            "final_merge": ("final", "final_merge"),
+            "supervisor": ("writing", "writing_team"),
+        },
+    )
+    state.supervisor_decision = decision.model_dump()
     return state
+
+
+def run_llm_supervisor_check(
+    state: PatentWorkflowState,
+    rule_decision: SupervisorDecision,
+    *,
+    prompt_name: str,
+    allowed_next_actions: set[str],
+    team_action_map: dict[str, tuple[str, str]],
+) -> SupervisorDecision:
+    if not state.user_input.get("use_llm_supervisor", False):
+        return rule_decision
+
+    try:
+        raw = call_llm(build_supervisor_judge_prompt(state, prompt_name=prompt_name))
+        parsed = parse_json_object(raw)
+        if not parsed:
+            raise ValueError("LLM supervisor response was not valid JSON.")
+        return normalize_llm_supervisor_decision(
+            parsed,
+            fallback=rule_decision,
+            allowed_next_actions=allowed_next_actions,
+            team_action_map=team_action_map,
+        )
+    except Exception as exc:
+        metadata = dict(rule_decision.metadata)
+        metadata["supervisor_llm_warning"] = f"{exc.__class__.__name__}:{str(exc)[:200]}"
+        rule_decision.metadata = metadata
+        return rule_decision
+
+
+def build_supervisor_judge_prompt(state: PatentWorkflowState, *, prompt_name: str) -> str:
+    template = load_prompt(prompt_name).strip()
+    payload = supervisor_payload(state)
+    return f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+
+
+def supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    return {
+        "user_input": state.user_input,
+        "current_stage": state.current_stage,
+        "current_team": state.current_team,
+        "patent_structured": state.patent_structured,
+        "preprocessed_patent": state.preprocessed_patent,
+        "summary_result": state.summary_result,
+        "query_plan": state.query_plan,
+        "evidence_bundle": state.evidence_bundle,
+        "valuation_result": state.valuation_result,
+        "validation_result": state.validation_result,
+        "missing_evidence": state.missing_evidence,
+        "retry_count": state.retry_count,
+    }
+
+
+def normalize_llm_supervisor_decision(
+    parsed: dict[str, Any],
+    *,
+    fallback: SupervisorDecision,
+    allowed_next_actions: set[str],
+    team_action_map: dict[str, tuple[str, str]],
+) -> SupervisorDecision:
+    requested_action = str(parsed.get("next_action") or fallback.next_action)
+    if requested_action not in allowed_next_actions:
+        requested_action = fallback.next_action
+    next_team, next_action = team_action_map.get(
+        requested_action,
+        (fallback.next_team or fallback.current_team, fallback.next_action),
+    )
+    return SupervisorDecision(
+        passed=normalize_bool(parsed.get("passed"), fallback.passed),
+        next_action=next_action,
+        current_team=fallback.current_team,
+        next_team=next_team,
+        stage=fallback.stage,
+        route_reason=fallback.route_reason,
+        issues=normalize_text_list(parsed.get("issues"), fallback.issues),
+        missing_evidence=normalize_text_list(parsed.get("missing_evidence"), fallback.missing_evidence),
+        reason=str(parsed.get("reason") or fallback.reason),
+        metadata={**fallback.metadata, "supervisor_llm": {"prompt": True, "requested_action": requested_action}},
+    )
+
+
+def normalize_text_list(value: Any, fallback: list[str]) -> list[str]:
+    if not isinstance(value, list):
+        return fallback
+    return [str(item) for item in value if str(item).strip()]
+
+
+def normalize_bool(value: Any, fallback: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    return fallback
 
 
 def run_rule_based_check(state: PatentWorkflowState, stage: str) -> SupervisorDecision:

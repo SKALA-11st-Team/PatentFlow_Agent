@@ -81,4 +81,5 @@ def test_evaluate_patent_builds_patent_id_input(monkeypatch):
     assert captured["patent_id"] == 1
     assert captured["collect_pdf"] is True
     assert captured["collect_kipris_api"] is True
+    assert captured["use_llm_supervisor"] is True
     assert captured["no_save"] is True

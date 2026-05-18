@@ -107,6 +107,7 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
         "use_llm_summary": True,
         "use_llm_valuation": True,
         "use_llm_final_report": True,
+        "use_llm_supervisor": True,
     }
     if request.managementNumber:
         user_input["management_number"] = request.managementNumber
