@@ -74,10 +74,36 @@ def build_patent_industry_query(preprocessed_patent: dict[str, Any]) -> str:
     return "\n\n".join(part for part in (title, abstract) if part)
 
 
+def compact_rag_queries(queries: list[str]) -> list[str]:
+    compacted: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        value = " ".join(str(query or "").split())
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        compacted.append(value)
+    return compacted
+
+
+def dedupe_industry_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        evidence_id = str(item.get("evidence_id") or "")
+        if evidence_id and evidence_id in seen:
+            continue
+        if evidence_id:
+            seen.add(evidence_id)
+        deduped.append(item)
+    return deduped
+
+
 def search_and_save_patent_industry_evidence(
     *,
     preprocessed_patent: dict[str, Any],
     patent_id: str | int | None = None,
+    rag_queries: list[str] | None = None,
     top_k: int = 3,
     industry: str | None = None,
     database_url: str | None = DEFAULT_DB_PATH,
@@ -85,32 +111,44 @@ def search_and_save_patent_industry_evidence(
     output_dir: Path | str = DEFAULT_INDUSTRY_RAG_OUTPUT_DIR,
     save: bool = True,
 ) -> dict[str, Any]:
-    query = build_patent_industry_query(preprocessed_patent)
-    if not query:
+    queries = compact_rag_queries(rag_queries or [])
+    if not queries:
+        fallback_query = build_patent_industry_query(preprocessed_patent)
+        if fallback_query:
+            queries = [fallback_query]
+    if not queries:
         return {
-            "query": query,
+            "query": "",
+            "queries": [],
             "items": [],
             "output_path": None,
             "warning": "title and abstract are both empty",
         }
 
-    items = search_industry_evidence(
-        query,
-        industry=industry,
-        top_k=top_k,
-        database_url=database_url,
-        embedding_model=embedding_model,
-    )
+    collected_items: list[dict[str, Any]] = []
+    for query in queries:
+        query_items = search_industry_evidence(
+            query,
+            industry=industry,
+            top_k=top_k,
+            database_url=database_url,
+            embedding_model=embedding_model,
+        )
+        collected_items.extend({**item, "rag_query": query} for item in query_items)
+    items = dedupe_industry_items(collected_items)
+    query = queries[0] if len(queries) == 1 else "\n".join(queries)
     output_path = None
     if save:
         output_path = save_industry_rag_result(
             patent_id=patent_id,
             query=query,
+            queries=queries,
             items=items,
             output_dir=output_dir,
         )
     return {
         "query": query,
+        "queries": queries,
         "items": items,
         "output_path": str(output_path) if output_path else None,
         "warning": None,
@@ -121,6 +159,7 @@ def save_industry_rag_result(
     *,
     patent_id: str | int | None,
     query: str,
+    queries: list[str] | None = None,
     items: list[dict[str, Any]],
     output_dir: Path | str = DEFAULT_INDUSTRY_RAG_OUTPUT_DIR,
 ) -> Path:
@@ -132,6 +171,7 @@ def save_industry_rag_result(
         "source_type": "industry_report",
         "source": "pgvector",
         "query": query,
+        "queries": queries or ([query] if query else []),
         "patent_id": str(patent_id) if patent_id is not None else None,
         "top_k": len(items),
         "collected_at": now_iso(),

@@ -205,12 +205,18 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
         use_llm=True,
     )
     state.search_queries = compact_workflow_queries(
-        [*state.search_queries, *rewritten.get("ko", []), *rewritten.get("en", [])]
+        [
+            *state.search_queries,
+            *rewritten.get("ko", []),
+            *rewritten.get("en", []),
+            *rewritten.get("industry_rag", []),
+        ]
     )
     state.query_plan = {
         "source": "query_rewriting",
         "ko_queries": rewritten.get("ko", []),
         "en_queries": rewritten.get("en", []),
+        "industry_rag_queries": rewritten.get("industry_rag", []),
         "rewrite_meta": rewritten.get("meta", {}),
     }
     state.current_stage = "query_rewriting"
@@ -253,6 +259,7 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     industry_result = search_industry_rag_safely(
         preprocessed_patent=preprocessed,
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
+        rag_queries=query_plan.get("industry_rag_queries", []),
         output_dir=artifact_subdir(state, "industry_rag"),
         save=not state.user_input.get("no_save", False),
     )
@@ -279,8 +286,10 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         },
         "industry_rag": {
             "query": industry_result.get("query"),
+            "queries": industry_result.get("queries", []),
             "output_path": industry_result.get("output_path"),
             "warning": industry_result.get("warning"),
+            "item_count": len(industry_result.get("items", [])),
         },
         "filtered_evidence": {
             "output_path": filtered_evidence_path,
@@ -441,6 +450,7 @@ def search_industry_rag_safely(
     *,
     preprocessed_patent: dict,
     patent_id: str | int | None,
+    rag_queries: list[str] | None = None,
     output_dir: Path,
     save: bool,
 ) -> dict:
@@ -448,13 +458,15 @@ def search_industry_rag_safely(
         return search_and_save_patent_industry_evidence(
             preprocessed_patent=preprocessed_patent,
             patent_id=patent_id,
-            top_k=3,
+            rag_queries=rag_queries,
+            top_k=settings.industry_rag_top_k,
             output_dir=output_dir,
             save=save,
         )
     except Exception as exc:
         return {
             "query": None,
+            "queries": [],
             "items": [],
             "output_path": None,
             "warning": f"industry_rag_failed:{exc.__class__.__name__}",

@@ -1,4 +1,4 @@
-from workflow.nodes import evidence_compression_node, final_merge_node, patent_fetch_node
+from workflow.nodes import evidence_compression_node, final_merge_node, patent_fetch_node, query_rewriting_node
 from workflow.supervisor import check_evidence_bundle
 from workflow.state import PatentWorkflowState
 
@@ -72,6 +72,25 @@ def test_patent_fetch_continues_when_kipris_pdf_is_missing(monkeypatch):
     assert result.kipris_family_patents == [{"country_code": "US", "registration_number": "1234567"}]
     assert result.parsed_pdf is None
     assert result.patent_structured["pdf"]["warning"].startswith("pdf_fetch_failed:RuntimeError")
+
+
+def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.rewrite_search_queries",
+        lambda **kwargs: {
+            "ko": ["AI 투자 서비스"],
+            "en": ["ai investing"],
+            "industry_rag": ["웰스테크 AI 에이전트 디지털 자문"],
+            "meta": {"rewrite_source": "llm"},
+        },
+    )
+
+    state = PatentWorkflowState(preprocessed_patent={"metadata": {}, "sections": {}})
+
+    result = query_rewriting_node(state)
+
+    assert result.query_plan["industry_rag_queries"] == ["웰스테크 AI 에이전트 디지털 자문"]
+    assert "웰스테크 AI 에이전트 디지털 자문" in result.search_queries
 
 
 def test_evidence_compression_merges_portfolio_evidence(monkeypatch):

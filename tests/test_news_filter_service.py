@@ -50,7 +50,10 @@ def test_filter_news_evidence_applies_basic_rules():
     )
 
     assert result["stats"]["input_count"] == 5
-    assert result["stats"]["kept_count"] == 1
+    assert result["stats"]["kept_count"] == 3
     assert result["kept"][0]["evidence_id"] == "news_1"
+    assert result["kept"][1]["evidence_id"] == "news_3"
+    assert result["kept"][1]["metadata"]["news_filter"]["content_truncated"] is True
+    assert result["kept"][2]["evidence_id"] == "news_4"
     reasons = {item["reason"] for item in result["rejected"]}
-    assert {"older_than_3_years", "content_too_long", "not_related_by_title_or_preview", "duplicate"} <= reasons
+    assert {"older_than_3_years", "duplicate"} <= reasons

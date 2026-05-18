@@ -35,6 +35,8 @@ class Settings(BaseModel):
     unified_api_base_url: str = getenv("UNIFIED_API_BASE_URL", "http://localhost:8080")
     
     search_query_count: int = int(getenv("SEARCH_QUERY_COUNT", "3"))
+    industry_rag_query_count: int = int(getenv("INDUSTRY_RAG_QUERY_COUNT", "1"))
+    industry_rag_top_k: int = int(getenv("INDUSTRY_RAG_TOP_K", "3"))
     max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
     

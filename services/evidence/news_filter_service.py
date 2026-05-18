@@ -13,7 +13,7 @@ from services.evidence.store_service import now_iso, safe_filename
 DEFAULT_FILTERED_NEWS_DIR = settings.output_dir / "filtered_evidence" / "news"
 DEFAULT_PREVIEW_CHARS = 100
 DEFAULT_MAX_CONTENT_CHARS = 5000
-DEFAULT_MAX_AGE_DAYS = 365 * 3
+DEFAULT_MAX_AGE_DAYS = 365 * 5
 
 KOREAN_STOPWORDS = {
     "그리고",
@@ -65,8 +65,12 @@ def filter_news_evidence(
             metadata["news_filter"] = {
                 "preview": decision["preview"],
                 "matched_keywords": decision["matched_keywords"],
+                "content_truncated": decision["content_truncated"],
+                "original_content_char_count": decision["content_char_count"],
             }
             filtered_item["metadata"] = metadata
+            if decision["content_truncated"]:
+                filtered_item["content"] = str(filtered_item.get("content") or "")[:max_content_chars]
             kept.append(filtered_item)
         else:
             rejected.append(
@@ -120,20 +124,16 @@ def evaluate_news_item(
     if now - published_at > timedelta(days=max_age_days):
         return reject("older_than_3_years", preview, content_char_count)
 
-    if content_char_count > max_content_chars:
-        return reject("content_too_long", preview, content_char_count)
+    content_truncated = content_char_count > max_content_chars
 
     matched_keywords = sorted(extract_keywords(f"{title}\n{preview}") & patent_keywords)
-    if not matched_keywords:
-        decision = reject("not_related_by_title_or_preview", preview, content_char_count)
-        decision["matched_keywords"] = []
-        return decision
 
     return {
         "keep": True,
         "reason": "passed",
         "preview": preview,
         "content_char_count": content_char_count,
+        "content_truncated": content_truncated,
         "matched_keywords": matched_keywords,
     }
 
@@ -144,6 +144,7 @@ def reject(reason: str, preview: str, content_char_count: int) -> dict[str, Any]
         "reason": reason,
         "preview": preview,
         "content_char_count": content_char_count,
+        "content_truncated": False,
         "matched_keywords": [],
     }
 
