@@ -20,7 +20,7 @@ STAGE_PROMPTS = {
     "final_check": "supervisor/supervisor_final_check.md",
 }
 
-VALUATION_SUPERVISOR_RETRY_LIMIT = 2
+VALUATION_SUPERVISOR_RETRY_LIMIT = 1
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
 REQUIRED_VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
 MAX_SUPERVISOR_EVIDENCE_SAMPLES = 5
