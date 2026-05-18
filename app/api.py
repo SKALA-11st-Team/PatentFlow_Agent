@@ -37,10 +37,8 @@ class PatentEvaluationScore(BaseModel):
 
 class PatentEvaluationResponse(BaseModel):
     patentId: str
-    summary: str
     scores: list[PatentEvaluationScore]
     recommendation: str
-    rawMarkdown: str
     summaryMarkdown: str | None = None
     valuationReportMarkdown: str | None = None
     artifactDir: str | None = None
@@ -80,10 +78,8 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
 
     return PatentEvaluationResponse(
         patentId=patent_id,
-        summary=summary_text(final_state),
         scores=valuation_scores(valuation_result),
         recommendation=valuation_result.get("recommendation") or "추가 정보 필요",
-        rawMarkdown=valuation_markdown,
         summaryMarkdown=summary_markdown or None,
         valuationReportMarkdown=valuation_markdown or None,
         artifactDir=str(final_state.user_input.get("artifact_dir") or "") or None,
@@ -139,15 +135,6 @@ def api_run_timestamp() -> str:
 
 def safe_identifier(value: str) -> str:
     return str(value).replace("/", "_").replace(" ", "_")
-
-
-def summary_text(state: PatentWorkflowState) -> str:
-    summary_result = state.summary_result or {}
-    return (
-        summary_result.get("plain_summary")
-        or summary_result.get("title")
-        or "요약 결과가 생성되지 않았습니다."
-    )
 
 
 def valuation_scores(valuation_result: dict[str, Any]) -> list[PatentEvaluationScore]:

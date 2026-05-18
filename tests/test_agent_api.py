@@ -54,13 +54,13 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     body = response.json()
     assert body["patentId"] == "PAT-TEST"
     assert body["recommendation"] == "유지 권고"
-    assert body["summary"] == "테스트 특허 요약"
+    assert "summary" not in body
     assert len(body["scores"]) == 4
     assert body["scores"][3]["category"] == "사업 연계성"
     assert body["totalScore"] == 280
     assert body["summaryMarkdown"].startswith("# 요약")
     assert body["valuationReportMarkdown"].startswith("# 특허 가치판단 종합 보고서")
-    assert body["rawMarkdown"].startswith("# 특허 가치판단 종합 보고서")
+    assert "rawMarkdown" not in body
 
 
 def test_evaluate_patent_builds_patent_id_input(monkeypatch):
