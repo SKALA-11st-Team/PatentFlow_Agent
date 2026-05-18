@@ -25,6 +25,7 @@ class PatentEvaluationRequest(BaseModel):
     registrationNumber: str | None = None
     title: str | None = None
     noSave: bool = False
+    useLlmSupervisor: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -107,7 +108,7 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
         "use_llm_summary": True,
         "use_llm_valuation": True,
         "use_llm_final_report": True,
-        "use_llm_supervisor": True,
+        "use_llm_supervisor": request.useLlmSupervisor,
     }
     if request.managementNumber:
         user_input["management_number"] = request.managementNumber

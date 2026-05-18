@@ -356,3 +356,15 @@ def test_cli_user_input_can_disable_llm_for_debug():
     assert user_input["use_llm_valuation"] is False
     assert user_input["use_llm_final_report"] is False
     assert user_input["use_llm_supervisor"] is False
+
+
+def test_cli_user_input_can_disable_only_llm_supervisor():
+    args = build_parser().parse_args(["P202405001-KR0", "--no-llm-supervisor"])
+
+    user_input = build_user_input(args)
+
+    assert user_input["management_number"] == "P202405001-KR0"
+    assert user_input["use_llm_summary"] is True
+    assert user_input["use_llm_valuation"] is True
+    assert user_input["use_llm_final_report"] is True
+    assert user_input["use_llm_supervisor"] is False

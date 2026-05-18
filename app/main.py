@@ -100,6 +100,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable the LLM summary prompt. Summary generation will fail because deterministic fallback is not supported.",
     )
+    parser.add_argument(
+        "--no-llm-supervisor",
+        action="store_true",
+        help="Disable LLM judge calls in supervisor nodes. Rule-based supervisor routing still runs.",
+    )
     return parser
 
 
@@ -128,7 +133,10 @@ def build_user_input(args: argparse.Namespace) -> dict[str, Any]:
         "use_llm_valuation": not args.no_llm_valuation,
         "use_llm_final_report": not args.no_llm_final_report,
         "use_llm_supervisor": not (
-            args.no_llm_summary or args.no_llm_valuation or args.no_llm_final_report
+            args.no_llm_supervisor
+            or args.no_llm_summary
+            or args.no_llm_valuation
+            or args.no_llm_final_report
         ),
     }
     if args.patent_id is not None:

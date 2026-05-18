@@ -83,3 +83,25 @@ def test_evaluate_patent_builds_patent_id_input(monkeypatch):
     assert captured["collect_kipris_api"] is True
     assert captured["use_llm_supervisor"] is True
     assert captured["no_save"] is True
+
+
+def test_evaluate_patent_can_disable_llm_supervisor(monkeypatch):
+    captured = {}
+
+    def fake_run_workflow(state: PatentWorkflowState):
+        captured.update(state.user_input)
+        state.summary_result = {"plain_summary": "요약"}
+        state.valuation_result = {"axes": {}, "final_report_markdown": "보고서"}
+        return state
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", lambda state: {})
+
+    response = client.post(
+        "/api/v1/ai/patents/P202405001-KR0/evaluate",
+        json={"noSave": True, "useLlmSupervisor": False},
+    )
+
+    assert response.status_code == 200
+    assert captured["management_number"] == "P202405001-KR0"
+    assert captured["use_llm_supervisor"] is False
