@@ -4,9 +4,9 @@
 현재 단계의 목적은 수집된 근거가 가치평가에 충분한지 판단하는 것입니다.
 
 ## 입력
-- patent_structured
+- patent
 - query_plan
-- evidence_bundle
+- evidence
 - missing_evidence
 - retry_count
 
@@ -36,7 +36,13 @@
 5. 각 evidence에 다음 필드가 있는가?
    - evidence_id
    - source
-   - content
+   - content/context/compressed_summary 중 하나
+
+## 판정 원칙
+- 입력은 원문 전체가 아니라 검색 계획과 근거 요약 점검표입니다.
+- evidence.samples의 summary_preview만 보고 판단하세요. 원문 본문이 없는 것은 정상입니다.
+- 전체 근거가 거의 없거나 evidence_id/source가 없어 추적이 불가능하면 passed=false입니다.
+- 일부 평가축 근거가 약한 정도는 missing_evidence와 issues에 기록하되, 최소 근거가 있으면 valuation으로 넘길 수 있습니다.
 
 ## 출력 형식
 {

@@ -1,6 +1,7 @@
 from schemas.supervisor import SupervisorDecision
 from workflow.state import PatentWorkflowState
 from workflow.supervisor import (
+    build_supervisor_judge_prompt,
     research_supervisor_node,
     supervisor_node,
     top_supervisor_node,
@@ -313,3 +314,116 @@ def test_writing_supervisor_retry_limit_finishes_when_outputs_exist(monkeypatch)
     assert result.supervisor_decision["next_team"] == "final"
     assert result.supervisor_decision["next_action"] == "final_merge"
     assert result.supervisor_decision["metadata"]["supervisor_retry_limit"]["scope"] == "writing"
+
+
+def test_summary_supervisor_prompt_excludes_full_preprocessed_text():
+    state = PatentWorkflowState(
+        patent_structured={"title_final": "요약 대상 특허", "application_number": "10-2024-0000001"},
+        preprocessed_patent={
+            "cleaned_markdown": "SECRET_FULL_PATENT_MARKDOWN",
+            "sections": {"description": "SECRET_FULL_DESCRIPTION"},
+            "validation": {"is_valid": True, "warnings": ["확인 필요"]},
+        },
+        summary_result={
+            "title": "요약 대상 특허",
+            "plain_summary": "특허와 직접 관련된 요약입니다.",
+            "key_points": ["핵심 기술"],
+            "summary_markdown": "# 특허 요약\n\nSECRET_FULL_SUMMARY_MARKDOWN",
+        },
+    )
+
+    prompt = build_supervisor_judge_prompt(state, prompt_name="supervisor/supervisor_summary_check.md")
+
+    assert "SECRET_FULL_PATENT_MARKDOWN" not in prompt
+    assert "SECRET_FULL_DESCRIPTION" not in prompt
+    assert "SECRET_FULL_SUMMARY_MARKDOWN" not in prompt
+    assert "특허와 직접 관련된 요약입니다." in prompt
+    assert "summary_markdown_length" in prompt
+
+
+def test_valuation_supervisor_prompt_uses_evidence_previews_not_raw_content():
+    state = PatentWorkflowState(
+        patent_structured={"title_final": "평가 대상 특허"},
+        evidence_bundle=[
+            {
+                "evidence_id": "known",
+                "source": "industry_report",
+                "source_type": "industry_report",
+                "title": "산업 근거",
+                "content": "SECRET_RAW_EVIDENCE_CONTENT",
+                "context": "SECRET_RAW_EVIDENCE_CONTEXT",
+                "compressed_summary": "시장 성장 근거 요약",
+                "related_axes": ["market", "business_fit"],
+            }
+        ],
+        valuation_result={
+            "axes": {
+                "legal": {
+                    "score": 70,
+                    "grade": "B",
+                    "rationale": "known 근거 기반 권리성 평가",
+                    "evidence_ids": ["known"],
+                    "risk_factors": [],
+                    "confidence": 0.7,
+                },
+                "technology": {
+                    "score": 75,
+                    "grade": "B+",
+                    "rationale": "known 근거 기반 기술성 평가",
+                    "evidence_ids": ["known"],
+                    "risk_factors": [],
+                    "confidence": 0.7,
+                },
+                "market": {
+                    "score": 80,
+                    "grade": "A",
+                    "rationale": "known 근거 기반 시장성 평가",
+                    "evidence_ids": ["known"],
+                    "risk_factors": [],
+                    "confidence": 0.8,
+                },
+                "business_fit": {
+                    "score": 65,
+                    "grade": "B",
+                    "rationale": "unknown_ref 근거를 잘못 참조한 평가",
+                    "evidence_ids": ["unknown_ref"],
+                    "risk_factors": [],
+                    "confidence": 0.6,
+                },
+            },
+            "final_report_markdown": "# 가치평가 리포트\n\nSECRET_FULL_FINAL_REPORT",
+        },
+    )
+
+    prompt = build_supervisor_judge_prompt(state, prompt_name="supervisor/supervisor_valuation_check.md")
+
+    assert "SECRET_RAW_EVIDENCE_CONTENT" not in prompt
+    assert "SECRET_RAW_EVIDENCE_CONTEXT" not in prompt
+    assert "SECRET_FULL_FINAL_REPORT" not in prompt
+    assert "시장 성장 근거 요약" in prompt
+    assert "unknown_evidence_ids" in prompt
+    assert "unknown_ref" in prompt
+
+
+def test_final_supervisor_prompt_includes_headings_not_full_markdown():
+    state = PatentWorkflowState(
+        summary_result={
+            "plain_summary": "최종 문서에 들어갈 요약입니다.",
+            "summary_markdown": "# 특허 요약\n\nSECRET_SUMMARY_BODY",
+        },
+        valuation_result={
+            "axes": {axis: {"score": 70} for axis in ["legal", "technology", "market", "business_fit"]},
+            "total_score": 70,
+            "recommendation": "추가 정보 필요",
+            "final_report_markdown": "# 가치평가 리포트\n\n## 시장성\n\nSECRET_REPORT_BODY",
+        },
+        validation_result={"passed": True, "issues": []},
+    )
+
+    prompt = build_supervisor_judge_prompt(state, prompt_name="supervisor/supervisor_final_check.md")
+
+    assert "SECRET_SUMMARY_BODY" not in prompt
+    assert "SECRET_REPORT_BODY" not in prompt
+    assert "# 특허 요약" in prompt
+    assert "## 시장성" in prompt
+    assert "최종 문서에 들어갈 요약입니다." in prompt

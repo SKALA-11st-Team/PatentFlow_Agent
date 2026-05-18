@@ -21,6 +21,8 @@ STAGE_PROMPTS = {
 
 VALUATION_SUPERVISOR_RETRY_LIMIT = 2
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
+REQUIRED_VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
+MAX_SUPERVISOR_EVIDENCE_SAMPLES = 5
 
 
 def decide_next_step(state: PatentWorkflowState) -> str:
@@ -324,25 +326,334 @@ def run_llm_supervisor_check(
 
 def build_supervisor_judge_prompt(state: PatentWorkflowState, *, prompt_name: str) -> str:
     template = load_prompt(prompt_name).strip()
-    payload = supervisor_payload(state)
+    payload = supervisor_payload(state, prompt_name=prompt_name)
     return f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
 
 
-def supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
+def supervisor_payload(state: PatentWorkflowState, *, prompt_name: str) -> dict[str, Any]:
+    if "summary" in prompt_name:
+        return summary_supervisor_payload(state)
+    if "evidence" in prompt_name:
+        return evidence_supervisor_payload(state)
+    if "valuation" in prompt_name:
+        return valuation_supervisor_payload(state)
+    if "final" in prompt_name:
+        return final_supervisor_payload(state)
+    if "patent" in prompt_name:
+        return patent_supervisor_payload(state)
+    return common_supervisor_payload(state)
+
+
+def common_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
     return {
-        "user_input": state.user_input,
         "current_stage": state.current_stage,
         "current_team": state.current_team,
-        "patent_structured": state.patent_structured,
-        "preprocessed_patent": state.preprocessed_patent,
-        "summary_result": state.summary_result,
-        "query_plan": state.query_plan,
-        "evidence_bundle": state.evidence_bundle,
-        "valuation_result": state.valuation_result,
-        "validation_result": state.validation_result,
+        "patent": patent_metadata_payload(state),
+        "has_preprocessed_patent": bool(state.preprocessed_patent),
+        "has_summary_result": bool(state.summary_result),
+        "evidence": evidence_summary_payload(state, include_samples=False),
+        "has_valuation_result": bool(state.valuation_result),
+        "has_validation_result": bool(state.validation_result),
         "missing_evidence": state.missing_evidence,
         "retry_count": state.retry_count,
     }
+
+
+def patent_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    preprocessed = state.preprocessed_patent or {}
+    parsed_pdf = state.parsed_pdf or {}
+    selected_pdf = parsed_pdf.get("selected_file") or parsed_pdf.get("selected_path")
+    return {
+        "current_stage": state.current_stage,
+        "patent": patent_metadata_payload(state),
+        "kipris": {
+            "available": bool(state.kipris_api_data),
+            "metadata_available": bool((state.kipris_api_data or {}).get("metadata") or state.kipris_api_data),
+            "abstract_available": bool((state.kipris_api_data or {}).get("abstract")),
+            "claim_count": safe_len((state.kipris_api_data or {}).get("claims")),
+            "family_patent_count": len(state.kipris_family_patents),
+            "warnings": normalize_text_list((state.kipris_api_data or {}).get("warnings"), []),
+        },
+        "pdf": {
+            "requested": bool(state.pdf_paths),
+            "available": bool(parsed_pdf),
+            "selected_type": parsed_pdf.get("selected_type"),
+            "selected_file": selected_pdf,
+            "markdown_file_count": safe_len(parsed_pdf.get("markdown_files")),
+            "warning": parsed_pdf.get("warning"),
+        },
+        "preprocess_validation": preprocess_validation_payload(preprocessed),
+        "retry_count": state.retry_count,
+    }
+
+
+def summary_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    summary = state.summary_result or {}
+    return {
+        "current_stage": state.current_stage,
+        "patent": patent_metadata_payload(state),
+        "summary": {
+            "available": bool(summary),
+            "title": summary.get("title"),
+            "plain_summary_preview": preview_text(summary.get("plain_summary"), 700),
+            "key_points": limit_list(summary.get("key_points"), 8),
+            "has_summary_markdown": bool(summary.get("summary_markdown")),
+            "summary_markdown_length": text_length(summary.get("summary_markdown")),
+        },
+        "preprocess_validation": preprocess_validation_payload(state.preprocessed_patent or {}),
+        "retry_count": state.retry_count,
+    }
+
+
+def evidence_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    return {
+        "current_stage": state.current_stage,
+        "patent": patent_metadata_payload(state),
+        "query_plan": query_plan_payload(state.query_plan or {}),
+        "evidence": evidence_summary_payload(state, include_samples=True),
+        "missing_evidence": state.missing_evidence,
+        "retry_count": state.retry_count,
+    }
+
+
+def valuation_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    valuation = state.valuation_result or {}
+    axes = valuation.get("axes") or {}
+    known_ids = known_evidence_ids(state.evidence_bundle)
+    deprecated_axes = [axis for axis in axes if axis not in REQUIRED_VALUATION_AXES]
+    axis_payload = {
+        axis: valuation_axis_payload(axis, axes.get(axis) or {}, known_ids)
+        for axis in REQUIRED_VALUATION_AXES
+    }
+    return {
+        "current_stage": state.current_stage,
+        "patent": patent_metadata_payload(state),
+        "evidence": evidence_summary_payload(state, include_samples=True),
+        "valuation": {
+            "available": bool(valuation),
+            "axis_count": len(axes),
+            "required_axes": REQUIRED_VALUATION_AXES,
+            "missing_axes": [axis for axis in REQUIRED_VALUATION_AXES if axis not in axes],
+            "deprecated_axes": deprecated_axes,
+            "axes": axis_payload,
+            "total_score": valuation.get("total_score"),
+            "expected_total_score": expected_total_score(axis_payload),
+            "recommendation": valuation.get("recommendation"),
+            "decision_rationale_exists": bool(valuation.get("decision_rationale")),
+            "decision_rationale_preview": preview_text(valuation.get("decision_rationale"), 300),
+            "required_actions_count": safe_len(valuation.get("required_actions")),
+            "has_final_report_markdown": bool(valuation.get("final_report_markdown")),
+            "final_report_markdown_length": text_length(valuation.get("final_report_markdown")),
+        },
+        "retry_count": state.retry_count,
+    }
+
+
+def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    summary = state.summary_result or {}
+    valuation = state.valuation_result or {}
+    final_report_markdown = valuation.get("final_report_markdown")
+    summary_markdown = summary.get("summary_markdown")
+    return {
+        "current_stage": state.current_stage,
+        "patent": patent_metadata_payload(state),
+        "summary": {
+            "available": bool(summary),
+            "has_summary_markdown": bool(summary_markdown),
+            "summary_markdown_length": text_length(summary_markdown),
+            "summary_markdown_headings": markdown_headings(summary_markdown),
+            "plain_summary_preview": preview_text(summary.get("plain_summary"), 500),
+        },
+        "valuation": {
+            "available": bool(valuation),
+            "axis_count": len((valuation.get("axes") or {})),
+            "total_score": valuation.get("total_score"),
+            "recommendation": valuation.get("recommendation"),
+            "has_final_report_markdown": bool(final_report_markdown),
+            "final_report_markdown_length": text_length(final_report_markdown),
+            "final_report_headings": markdown_headings(final_report_markdown),
+        },
+        "validation": {
+            "available": bool(state.validation_result),
+            "passed": (state.validation_result or {}).get("passed"),
+            "issues": limit_list((state.validation_result or {}).get("issues"), 10),
+            "missing_evidence": limit_list((state.validation_result or {}).get("missing_evidence"), 10),
+        },
+        "evidence": evidence_summary_payload(state, include_samples=False),
+        "retry_count": state.retry_count,
+    }
+
+
+def patent_metadata_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    patent = state.patent_structured or {}
+    metadata = (state.preprocessed_patent or {}).get("metadata") or {}
+    return {
+        "id": patent.get("id"),
+        "management_number": patent.get("management_number"),
+        "application_number": patent.get("application_number"),
+        "registration_number": patent.get("registration_number"),
+        "title": patent.get("title") or metadata.get("title"),
+        "title_final": patent.get("title_final"),
+        "status": patent.get("status"),
+        "application_date": patent.get("application_date"),
+        "registration_date": patent.get("registration_date"),
+        "expected_expiration_date": patent.get("expected_expiration_date"),
+        "business_area": patent.get("business_area"),
+        "technology_area": patent.get("technology_area"),
+        "related_product": patent.get("related_product"),
+    }
+
+
+def preprocess_validation_payload(preprocessed: dict[str, Any]) -> dict[str, Any]:
+    validation = preprocessed.get("validation") or {}
+    return {
+        "available": bool(preprocessed),
+        "is_valid": validation.get("is_valid"),
+        "missing_fields": limit_list(validation.get("missing_fields"), 20),
+        "warnings": limit_list(validation.get("warnings"), 20),
+    }
+
+
+def query_plan_payload(query_plan: dict[str, Any]) -> dict[str, Any]:
+    search_queries = query_plan.get("search_queries") or {}
+    industry_rag = query_plan.get("industry_rag") or {}
+    compressed = query_plan.get("compressed_evidence") or {}
+    news_filter = query_plan.get("news_filter") or {}
+    ko_queries = search_queries.get("ko") or search_queries.get("korean") or []
+    en_queries = search_queries.get("en") or search_queries.get("english") or []
+    return {
+        "available": bool(query_plan),
+        "ko_query_count": safe_len(ko_queries),
+        "en_query_count": safe_len(en_queries),
+        "selected_ko_queries": limit_list(ko_queries, 5),
+        "selected_en_queries": limit_list(en_queries, 5),
+        "search_warnings": limit_list(search_queries.get("warnings"), 10),
+        "news_filter": {
+            "enabled": news_filter.get("enabled"),
+            "kept_count": news_filter.get("kept_count"),
+            "dropped_count": news_filter.get("dropped_count"),
+            "warnings": limit_list(news_filter.get("warnings"), 10),
+        },
+        "industry_rag": {
+            "has_results": bool(industry_rag.get("results")),
+            "result_count": safe_len(industry_rag.get("results")),
+            "warning": industry_rag.get("warning"),
+        },
+        "compressed_evidence": {
+            "count": safe_len(compressed.get("items") or compressed.get("results")),
+            "warnings": limit_list(compressed.get("warnings"), 10),
+        },
+    }
+
+
+def evidence_summary_payload(state: PatentWorkflowState, *, include_samples: bool) -> dict[str, Any]:
+    evidence_bundle = state.evidence_bundle or []
+    payload = {
+        "total_count": len(evidence_bundle),
+        "source_type_counts": source_type_counts(evidence_bundle),
+        "known_evidence_ids": sorted(known_evidence_ids(evidence_bundle)),
+    }
+    if include_samples:
+        payload["samples"] = [
+            evidence_sample(evidence)
+            for evidence in evidence_bundle[:MAX_SUPERVISOR_EVIDENCE_SAMPLES]
+        ]
+    return payload
+
+
+def evidence_sample(evidence: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "evidence_id": evidence.get("evidence_id"),
+        "source_type": evidence.get("source_type"),
+        "source": evidence.get("source"),
+        "title": evidence.get("title"),
+        "url": evidence.get("url"),
+        "has_content": bool(evidence.get("content")),
+        "has_context": bool(evidence.get("context")),
+        "has_compressed_summary": bool(evidence.get("compressed_summary")),
+        "summary_preview": preview_text(
+            evidence.get("compressed_summary") or evidence.get("summary") or evidence.get("title"),
+            250,
+        ),
+        "related_axes": limit_list(evidence.get("related_axes"), 6),
+    }
+
+
+def valuation_axis_payload(axis: str, axis_result: dict[str, Any], known_ids: set[str]) -> dict[str, Any]:
+    evidence_ids = [str(item) for item in axis_result.get("evidence_ids", []) if str(item).strip()]
+    score = axis_result.get("score")
+    return {
+        "exists": bool(axis_result),
+        "score": score,
+        "grade": axis_result.get("grade"),
+        "has_rationale": bool(axis_result.get("rationale")),
+        "rationale_length": text_length(axis_result.get("rationale")),
+        "rationale_preview": preview_text(axis_result.get("rationale"), 300),
+        "evidence_ids": evidence_ids,
+        "unknown_evidence_ids": [evidence_id for evidence_id in evidence_ids if evidence_id not in known_ids],
+        "risk_factor_count": safe_len(axis_result.get("risk_factors")),
+        "missing_information_count": safe_len(axis_result.get("missing_information")),
+        "confidence": axis_result.get("confidence"),
+    }
+
+
+def source_type_counts(evidence_bundle: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for evidence in evidence_bundle:
+        source_type = str(evidence.get("source_type") or "unknown")
+        counts[source_type] = counts.get(source_type, 0) + 1
+    return counts
+
+
+def known_evidence_ids(evidence_bundle: list[dict[str, Any]]) -> set[str]:
+    return {str(evidence.get("evidence_id")) for evidence in evidence_bundle if evidence.get("evidence_id")}
+
+
+def expected_total_score(axis_payload: dict[str, dict[str, Any]]) -> float | None:
+    scores = [axis.get("score") for axis in axis_payload.values() if isinstance(axis.get("score"), (int, float))]
+    if len(scores) != len(REQUIRED_VALUATION_AXES):
+        return None
+    return round(sum(scores) / len(scores), 2)
+
+
+def preview_text(value: Any, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit].rstrip()}..."
+
+
+def text_length(value: Any) -> int:
+    if value is None:
+        return 0
+    return len(str(value))
+
+
+def limit_list(value: Any, limit: int) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    return value[:limit]
+
+
+def safe_len(value: Any) -> int:
+    if isinstance(value, (list, tuple, set, dict, str)):
+        return len(value)
+    return 0
+
+
+def markdown_headings(markdown: Any, limit: int = 8) -> list[str]:
+    if not markdown:
+        return []
+    headings = []
+    for line in str(markdown).splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            headings.append(stripped[:120])
+        if len(headings) >= limit:
+            break
+    return headings
 
 
 def normalize_llm_supervisor_decision(
@@ -474,10 +785,9 @@ def check_valuation_result(state: PatentWorkflowState) -> SupervisorDecision:
     valuation = state.valuation_result or {}
     evidence_ids = {evidence.get("evidence_id") for evidence in state.evidence_bundle}
     axes = valuation.get("axes") or {}
-    required_axes = ["legal", "technology", "market", "business_fit"]
     issues: list[str] = []
 
-    for axis in required_axes:
+    for axis in REQUIRED_VALUATION_AXES:
         axis_result = axes.get(axis)
         if not axis_result:
             issues.append(f"Missing valuation axis: {axis}")
