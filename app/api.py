@@ -93,10 +93,13 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
 
 
 def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> dict[str, Any]:
+    management_number = normalize_optional_identifier(request.managementNumber)
+    application_number = normalize_optional_identifier(request.applicationNumber)
+    registration_number = normalize_optional_identifier(request.registrationNumber)
     identifier = (
-        request.managementNumber
-        or request.applicationNumber
-        or request.registrationNumber
+        management_number
+        or application_number
+        or registration_number
         or patent_id
     )
     artifact_dir = settings.run_outputs_dir / f"{api_run_timestamp()}_{safe_identifier(identifier)}"
@@ -110,17 +113,24 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
         "use_llm_final_report": True,
         "use_llm_supervisor": request.useLlmSupervisor,
     }
-    if request.managementNumber:
-        user_input["management_number"] = request.managementNumber
-    elif request.applicationNumber:
-        user_input["application_number"] = request.applicationNumber
-    elif request.registrationNumber:
-        user_input["registration_number"] = request.registrationNumber
+    if management_number:
+        user_input["management_number"] = management_number
+    elif application_number:
+        user_input["application_number"] = application_number
+    elif registration_number:
+        user_input["registration_number"] = registration_number
     elif patent_id.isdigit():
         user_input["patent_id"] = int(patent_id)
     else:
         user_input["management_number"] = patent_id
     return user_input
+
+
+def normalize_optional_identifier(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    if not text or text.lower() == "string":
+        return None
+    return text
 
 
 def api_run_timestamp() -> str:
