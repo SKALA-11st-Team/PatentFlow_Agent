@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.config import settings
 from services.evidence.compression_service import parse_json_object
@@ -15,6 +16,13 @@ from workflow.state import PatentWorkflowState
 
 VALUATION_AXES = list(AXIS_MODULES)
 AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
+
+
+@dataclass(frozen=True)
+class AxisRuntime:
+    build_input_payload: Callable[..., dict[str, Any]]
+    build_prompt: Callable[..., str]
+    run_llm_required: Callable[..., dict[str, Any]]
 
 
 @trace(name="valuation_agent", run_type="chain")
@@ -38,8 +46,7 @@ def run_axis_valuation_agent(axis: str, state: PatentWorkflowState) -> PatentWor
 
     current_result = {} if axis == VALUATION_AXES[0] else dict(state.valuation_result or {})
     axes = dict(current_result.get("axes") or {})
-    evidence = select_axis_evidence(axis, state)
-    axes[axis] = run_axis_llm_required(axis, state=state, evidence=evidence)
+    axes[axis] = AXIS_MODULES[axis].run(state, AXIS_RUNTIME)
 
     state.valuation_result = {
         **current_result,
@@ -65,24 +72,24 @@ def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
-def run_axis_llm_required(
-    axis: str,
-    *,
-    state: PatentWorkflowState,
-    evidence: list[dict[str, Any]],
-) -> dict[str, Any]:
-    raw = call_llm(build_axis_prompt(axis, state=state, evidence=evidence))
+def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    raw = call_llm(prompt)
     parsed = parse_json_object(raw)
     if not parsed:
         raise RuntimeError(f"LLM valuation response for {axis} was not valid JSON.")
     return normalize_axis_llm_result(axis, parsed, evidence=evidence)
 
 
-def build_axis_prompt(axis: str, *, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> str:
+def build_axis_prompt(
+    *,
+    prompt_name: str,
+    state: PatentWorkflowState,
+    payload: dict[str, Any],
+    artifact_name: str,
+) -> str:
     common_template = load_prompt("valuation/common_valuation.md").strip()
-    template = load_prompt(f"valuation/valuation_{axis}.md").strip()
-    payload = build_axis_input_payload(axis=axis, state=state, evidence=evidence)
-    save_valuation_input_payload(state, f"{axis}_input", payload)
+    template = load_prompt(prompt_name).strip()
+    save_valuation_input_payload(state, artifact_name, payload)
     return f"{common_template}\n\n{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
 
 
@@ -111,6 +118,13 @@ def build_axis_input_payload(
         "summary_result": state.summary_result,
         "evidence": [valuation_evidence_payload(item) for item in evidence],
     }
+
+
+AXIS_RUNTIME = AxisRuntime(
+    build_input_payload=build_axis_input_payload,
+    build_prompt=build_axis_prompt,
+    run_llm_required=run_axis_llm_required,
+)
 
 
 def valuation_claims(state: PatentWorkflowState) -> list[dict[str, Any]]:

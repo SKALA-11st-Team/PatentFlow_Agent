@@ -83,32 +83,34 @@ venv/bin/python -m app.main P202405001-KR0
 
 | 담당 | 주 책임 | 주 수정 파일 | 보조 확인 파일 |
 | --- | --- | --- | --- |
-| Agent A | 권리성 | `prompts/valuation/valuation_legal.md` | `agents/valuation.py`, `tests/test_valuation.py` |
-| Agent B | 기술성 | `prompts/valuation/valuation_technology.md` | `agents/valuation.py`, `tests/test_valuation.py` |
-| Agent C | 시장성 + 사업 연계성 | `prompts/valuation/valuation_market.md`, `prompts/valuation/valuation_business_fit.md` | `prompts/evidence/query_rewriting.md`, `services/evidence/*`, `tests/test_evidence_service.py` |
+| Agent A | 권리성 | `agents/valuation_axes/legal.py`, `prompts/valuation/valuation_legal.md` | `tests/test_valuation.py` |
+| Agent B | 기술성 | `agents/valuation_axes/technology.py`, `prompts/valuation/valuation_technology.md` | `tests/test_valuation.py` |
+| Agent C | 시장성 + 사업 연계성 | `agents/valuation_axes/market.py`, `agents/valuation_axes/business_fit.py`, `prompts/valuation/valuation_market.md`, `prompts/valuation/valuation_business_fit.md` | `prompts/evidence/query_rewriting.md`, `services/evidence/*`, `tests/test_evidence_service.py` |
 
-`agents/valuation.py`는 4개 평가축을 한 번에 조립하는 공용 파일이라 동시에 여러 명이 수정하면 충돌이 나기 쉽습니다. 가능하면 각 담당자는 먼저 자기 축의 prompt와 테스트만 수정하고, `agents/valuation.py` 변경이 필요할 때만 한 명이 맡아서 반영하는 방식이 좋습니다.
+`agents/valuation.py`는 4개 평가축 실행 순서, 공통 input helper, LLM JSON 정규화, 최종 보고서 조립만 담당합니다. 각 담당자는 자기 축의 `agents/valuation_axes/{axis}.py`와 해당 prompt를 먼저 수정하고, 공통 helper가 필요할 때만 한 명이 `agents/valuation.py`를 맡아 반영하는 방식이 좋습니다.
 
 ## 2. 축별 코드 구조
 
-가치평가의 중심 파일은 `agents/valuation.py`입니다.
+가치평가의 공통 조립 파일은 `agents/valuation.py`이고, 실제 축별 작업 파일은 `agents/valuation_axes/` 아래에 있습니다.
 
 ```text
 run_valuation_agent
 → VALUATION_AXES 순서대로 legal / technology / market / business_fit 실행
-→ build_axis_prompt
-→ prompts/valuation/common_valuation.md + prompts/valuation/valuation_{axis}.md
-→ LLM JSON 결과 normalize
+→ agents/valuation_axes/{axis}.py의 run()
+  → select_evidence()
+  → runtime.build_input_payload()
+  → runtime.build_prompt()로 common_valuation.md + valuation_{axis}.md 로드
+  → runtime.run_llm_required()로 LLM JSON 결과 normalize
 → build_final_valuation_result
 → final report LLM 호출
 ```
 
-축별 입력 근거 선택은 `select_axis_evidence()`에서 결정됩니다.
+축별 입력 근거 선택은 각 축 파일의 `select_evidence()`에서 결정됩니다.
 
-- 권리성: `portfolio_context`, `competitor_patent`, `patent_api`
-- 기술성: `portfolio_context`, `industry_report`, `patent_api`
-- 시장성: `news`, `industry_report`, `company_disclosure`
-- 사업 연계성: 회사명, 제품명, 사업/기술 분야와 연결되는 `news`, `company_disclosure`, `portfolio_context`
+- 권리성: `agents/valuation_axes/legal.py`
+- 기술성: `agents/valuation_axes/technology.py`
+- 시장성: `agents/valuation_axes/market.py`
+- 사업 연계성: `agents/valuation_axes/business_fit.py`
 
 축별 prompt를 수정할 때는 결과 JSON 형식을 유지해야 합니다.
 
@@ -397,7 +399,7 @@ services/evidence/new_source_service.py
 - 특허 API/청구항 계열: `patent_api`
 - 경쟁 특허: `competitor_patent`
 
-새 source_type을 만들 수도 있지만, 그 경우 `agents/valuation.py`의 `select_axis_evidence()`와 final report evidence reference 로직도 같이 수정해야 합니다. 가능하면 기존 source_type 중 하나에 매핑하는 것이 안전합니다.
+새 source_type을 만들 수도 있지만, 그 경우 사용하는 축 파일의 `select_evidence()`와 final report evidence reference 로직도 같이 수정해야 합니다. 가능하면 기존 source_type 중 하나에 매핑하는 것이 안전합니다.
 
 ### 2단계: workflow 노드에 연결합니다
 
@@ -422,7 +424,7 @@ evidence_search_node
 - `industry_report`: `score >= DEFAULT_RAG_SCORE_THRESHOLD`이면 후보
 - 그 외 source_type: 기본적으로 제외
 
-새 수집기가 `company_disclosure` 같은 타입이면 compression 대상에 넣을지 별도로 결정해야 합니다. 평가 prompt에 바로 넣고 싶다면 `select_axis_evidence()`에서 선택되도록 해야 하고, LLM 입력 길이를 고려해 요약 필드를 만들어야 합니다.
+새 수집기가 `company_disclosure` 같은 타입이면 compression 대상에 넣을지 별도로 결정해야 합니다. 평가 prompt에 바로 넣고 싶다면 해당 축 파일의 `select_evidence()`에서 선택되도록 해야 하고, LLM 입력 길이를 고려해 요약 필드를 만들어야 합니다.
 
 ### 4단계: 축별 선택 로직을 확인합니다
 

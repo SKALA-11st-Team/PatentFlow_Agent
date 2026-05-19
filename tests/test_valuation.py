@@ -16,6 +16,8 @@ def test_valuation_axes_are_split_into_axis_modules():
     assert AXIS_MODULES["technology"].LABEL == "기술성"
     assert AXIS_MODULES["market"].LABEL == "시장성"
     assert AXIS_MODULES["business_fit"].LABEL == "사업 연계성"
+    assert AXIS_MODULES["legal"].PROMPT_PATH == "valuation/valuation_legal.md"
+    assert callable(AXIS_MODULES["legal"].run)
 
 
 def test_run_valuation_agent_sets_result():
