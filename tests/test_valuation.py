@@ -247,6 +247,13 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
     assert (input_dir / "final_report_input.json").exists()
     market_input = json.loads((input_dir / "market_input.json").read_text(encoding="utf-8"))
     assert market_input["evidence"][0]["url"] == "https://example.com/news"
+    business_fit_input = json.loads((input_dir / "business_fit_input.json").read_text(encoding="utf-8"))
+    rubric = business_fit_input["business_fit_scoring_rubric"]
+    assert rubric["components"]["business_connection"] == 40
+    assert rubric["components"]["portfolio_necessity"] == 35
+    assert rubric["components"]["practical_applicability"] == 15
+    assert rubric["components"]["evidence_reliability"] == 10
+    assert "sub_scores" in rubric["rationale_instruction"]
     final_input = json.loads((input_dir / "final_report_input.json").read_text(encoding="utf-8"))
     assert final_input["patent"]["metadata"]["title"] == "문서변환 특허"
     assert final_input["evidence_references"][0]["title"] == "문서변환 SW 시장 확대"
