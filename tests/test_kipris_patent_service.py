@@ -2,6 +2,7 @@ from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
     fetch_kipris_bibliography,
     normalize_kipris_citations,
+    normalize_kipris_citing_documents,
     _select_fulltext_pdf,
     fulltext_application_number_candidates,
 )
@@ -56,6 +57,19 @@ def test_citation_info_v3_uses_access_key_auth_param():
     assert call["params"]["accessKey"] == "test-key"
     assert "ServiceKey" not in call["params"]
     assert call["params"]["applicationNumber"] == "1020220150081"
+
+
+def test_citing_info_uses_access_key_auth_param():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.citing_info("1020060089973")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/CitingService/citingInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["standardCitationApplicationNumber"] == "1020060089973"
 
 
 def test_fulltext_application_number_candidates_include_normalized_and_original():
@@ -165,6 +179,43 @@ def test_normalize_kipris_citations_prefers_standardized_duplicate():
     assert result[1]["is_standardized"] is False
 
 
+def test_normalize_kipris_citing_documents_merges_duplicate_application_numbers():
+    raw = {
+        "response": {
+            "body": {
+                "items": {
+                    "citingInfo": [
+                        {
+                            "StandardCitationApplicationNumber": "1020060089973",
+                            "ApplicationNumber": "1020117007865",
+                            "StandardStatusCode": "20001",
+                            "StandardStatusCodeName": "표준화",
+                            "CitationLiteratureTypeCode": "E0801",
+                            "CitationLiteratureTypeCodeName": "발송문서",
+                        },
+                        {
+                            "StandardCitationApplicationNumber": "1020060089973",
+                            "ApplicationNumber": "1020117007865",
+                            "StandardStatusCode": "20001",
+                            "StandardStatusCodeName": "표준화",
+                            "CitationLiteratureTypeCode": "E0805",
+                            "CitationLiteratureTypeCodeName": "선행기술조사문헌",
+                        },
+                    ]
+                }
+            }
+        }
+    }
+
+    result = normalize_kipris_citing_documents(raw)
+
+    assert len(result) == 1
+    assert result[0]["standard_citation_application_number"] == "1020060089973"
+    assert result[0]["citing_application_number"] == "1020117007865"
+    assert result[0]["is_standardized"] is True
+    assert result[0]["citation_type_names"] == ["발송문서", "선행기술조사문헌"]
+
+
 def test_fetch_kipris_bibliography_adds_citation_documents(monkeypatch):
     class Client:
         def bibliography_detail(self, application_number):
@@ -210,6 +261,24 @@ def test_fetch_kipris_bibliography_adds_citation_documents(monkeypatch):
                 }
             }
 
+        def citing_info(self, standard_citation_application_number):
+            return {
+                "response": {
+                    "body": {
+                        "items": {
+                            "citingInfo": {
+                                "StandardCitationApplicationNumber": standard_citation_application_number,
+                                "ApplicationNumber": "1020117007865",
+                                "StandardStatusCode": "20001",
+                                "StandardStatusCodeName": "표준화",
+                                "CitationLiteratureTypeCode": "E0805",
+                                "CitationLiteratureTypeCodeName": "선행기술조사문헌",
+                            }
+                        }
+                    }
+                }
+            }
+
     monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: Client())
 
     result = fetch_kipris_bibliography("10-2022-0150081")
@@ -217,3 +286,5 @@ def test_fetch_kipris_bibliography_adds_citation_documents(monkeypatch):
     assert result["citation_documents"][0]["display_number"] == "JP29047511 A"
     assert result["metadata"]["prior_art"] == ["JP29047511 A"]
     assert result["citation_stats"]["standardized_count"] == 1
+    assert result["citing_documents"][0]["citing_application_number"] == "1020117007865"
+    assert result["citing_stats"]["standardized_count"] == 1

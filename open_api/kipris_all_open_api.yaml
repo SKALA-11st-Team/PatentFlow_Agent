@@ -32,6 +32,8 @@ tags:
   description: 행정처리 변동 이력 조회
 - name: Overseas Citation
   description: 해외특허 인용 문헌 조회
+- name: Patent Citation
+  description: 국내 특허·실용 인용문헌 및 피인용문헌 조회
 - name: Patent Documents
   description: 특허·실용 도면/전문 PDF 및 이미지 경로 조회
 - name: Evaluation Data Model
@@ -551,6 +553,80 @@ paths:
       x-evaluation-usage:
         기술성:
         - 인용 기반 기술 영향력 보조
+  /openapi/rest/CitationService/citationInfoV3:
+    get:
+      tags:
+      - Patent Citation
+      operationId: citationInfoV3
+      summary: 인용문헌V3 조회
+      description: '출원번호 기준으로 심사 과정의 인용문헌과 선행기술조사 문헌 후보를 조회합니다.
+
+        원천 오퍼레이션: 인용문헌V3 - citationInfoV3
+
+        주의: 이 REST 서비스는 인증 파라미터명이 ServiceKey가 아니라 accessKey입니다.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/AccessKey'
+      - name: applicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 출원번호
+        example: '1020220150081'
+      responses:
+        '200':
+          description: 인용문헌 목록
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/KiprisCitationInfoV3Response'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KiprisCitationInfoV3Response'
+      x-evaluation-usage:
+        권리성:
+        - 선행기술/인용문헌 후보
+        - 신규성·진보성 리스크
+  /openapi/rest/CitingService/citingInfo:
+    get:
+      tags:
+      - Patent Citation
+      operationId: citingInfo
+      summary: 피인용문헌 조회
+      description: '선행기술 출원번호를 기준으로 해당 문헌을 인용한 후행 출원번호를 조회합니다.
+
+        원천 오퍼레이션: 피인용문헌 - citingInfo
+
+        주의: 이 REST 서비스는 인증 파라미터명이 ServiceKey가 아니라 accessKey입니다.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/AccessKey'
+      - name: standardCitationApplicationNumber
+        in: query
+        required: true
+        schema:
+          type: string
+        description: 출원번호(선행기술)
+        example: '1020060089973'
+      responses:
+        '200':
+          description: 피인용문헌 목록
+          content:
+            application/xml:
+              schema:
+                $ref: '#/components/schemas/KiprisCitingInfoResponse'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KiprisCitingInfoResponse'
+      x-evaluation-usage:
+        권리성:
+        - 후행 특허 인용 관계
+        - 포트폴리오·방어가치 보조
+        기술성:
+        - 인용 기반 기술 영향력 보조
   /kipris/patent-utility/documents/publication-fulltext-pdf:
     get:
       tags:
@@ -929,6 +1005,13 @@ components:
       schema:
         type: string
       description: KIPRISPlus 서비스키
+    AccessKey:
+      name: accessKey
+      in: query
+      required: true
+      schema:
+        type: string
+      description: KIPRISPlus REST 서비스 인증키. CitationService/CitingService에서 사용
     Patent:
       name: patent
       in: query
@@ -1386,6 +1469,100 @@ components:
               countryCode:
                 type: string
                 description: 국가코드
+    KiprisCitationInfoV3Response:
+      type: object
+      xml:
+        name: response
+      properties:
+        header:
+          $ref: '#/components/schemas/KiprisResponseHeader'
+        body:
+          type: object
+          properties:
+            items:
+              type: object
+              properties:
+                citationInfoV3:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/KiprisCitationInfoV3Item'
+    KiprisCitationInfoV3Item:
+      type: object
+      properties:
+        ApplicationNumber:
+          type: string
+          description: 출원번호
+        OriginalcitationLiteraturenumber:
+          type: string
+          description: 원인용문헌번호
+        OriginalcitationLiteraturenumberDate:
+          type: string
+          description: 원인용문헌번호일자
+        StandardCitationLiteraturenumber:
+          type: string
+          description: 표준인용문헌번호
+        StandardCitationLiteratureCountryCode:
+          type: string
+          description: 표준인용문헌국가코드
+        StandardCitationLiteratureCountryCodeName:
+          type: string
+          description: 표준인용문헌국가코드명
+        StandardCitationIdentificationCode:
+          type: string
+          description: 표준인용식별코드
+        StandardCitationLiteraturePublicationDate:
+          type: string
+          description: 표준인용문헌발행일자
+        StandardStatusCode:
+          type: string
+          description: 표준상태코드
+        StandardStatusCodeName:
+          type: string
+          description: 표준상태코드명
+        CitationLiteratureTypeCode:
+          type: string
+          description: 인용문헌구분코드
+        CitationLiteratureTypeCodeName:
+          type: string
+          description: 인용문헌구분코드명
+    KiprisCitingInfoResponse:
+      type: object
+      xml:
+        name: response
+      properties:
+        header:
+          $ref: '#/components/schemas/KiprisResponseHeader'
+        body:
+          type: object
+          properties:
+            items:
+              type: object
+              properties:
+                citingInfo:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/KiprisCitingInfoItem'
+    KiprisCitingInfoItem:
+      type: object
+      properties:
+        StandardCitationApplicationNumber:
+          type: string
+          description: 출원번호(선행기술)
+        ApplicationNumber:
+          type: string
+          description: 출원번호(피인용문헌, 후행기술)
+        StandardStatusCode:
+          type: string
+          description: 표준화처리상태코드
+        StandardStatusCodeName:
+          type: string
+          description: 표준화처리상태코드명
+        CitationLiteratureTypeCode:
+          type: string
+          description: 인용문헌구분코드
+        CitationLiteratureTypeCodeName:
+          type: string
+          description: 인용문헌구분코드명
     PubFullTextPdfResponse:
       type: object
       xml:
@@ -1552,6 +1729,10 @@ components:
           $ref: '#/components/schemas/TransferListResponse'
         citationDocuments:
           $ref: '#/components/schemas/CitationDocumentsResponse'
+        citationInfoV3:
+          $ref: '#/components/schemas/KiprisCitationInfoV3Response'
+        citingInfo:
+          $ref: '#/components/schemas/KiprisCitingInfoResponse'
     EvaluationAxisData:
       type: object
       properties:
@@ -1591,6 +1772,8 @@ x-evaluation-design:
     - registerStatus
     - legalStatusInfoArray
     - priorArtDocumentsInfoArray
+    - citationInfoV3
+    - citingInfo
     - publicFullTextPdf.path
     기술성:
     - ipcInfoArray

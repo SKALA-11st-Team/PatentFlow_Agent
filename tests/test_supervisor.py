@@ -71,6 +71,26 @@ def test_research_supervisor_routes_sufficient_evidence_to_valuation():
     assert result.supervisor_decision["next_action"] == "valuation_team"
 
 
+def test_research_supervisor_stops_when_patent_preprocess_is_missing():
+    state = PatentWorkflowState(
+        patent_structured={
+            "id": 1,
+            "application_number": "10-2023-0000001",
+            "registration_number": "10-2000000",
+            "title_final": "테스트 특허",
+            "status": "등록",
+            "application_date": "2023-01-01",
+            "registration_date": "2024-01-01",
+        },
+    )
+
+    result = research_supervisor_node(state)
+
+    assert result.supervisor_decision["passed"] is False
+    assert result.supervisor_decision["next_action"] == "end"
+    assert "Missing preprocessed_patent" in result.supervisor_decision["issues"]
+
+
 def test_research_supervisor_does_not_require_summary_result():
     state = PatentWorkflowState(
         patent_structured={
@@ -219,7 +239,7 @@ def test_valuation_supervisor_routes_unknown_evidence_to_research():
 
     assert result.supervisor_decision["passed"] is False
     assert result.supervisor_decision["next_team"] == "research"
-    assert result.supervisor_decision["next_action"] == "research_team"
+    assert result.supervisor_decision["next_action"] == "query_rewriting"
 
 
 def test_supervisor_node_keeps_legacy_action_for_valuation_unknown_evidence():
@@ -323,6 +343,8 @@ def test_writing_supervisor_routes_complete_documents_to_final():
     state = PatentWorkflowState(
         summary_result={"summary_markdown": "# 특허 요약\n\n본문"},
         valuation_result={"final_report_markdown": "# 특허 가치평가 리포트\n\n본문"},
+        summary_validation_result={"passed": True, "issues": []},
+        report_validation_result={"passed": True, "issues": []},
     )
 
     result = writing_supervisor_node(state)
@@ -332,11 +354,39 @@ def test_writing_supervisor_routes_complete_documents_to_final():
     assert result.supervisor_decision["next_action"] == "final_merge"
 
 
+def test_writing_supervisor_retries_only_failed_summary():
+    state = PatentWorkflowState(
+        summary_result={"summary_markdown": ""},
+        valuation_result={"final_report_markdown": "# 특허 가치평가 리포트\n\n본문"},
+        summary_validation_result={"passed": False, "issues": ["Missing summary_markdown"]},
+        report_validation_result={"passed": True, "issues": []},
+    )
+
+    result = writing_supervisor_node(state)
+
+    assert result.supervisor_decision["next_team"] == "writing"
+    assert result.supervisor_decision["next_action"] == "summary"
+
+
+def test_writing_supervisor_retries_only_failed_report():
+    state = PatentWorkflowState(
+        summary_result={"summary_markdown": "# 특허 요약\n\n본문"},
+        valuation_result={"final_report_markdown": ""},
+        summary_validation_result={"passed": True, "issues": []},
+        report_validation_result={"passed": False, "issues": ["Missing final_report_markdown"]},
+    )
+
+    result = writing_supervisor_node(state)
+
+    assert result.supervisor_decision["next_team"] == "writing"
+    assert result.supervisor_decision["next_action"] == "final_report"
+
+
 def test_writing_supervisor_uses_llm_judge_to_retry_document(monkeypatch):
     monkeypatch.setattr(
         "workflow.supervisor.call_llm",
         lambda prompt, **kwargs: (
-            '{"passed": false, "next_action": "supervisor", '
+            '{"passed": false, "next_action": "final_report", '
             '"issues": ["AI 평가와 최종 판단 구분이 불명확함"], "reason": "문서 분리 필요"}'
         ),
     )
@@ -350,14 +400,14 @@ def test_writing_supervisor_uses_llm_judge_to_retry_document(monkeypatch):
 
     assert result.supervisor_decision["passed"] is False
     assert result.supervisor_decision["next_team"] == "writing"
-    assert result.supervisor_decision["next_action"] == "writing_team"
+    assert result.supervisor_decision["next_action"] == "final_report"
 
 
 def test_writing_supervisor_retry_limit_finishes_when_outputs_exist(monkeypatch):
     monkeypatch.setattr(
         "workflow.supervisor.call_llm",
         lambda prompt, **kwargs: (
-            '{"passed": false, "next_action": "supervisor", '
+            '{"passed": false, "next_action": "final_report", '
             '"issues": ["문서 보완 필요"], "reason": "재검토 요청"}'
         ),
     )

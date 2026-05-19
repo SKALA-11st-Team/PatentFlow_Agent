@@ -40,11 +40,14 @@
 - 입력은 원문 전체가 아니라 상태 점검표입니다. 원문 부재만으로 실패시키지 마세요.
 - application_number 또는 title/title_final 중 하나라도 있고, 이후 요약에 필요한 최소 메타데이터가 있으면 통과 가능합니다.
 - KIPRIS/PDF/전처리 경고는 치명적인 누락일 때만 실패시키고, 보완 가능 항목은 issues에 기록하세요.
+- 이 단계에서는 특허 원천 수집 또는 공통 전처리로 되돌아가지 않습니다.
+- 특허 기본 데이터가 충분하면 `query_rewriting`으로 근거 검색 단계로 진행하세요.
+- 특허 기본 데이터가 치명적으로 부족하면 `end`로 멈추고 issues에 부족 항목을 기록하세요.
 
 ## 출력 형식
 {
   "passed": true | false,
-  "next_action": "common_preprocess" | "patent_fetch" | "parse_patent_pdf",
+  "next_action": "query_rewriting" | "end",
   "issues": [],
   "reason": ""
 }

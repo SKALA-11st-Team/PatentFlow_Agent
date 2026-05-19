@@ -181,6 +181,11 @@ def final_merge_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.final_report = {
         "summary": state.summary_result,
         "valuation": state.valuation_result,
+        "validation": {
+            "summary": state.summary_validation_result,
+            "report": state.report_validation_result,
+            "aggregate": state.validation_result,
+        },
         "evidence": state.evidence_bundle,
     }
     return state
@@ -517,15 +522,39 @@ def final_report_node(state: PatentWorkflowState) -> PatentWorkflowState:
 
 
 @trace(run_type="tool")
-def validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    valuation = state.valuation_result or {}
-    axes = valuation.get("axes") or {}
-    required_axes = ["legal", "technology", "market", "business_fit"]
-    passed = all(axes.get(axis) for axis in required_axes) and "strategy" not in axes
-    state.validation_result = {
+def summary_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    summary = state.summary_result or {}
+    passed = bool(summary.get("summary_markdown"))
+    state.summary_validation_result = {
         "passed": passed,
-        "needs_more_evidence": not passed,
-        "issues": [] if passed else ["valuation_result is incomplete"],
+        "issues": [] if passed else ["Missing summary_markdown"],
     }
     state.current_stage = "final_check"
     return state
+
+
+@trace(run_type="tool")
+def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    valuation = state.valuation_result or {}
+    axes = valuation.get("axes") or {}
+    required_axes = ["legal", "technology", "market", "business_fit"]
+    issues = []
+    if not valuation.get("final_report_markdown"):
+        issues.append("Missing final_report_markdown")
+    missing_axes = [axis for axis in required_axes if not axes.get(axis)]
+    issues.extend(f"Missing valuation axis: {axis}" for axis in missing_axes)
+    if "strategy" in axes:
+        issues.append("Deprecated valuation axis present: strategy")
+    passed = not issues
+    state.report_validation_result = {
+        "passed": passed,
+        "needs_more_evidence": not passed,
+        "issues": issues,
+    }
+    state.current_stage = "final_check"
+    return state
+
+
+@trace(run_type="tool")
+def validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    return report_validation_node(state)

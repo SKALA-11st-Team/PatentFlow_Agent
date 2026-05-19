@@ -16,10 +16,23 @@ def test_route_after_top_supervisor_uses_next_team():
     assert workflow_graph._route_after_top_supervisor(state.model_dump()) == "research_team"
 
 
-def test_route_after_valuation_supervisor_can_return_to_research():
+def test_route_after_valuation_supervisor_returns_to_evidence_search():
+    state = PatentWorkflowState(supervisor_decision={"next_team": "research", "next_action": "query_rewriting"})
+
+    assert workflow_graph._route_after_valuation_supervisor(state.model_dump()) == "query_rewriting"
+
+
+def test_valuation_supervisor_no_longer_reroutes_to_patent_collection():
     state = PatentWorkflowState(supervisor_decision={"next_team": "research", "next_action": "research_team"})
 
-    assert workflow_graph._route_after_valuation_supervisor(state.model_dump()) == "research_team"
+    assert workflow_graph._route_after_valuation_supervisor(state.model_dump()) == "end"
+
+
+def test_research_supervisor_no_longer_reroutes_to_collection_or_preprocess():
+    for action in ["patent_fetch", "patent_context_collect", "common_preprocess"]:
+        state = PatentWorkflowState(supervisor_decision={"next_team": "research", "next_action": action})
+
+        assert workflow_graph._route_after_research_supervisor(state.model_dump()) == "end"
 
 
 def test_route_after_writing_supervisor_finishes_at_final_merge():
@@ -93,7 +106,7 @@ def test_valuation_axes_analyze_clears_previous_valuation_state():
     assert result["valuation_axis_business_fit"] is None
 
 
-def test_writing_team_runs_summary_final_report_validation_then_writing_supervisor(monkeypatch):
+def test_writing_team_runs_summary_and_final_report_in_parallel_then_validates(monkeypatch):
     calls = []
 
     def summary_node(state):
@@ -109,9 +122,14 @@ def test_writing_team_runs_summary_final_report_validation_then_writing_supervis
         }
         return state
 
-    def validation_node(state):
-        calls.append("validation")
-        state.validation_result = {"passed": True, "issues": []}
+    def summary_validation_node(state):
+        calls.append("summary_validation")
+        state.summary_validation_result = {"passed": True, "issues": []}
+        return state
+
+    def report_validation_node(state):
+        calls.append("report_validation")
+        state.report_validation_result = {"passed": True, "issues": []}
         return state
 
     def writing_supervisor_node(state):
@@ -121,7 +139,8 @@ def test_writing_team_runs_summary_final_report_validation_then_writing_supervis
 
     monkeypatch.setattr(workflow_graph, "summary_node", summary_node)
     monkeypatch.setattr(workflow_graph, "final_report_node", final_report_node)
-    monkeypatch.setattr(workflow_graph, "validation_node", validation_node)
+    monkeypatch.setattr(workflow_graph, "summary_validation_node", summary_validation_node)
+    monkeypatch.setattr(workflow_graph, "report_validation_node", report_validation_node)
     monkeypatch.setattr(workflow_graph, "writing_supervisor_node", writing_supervisor_node)
 
     state = PatentWorkflowState(
@@ -132,6 +151,24 @@ def test_writing_team_runs_summary_final_report_validation_then_writing_supervis
 
     result = run_workflow(state)
 
-    assert calls == ["summary", "final_report", "validation", "writing_supervisor"]
+    assert set(calls[:2]) == {"summary", "final_report"}
+    assert set(calls[2:4]) == {"summary_validation", "report_validation"}
+    assert calls[-1] == "writing_supervisor"
     assert result.final_report["summary"]["summary_markdown"].startswith("# 특허 요약")
     assert result.final_report["valuation"]["final_report_markdown"].startswith("# 가치평가 리포트")
+
+
+def test_writing_supervisor_can_retry_only_failed_document():
+    summary_failed = PatentWorkflowState(
+        summary_validation_result={"passed": False, "issues": ["summary"]},
+        report_validation_result={"passed": True, "issues": []},
+        supervisor_decision={"next_action": "summary"},
+    )
+    report_failed = PatentWorkflowState(
+        summary_validation_result={"passed": True, "issues": []},
+        report_validation_result={"passed": False, "issues": ["report"]},
+        supervisor_decision={"next_action": "final_report"},
+    )
+
+    assert workflow_graph._route_after_writing_supervisor(summary_failed.model_dump()) == "summary"
+    assert workflow_graph._route_after_writing_supervisor(report_failed.model_dump()) == "final_report"

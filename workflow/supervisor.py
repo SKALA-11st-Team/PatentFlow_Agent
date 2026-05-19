@@ -160,7 +160,7 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
         decision.next_action = "writing_team"
     elif has_unknown_evidence:
         decision.next_team = "research"
-        decision.next_action = "research_team"
+        decision.next_action = "query_rewriting"
     else:
         decision.next_team = "valuation"
         decision.next_action = "valuation_team"
@@ -171,7 +171,7 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
         allowed_next_actions={"validation", "query_rewriting", "valuation_retry"},
         team_action_map={
             "validation": ("writing", "writing_team"),
-            "query_rewriting": ("research", "research_team"),
+            "query_rewriting": ("research", "query_rewriting"),
             "valuation_retry": ("valuation", "valuation_team"),
         },
     )
@@ -194,16 +194,36 @@ def check_writing_result(state: PatentWorkflowState) -> SupervisorDecision:
     issues = []
     summary_markdown = (state.summary_result or {}).get("summary_markdown")
     final_report_markdown = (state.valuation_result or {}).get("final_report_markdown")
+    summary_validation = state.summary_validation_result or {}
+    report_validation = state.report_validation_result or {}
+    summary_failed = False
+    report_failed = False
     if not summary_markdown:
         issues.append("Missing summary_markdown")
+        summary_failed = True
+    if state.summary_validation_result and not summary_validation.get("passed"):
+        issues.extend(summary_validation.get("issues") or ["Summary validation has not passed"])
+        summary_failed = True
     if not final_report_markdown:
         issues.append("Missing final_report_markdown")
+        report_failed = True
+    if state.report_validation_result and not report_validation.get("passed"):
+        issues.extend(report_validation.get("issues") or ["Report validation has not passed"])
+        report_failed = True
+    if summary_failed and report_failed:
+        next_action = "writing_team"
+    elif summary_failed:
+        next_action = "summary"
+    elif report_failed:
+        next_action = "final_report"
+    else:
+        next_action = "final_merge"
     return SupervisorDecision(
         passed=not issues,
         current_team="writing",
         next_team="final" if not issues else "writing",
         stage="writing_check",
-        next_action="final_merge" if not issues else "writing_team",
+        next_action=next_action,
         issues=issues,
         reason="Writing output check completed.",
     )
@@ -217,23 +237,31 @@ def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
         state,
         decision,
         prompt_name="supervisor/supervisor_final_check.md",
-        allowed_next_actions={"final_merge", "supervisor"},
+        allowed_next_actions={"final_merge", "summary", "final_report", "writing_team"},
         team_action_map={
             "final_merge": ("final", "final_merge"),
-            "supervisor": ("writing", "writing_team"),
+            "summary": ("writing", "summary"),
+            "final_report": ("writing", "final_report"),
+            "writing_team": ("writing", "writing_team"),
         },
     )
     decision = apply_supervisor_retry_limit(
         state,
         decision,
         scope="writing",
-        retry_action="writing_team",
+        retry_action={"summary", "final_report", "writing_team"},
         retry_limit=WRITING_SUPERVISOR_RETRY_LIMIT,
         fallback_team="final",
         fallback_action="final_merge",
         fallback_reason="Writing supervisor retry limit reached; final report markdown is structurally present.",
         allow_fallback=check_writing_result(state).passed,
     )
+    state.validation_result = {
+        "passed": decision.passed,
+        "issues": decision.issues,
+        "summary": state.summary_validation_result,
+        "report": state.report_validation_result,
+    }
     state.supervisor_decision = decision.model_dump()
     return state
 
@@ -243,14 +271,15 @@ def apply_supervisor_retry_limit(
     decision: SupervisorDecision,
     *,
     scope: str,
-    retry_action: str,
+    retry_action: str | set[str],
     retry_limit: int,
     fallback_team: str,
     fallback_action: str,
     fallback_reason: str,
     allow_fallback: bool,
 ) -> SupervisorDecision:
-    if decision.next_action != retry_action:
+    retry_actions = retry_action if isinstance(retry_action, set) else {retry_action}
+    if decision.next_action not in retry_actions:
         reset_supervisor_retry_count(state, scope)
         return decision
 
@@ -479,9 +508,13 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "final_report_headings": markdown_headings(final_report_markdown),
         },
         "validation": {
-            "available": bool(state.validation_result),
+            "available": bool(state.validation_result or state.summary_validation_result or state.report_validation_result),
             "passed": (state.validation_result or {}).get("passed"),
             "issues": limit_list((state.validation_result or {}).get("issues"), 10),
+            "summary_passed": (state.summary_validation_result or {}).get("passed"),
+            "summary_issues": limit_list((state.summary_validation_result or {}).get("issues"), 10),
+            "report_passed": (state.report_validation_result or {}).get("passed"),
+            "report_issues": limit_list((state.report_validation_result or {}).get("issues"), 10),
             "missing_evidence": limit_list((state.validation_result or {}).get("missing_evidence"), 10),
         },
         "evidence": evidence_summary_payload(state, include_samples=False),
@@ -742,7 +775,7 @@ def check_patent_data(state: PatentWorkflowState) -> SupervisorDecision:
         warnings = []
     return SupervisorDecision(
         passed=not issues,
-        next_action="query_rewriting" if preprocessed and not missing else "common_preprocess" if not missing else "patent_fetch",
+        next_action="query_rewriting" if not issues else "end",
         issues=issues,
         reason="Patent metadata check completed.",
         metadata={"warnings": warnings},
@@ -825,8 +858,10 @@ def check_final_ready(state: PatentWorkflowState) -> SupervisorDecision:
         issues.append("Missing summary_result")
     if not state.valuation_result:
         issues.append("Missing valuation_result")
-    if not state.validation_result or not state.validation_result.get("passed"):
-        issues.append("Validation has not passed")
+    if not state.summary_validation_result or not state.summary_validation_result.get("passed"):
+        issues.append("Summary validation has not passed")
+    if not state.report_validation_result or not state.report_validation_result.get("passed"):
+        issues.append("Report validation has not passed")
     return SupervisorDecision(
         passed=not issues,
         next_action="final_merge" if not issues else "supervisor",

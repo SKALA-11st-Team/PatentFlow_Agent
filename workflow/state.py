@@ -34,5 +34,7 @@ class PatentWorkflowState(BaseModel):
 
     # Validation/supervisor loop
     validation_result: dict[str, Any] | None = None
+    summary_validation_result: dict[str, Any] | None = None
+    report_validation_result: dict[str, Any] | None = None
     supervisor_decision: dict[str, Any] | None = None
     missing_evidence: list[str] = Field(default_factory=list)

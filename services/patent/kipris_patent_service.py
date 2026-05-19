@@ -111,6 +111,17 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
         result.setdefault("warnings", []).append(
             f"citation_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
         )
+    try:
+        result["citing_documents"] = normalize_kipris_citing_documents(
+            client.citing_info(kipris_application_number)
+        )
+        result["citing_stats"] = build_citing_stats(result["citing_documents"])
+    except Exception as exc:
+        result["citing_documents"] = []
+        result["citing_stats"] = {"total_count": 0, "standardized_count": 0, "non_standardized_count": 0}
+        result.setdefault("warnings", []).append(
+            f"citing_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
+        )
     return result
 
 
@@ -319,6 +330,23 @@ def build_citation_stats(citations: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def normalize_kipris_citing_documents(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    items = _ensure_list(
+        _get_path(raw, ["response", "body", "items", "citingInfo"])
+        or _get_path(raw, ["response", "body", "citingInfo"])
+    )
+    normalized = [_normalize_kipris_citing_document(item) for item in items if isinstance(item, dict)]
+    return _dedupe_kipris_citing_documents(normalized)
+
+
+def build_citing_stats(citing_documents: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total_count": len(citing_documents),
+        "standardized_count": sum(1 for item in citing_documents if item.get("is_standardized")),
+        "non_standardized_count": sum(1 for item in citing_documents if not item.get("is_standardized")),
+    }
+
+
 def _normalize_kipris_citation(item: dict[str, Any]) -> dict[str, Any]:
     country_code = _clean(item.get("StandardCitationLiteratureCountryCode"))
     standard_number = _clean(item.get("StandardCitationLiteraturenumber"))
@@ -351,6 +379,41 @@ def _normalize_kipris_citation(item: dict[str, Any]) -> dict[str, Any]:
         "is_standardized": is_standardized,
         "raw": item,
     }
+
+
+def _normalize_kipris_citing_document(item: dict[str, Any]) -> dict[str, Any]:
+    standard_status_name = _clean(item.get("StandardStatusCodeName"))
+    citation_type_name = _clean(item.get("CitationLiteratureTypeCodeName"))
+    return {
+        "standard_citation_application_number": _clean(item.get("StandardCitationApplicationNumber")),
+        "citing_application_number": _clean(item.get("ApplicationNumber")),
+        "standard_status_code": _clean(item.get("StandardStatusCode")),
+        "standard_status_name": standard_status_name,
+        "citation_type_code": _clean(item.get("CitationLiteratureTypeCode")),
+        "citation_type_name": citation_type_name,
+        "citation_type_names": [citation_type_name] if citation_type_name else [],
+        "is_standardized": standard_status_name == "표준화",
+        "raw": item,
+    }
+
+
+def _dedupe_kipris_citing_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    index_by_application_number: dict[str, int] = {}
+    for item in items:
+        application_number = item.get("citing_application_number")
+        if not application_number:
+            continue
+        if application_number in index_by_application_number:
+            existing = selected[index_by_application_number[application_number]]
+            existing["citation_type_names"] = _unique_texts(
+                [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
+            )
+            existing["is_standardized"] = bool(existing.get("is_standardized") or item.get("is_standardized"))
+            continue
+        index_by_application_number[application_number] = len(selected)
+        selected.append(item)
+    return selected
 
 
 def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

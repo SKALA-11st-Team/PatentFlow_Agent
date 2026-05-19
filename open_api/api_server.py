@@ -72,6 +72,11 @@ def _service_key_from_query(q: dict[str, Any]) -> str | None:
     return str(value) if value else None
 
 
+def _access_key_from_query(q: dict[str, Any]) -> str | None:
+    value = q.get("accessKey")
+    return str(value) if value else None
+
+
 def _kipris_request_context(request: Request) -> tuple[KiprisClient, dict[str, str]]:
     query = _query_as_single_dict(request)
     return _client(_service_key_from_query(query)), _strip_service_key(query)
@@ -551,6 +556,26 @@ def foreign_patent_documents_info(request: Request) -> Any:
     return _kipris_http(
         lambda: client.overseas_foreign_patent_documents(str(literature_number), str(country_code))
     )
+
+
+@app.get("/openapi/rest/CitationService/citationInfoV3", tags=["KIPRIS Patent Citation"])
+def citation_info_v3(request: Request) -> Any:
+    query = _query_as_single_dict(request)
+    app_no = query.get("applicationNumber")
+    if not app_no:
+        raise HTTPException(status_code=400, detail="applicationNumber는 필수입니다.")
+    client = _client(_access_key_from_query(query))
+    return _kipris_http(lambda: client.citation_info_v3(str(app_no)))
+
+
+@app.get("/openapi/rest/CitingService/citingInfo", tags=["KIPRIS Patent Citation"])
+def citing_info(request: Request) -> Any:
+    query = _query_as_single_dict(request)
+    app_no = query.get("standardCitationApplicationNumber")
+    if not app_no:
+        raise HTTPException(status_code=400, detail="standardCitationApplicationNumber는 필수입니다.")
+    client = _client(_access_key_from_query(query))
+    return _kipris_http(lambda: client.citing_info(str(app_no)))
 
 
 @app.get("/kipris/patent-utility/documents/publication-fulltext-pdf", tags=["KIPRIS Documents"])

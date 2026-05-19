@@ -29,6 +29,7 @@ PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevi
 OVERSEAS_PATENT_SERVICE_PATH = "/kipo-api/kipi/overseasPatentSearchSevice"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
 CITATION_SERVICE_PATH = "/openapi/rest/CitationService"
+CITING_SERVICE_PATH = "/openapi/rest/CitingService"
 
 
 class KiprisError(RuntimeError):
@@ -200,6 +201,18 @@ class KiprisClient:
             "citationInfoV3",
             {"applicationNumber": application_number},
             service_path=CITATION_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
+    def citing_info(self, standard_citation_application_number: str) -> dict[str, Any]:
+        """피인용문헌 - citingInfo.
+
+        CitingService는 대상 특허를 선행기술로 인용한 후행 출원번호를 반환합니다.
+        """
+        return self.request(
+            "citingInfo",
+            {"standardCitationApplicationNumber": standard_citation_application_number},
+            service_path=CITING_SERVICE_PATH,
             auth_param="accessKey",
         )
 
