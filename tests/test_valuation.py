@@ -168,6 +168,107 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
     assert result["confidence"] == 0.49
 
 
+def test_technology_metrics_are_added_to_payload(monkeypatch):
+    captured_payload = {}
+
+    def fake_build_input_payload(**kwargs):
+        return {"patent": {"metadata": {}}, "evidence": []}
+
+    def fake_build_prompt(**kwargs):
+        captured_payload.update(kwargs["payload"])
+        return "prompt"
+
+    def fake_run_llm_required(**kwargs):
+        return {
+            "axis": "technology",
+            "label": "기술성",
+            "score": 70,
+            "grade": "B",
+            "rationale": "r",
+            "evidence_ids": [],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.7,
+        }
+
+    monkeypatch.setattr(
+        "agents.valuation_axes.technology.build_similar_patent_context",
+        lambda **kwargs: {
+            "representative_cpc": "G05B 19/4065",
+            "candidate_count": 3,
+            "similar_patents": [{"application_number": "1020200000001"}],
+            "warnings": [],
+        },
+    )
+
+    from agents.valuation import AxisRuntime
+    from agents.valuation_axes import technology
+
+    state = PatentWorkflowState(
+        preprocessed_patent={"metadata": {"cpc": ["G05B 19/4065"], "filing_date": "2024-01-01"}},
+    )
+    technology.run(
+        state,
+        AxisRuntime(
+            build_input_payload=fake_build_input_payload,
+            build_prompt=fake_build_prompt,
+            run_llm_required=fake_run_llm_required,
+        ),
+    )
+
+    assert captured_payload["technology_metrics"]["representative_cpc"] == "G05B 19/4065"
+    assert captured_payload["technology_metrics"]["similar_patents"][0]["application_number"] == "1020200000001"
+
+
+def test_technology_breakdown_scores_are_binary():
+    from agents.valuation_axes.technology import apply_technology_scores
+
+    result = apply_technology_scores(
+        {
+            "score": 80,
+            "grade": "A",
+            "rationale": "r",
+            "evidence_ids": [],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.8,
+            "technical_differentiation_breakdown": {
+                "new_component_score": 15,
+                "combination_difference_score": 13,
+                "processing_structure_difference_score": 12,
+                "solution_approach_difference_score": 8,
+                "evidence_clarity_score": 4,
+            },
+            "implementation_specificity_breakdown": {
+                "input_data_score": 4,
+                "processing_target_score": 2,
+                "core_variable_score": 3,
+                "output_structure_score": 3,
+                "component_linkage_score": 1,
+                "procedure_score": 6,
+                "logic_score": 5,
+                "condition_parameter_score": 5,
+                "calculation_decision_score": 4,
+                "exception_iteration_update_score": 3,
+            },
+        },
+        {"similar_patents": [{"application_number": "1020200000001"}]},
+    )
+
+    assert result["technical_differentiation_breakdown"] == {
+        "new_component_score": 15,
+        "combination_difference_score": 0,
+        "processing_structure_difference_score": 0,
+        "solution_approach_difference_score": 0,
+        "evidence_clarity_score": 0,
+    }
+    assert result["implementation_specificity_breakdown"]["processing_target_score"] == 0
+    assert result["implementation_specificity_breakdown"]["logic_score"] == 0
+    assert result["sub_scores"]["technical_differentiation_score"] == 15
+    assert result["sub_scores"]["implementation_specificity_score"] == 24
+    assert result["score"] == 39
+
+
 def test_valuation_fails_when_llm_valuation_is_disabled():
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": False, "use_llm_final_report": False},
