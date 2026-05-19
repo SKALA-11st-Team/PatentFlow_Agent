@@ -191,19 +191,16 @@ def _build_graph() -> Any:
     graph.add_node("writing_supervisor", lambda payload: _run_node(payload, writing_supervisor_node))
     graph.add_node("final_merge", lambda payload: _run_node(payload, final_merge_node))
 
+    # Entry and research flow
     graph.add_edge(START, "top_supervisor")
     graph.add_edge("patent_context_collect", "portfolio_sibling")
     graph.add_edge("portfolio_sibling", "common_preprocess")
     graph.add_edge("common_preprocess", "research_supervisor")
-    graph.add_edge("writing_start", "summary")
-    graph.add_edge("writing_start", "final_report")
-    graph.add_edge("summary", "summary_validation")
-    graph.add_edge("final_report", "report_validation")
-    graph.add_edge("summary_validation", "writing_join")
-    graph.add_edge("report_validation", "writing_join")
     graph.add_edge("query_rewriting", "evidence_search")
     graph.add_edge("evidence_search", "evidence_compression")
     graph.add_edge("evidence_compression", "research_supervisor")
+
+    # Valuation flow
     graph.add_edge("valuation_axes_analyze", "valuation_legal")
     graph.add_edge("valuation_axes_analyze", "valuation_technology")
     graph.add_edge("valuation_axes_analyze", "valuation_market")
@@ -213,8 +210,19 @@ def _build_graph() -> Any:
         "valuation_axes_merge",
     )
     graph.add_edge("valuation_axes_merge", "valuation_supervisor")
+
+    # Writing flow
+    graph.add_edge("writing_start", "summary")
+    graph.add_edge("writing_start", "final_report")
+    graph.add_edge("summary", "summary_validation")
+    graph.add_edge("final_report", "report_validation")
+    graph.add_edge("summary_validation", "writing_join")
+    graph.add_edge("report_validation", "writing_join")
+
+    # Final output assembly
     graph.add_edge("final_merge", END)
 
+    # Team-level routing
     graph.add_conditional_edges(
         "top_supervisor",
         _route_after_top_supervisor,
@@ -226,6 +234,8 @@ def _build_graph() -> Any:
             "end": END,
         },
     )
+
+    # Research reroute
     graph.add_conditional_edges(
         "research_supervisor",
         _route_after_research_supervisor,
@@ -236,6 +246,8 @@ def _build_graph() -> Any:
             "end": END,
         },
     )
+
+    # Valuation reroute
     graph.add_conditional_edges(
         "valuation_supervisor",
         _route_after_valuation_supervisor,
@@ -246,6 +258,8 @@ def _build_graph() -> Any:
             "end": END,
         },
     )
+
+    # Writing reroute
     graph.add_conditional_edges(
         "writing_join",
         _route_after_writing_join,
