@@ -89,6 +89,19 @@ venv/bin/python -m app.main P202405001-KR0
 
 `agents/valuation.py`는 4개 평가축 실행 순서, 공통 input helper, LLM JSON 정규화, 최종 보고서 조립만 담당합니다. 각 담당자는 자기 축의 `agents/valuation_axes/{axis}.py`와 해당 prompt를 먼저 수정하고, 공통 helper가 필요할 때만 한 명이 `agents/valuation.py`를 맡아 반영하는 방식이 좋습니다.
 
+### 파일별 책임
+
+| 파일 | 책임 | 보통 수정하는 사람 |
+| --- | --- | --- |
+| `agents/valuation.py` | 축 실행 순서, 공통 input payload, 공통 prompt builder, LLM JSON normalize, 최종 보고서 조립 | 공통 담당 1명 |
+| `agents/valuation_axes/legal.py` | 권리성 축 실행 흐름과 권리성 근거 선택 | 권리성 담당 |
+| `agents/valuation_axes/technology.py` | 기술성 축 실행 흐름과 기술성 근거 선택 | 기술성 담당 |
+| `agents/valuation_axes/market.py` | 시장성 축 실행 흐름과 시장성 근거 선택 | 시장성 담당 |
+| `agents/valuation_axes/business_fit.py` | 사업 연계성 축 실행 흐름, 회사/제품 키워드 기반 근거 선택 | 사업 연계성 담당 |
+| `agents/valuation_axes/common.py` | 여러 축이 같이 쓰는 작은 helper | 공통 담당 또는 합의 후 수정 |
+
+`common.py`는 “축별 agent”가 아니라 중복 제거용 helper 파일입니다. 현재는 `source_type`/`related_axes` 기반 근거 선택 함수와 간단한 문자열 정규화 함수만 들어 있습니다. 특정 축에만 필요한 판단 로직은 `common.py`로 빼지 말고 각 축 파일에 두는 편이 협업할 때 더 안전합니다.
+
 ## 2. 축별 코드 구조
 
 가치평가의 공통 조립 파일은 `agents/valuation.py`이고, 실제 축별 작업 파일은 `agents/valuation_axes/` 아래에 있습니다.
@@ -111,6 +124,46 @@ run_valuation_agent
 - 기술성: `agents/valuation_axes/technology.py`
 - 시장성: `agents/valuation_axes/market.py`
 - 사업 연계성: `agents/valuation_axes/business_fit.py`
+
+### 각 축 파일에서 보이는 실행 흐름
+
+각 축 파일의 `run()`만 보면 해당 agent가 어떤 순서로 동작하는지 볼 수 있습니다.
+
+```python
+def run(state, runtime):
+    evidence = select_evidence(state.evidence_bundle or [], state)
+    payload = runtime.build_input_payload(axis=AXIS, state=state, evidence=evidence)
+    prompt = runtime.build_prompt(
+        prompt_name=PROMPT_PATH,
+        state=state,
+        payload=payload,
+        artifact_name=f"{AXIS}_input",
+    )
+    return runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
+```
+
+따라서 축 담당자가 주로 보는 것은 아래 3가지입니다.
+
+- `AXIS`, `LABEL`, `PROMPT_PATH`: 축 이름, 화면/보고서 라벨, 사용할 md prompt 경로
+- `run()`: input 생성, md prompt 로드, LLM 호출, output 정규화로 이어지는 실행 흐름
+- `select_evidence()`: 해당 축에 넣을 근거를 고르는 기준
+
+`runtime`은 `valuation.py`에서 넘겨주는 공통 기능 묶음입니다. 축 파일이 공통 기능을 직접 import하지 않아도 되도록 만들어 둔 연결부입니다.
+
+### 왜 `business_fit.py`만 긴가
+
+권리성/기술성/시장성은 대부분 `source_type`이나 `related_axes`만 보고 근거를 고를 수 있습니다.
+
+예를 들어 시장성은 `news`, `industry_report`, `company_disclosure`를 고르면 됩니다.
+
+사업 연계성은 조금 다릅니다. 단순히 뉴스 전체를 넣으면 “시장 뉴스”와 “우리 회사/제품과 연결되는 뉴스”가 섞이기 쉽습니다. 그래서 `business_fit.py`는 아래 로직을 추가로 가집니다.
+
+- 특허명, 제품명, 사업 분야, 기술 분야, 공동출원인, 출원인 이름을 keyword로 만든다.
+- 뉴스 제목/요약/본문/context/key facts에 keyword가 들어가는지 본다.
+- 회사/제품과 직접 연결되는 뉴스는 우선순위로 넣는다.
+- `company_disclosure`, `portfolio_context`는 사업 연계성 보조 근거로 넣는다.
+
+그래서 다른 축보다 길어 보이는 것이 정상입니다. 다만 사업 연계성 담당자가 판단 기준을 바꿔야 할 때는 `business_fit.py`만 고치면 됩니다.
 
 축별 prompt를 수정할 때는 결과 JSON 형식을 유지해야 합니다.
 
