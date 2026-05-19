@@ -25,6 +25,7 @@ import requests
 
 DEFAULT_BASE_URL = "http://plus.kipris.or.kr"
 PAT_UTI_SERVICE_PATH = "/kipo-api/kipi/patUtiModInfoSearchSevice"
+PAT_UTI_REST_SERVICE_PATH = "/openapi/rest/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
 OVERSEAS_PATENT_SERVICE_PATH = "/kipo-api/kipi/overseasPatentSearchSevice"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
@@ -240,7 +241,12 @@ class KiprisClient:
     def search_by_cpc(self, cpc_number: str, **params: Any) -> dict[str, Any]:
         """CPC 검색 - cpcSearchInfo"""
         params.update({"cpcNumber": cpc_number})
-        return self.request("cpcSearchInfo", params)
+        return self.request(
+            "cpcSearchInfo",
+            params,
+            service_path=PAT_UTI_REST_SERVICE_PATH,
+            auth_param="accessKey",
+        )
 
     def search_by_applicant(self, applicant: str, **params: Any) -> dict[str, Any]:
         """출원인정보 검색 - applicantNameSearchInfo"""

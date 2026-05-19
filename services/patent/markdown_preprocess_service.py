@@ -648,11 +648,18 @@ def _normalize_korean_date(value: str | None) -> str | None:
 
 def _extract_classifications(text: str, label: str) -> list[str]:
     values: list[str] = []
+    capture_remaining = 0
     for line in text.splitlines():
-        if label not in line:
+        if label in line:
+            capture_remaining = 8
+        if capture_remaining <= 0:
             continue
-        values.extend(re.findall(r"[A-H]\d{2}[A-Z]\s+\d+/\d+", line))
-    return _dedupe(values)
+        values.extend(re.findall(r"[A-HY]\d{2}[A-Z]\s*\d+/\d+", line))
+        if re.search(r"\(\d{2}\)|명\s*세\s*서|청구범위", line) and label not in line:
+            capture_remaining = 0
+            continue
+        capture_remaining -= 1
+    return _dedupe([re.sub(r"^([A-HY]\d{2}[A-Z])\s*(\d+/\d+)$", r"\1 \2", value) for value in values])
 
 
 def _extract_prior_art(text: str) -> list[str]:

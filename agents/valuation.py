@@ -226,7 +226,7 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
     if missing_fields:
         raise RuntimeError(f"LLM valuation response for {axis} is missing: {', '.join(missing_fields)}.")
     score = max(0, min(100, int(parsed["score"])))
-    return {
+    result = {
         "axis": axis,
         "label": AXIS_LABELS[axis],
         "score": score,
@@ -237,6 +237,10 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         "missing_information": normalize_list(parsed.get("missing_information")),
         "confidence": max(0.0, min(1.0, float(parsed["confidence"]))),
     }
+    for optional_field in ("industry_marketability_score", "sub_scores", "marketability_metrics"):
+        if optional_field in parsed:
+            result[optional_field] = parsed[optional_field]
+    return result
 
 
 def select_axis_evidence(axis: str, state: PatentWorkflowState) -> list[dict[str, Any]]:

@@ -70,8 +70,9 @@ def test_run_valuation_agent_sets_result():
     assert "strategy" not in axes
     assert axes["business_fit"]["label"] == "사업 연계성"
     assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
-    assert result.valuation_result["average_score"] == 70
-    assert "평균 점수는 70/100점" in result.valuation_result["decision_rationale"][0]
+    assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 4, 1)
+    assert "평균 점수는" in result.valuation_result["decision_rationale"][0]
+    assert axes["market"]["sub_scores"]["market_growth_score"] is None
     assert "final_report_markdown" not in result.valuation_result
 
 
@@ -104,6 +105,67 @@ def test_business_fit_selects_news_with_company_or_product_context():
     selected = select_axis_evidence("business_fit", state)
 
     assert selected[0]["evidence_id"] == "news_001"
+
+
+def test_market_score_helpers_apply_40_40_20_structure():
+    from datetime import datetime
+
+    from agents.valuation_axes.market import apply_marketability_scores, recent_three_years, score_cagr, score_recent_trend
+
+    assert recent_three_years(datetime(2026, 5, 19)) == [2023, 2024, 2025]
+    assert score_cagr(0.16) == 25
+    assert score_cagr(0.1) == 20
+    assert score_cagr(0.05) == 15
+    assert score_cagr(0.01) == 10
+    assert score_cagr(-0.01) == 0
+    assert score_recent_trend([10, 12, 15]) == ("continuous_increase", 15)
+    assert score_recent_trend([10, 8, 12]) == ("partial_increase", 8)
+    assert score_recent_trend([15, 12, 10]) == ("continuous_decrease", 0)
+
+    result = apply_marketability_scores(
+        {
+            "score": 70,
+            "industry_marketability_score": 40,
+            "grade": "B",
+            "missing_information": [],
+            "confidence": 0.8,
+        },
+        {
+            "market_growth_score": 35,
+            "global_business_score": 20,
+        },
+    )
+
+    assert result["score"] == 95
+    assert result["grade"] == "A"
+    assert result["sub_scores"] == {
+        "industry_marketability_score": 40,
+        "market_growth_score": 35,
+        "global_business_score": 20,
+    }
+
+
+def test_market_growth_missing_is_not_replaced_with_default_score():
+    from agents.valuation_axes.market import MARKET_GROWTH_MISSING_MESSAGE, apply_marketability_scores
+
+    result = apply_marketability_scores(
+        {
+            "score": 70,
+            "industry_marketability_score": 40,
+            "grade": "B",
+            "missing_information": [],
+            "confidence": 0.8,
+        },
+        {
+            "market_growth_score": None,
+            "global_business_score": 20,
+        },
+    )
+
+    assert result["score"] == 60
+    assert result["sub_scores"]["market_growth_score"] is None
+    assert MARKET_GROWTH_MISSING_MESSAGE in result["missing_information"]
+    assert result["confidence"] == 0.49
 
 
 def test_valuation_fails_when_llm_valuation_is_disabled():
