@@ -29,12 +29,43 @@ def run_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     if state.user_input.get("use_llm_final_report", True) is False:
         raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
 
-    axes: dict[str, dict[str, Any]] = {}
     for axis in VALUATION_AXES:
-        evidence = select_axis_evidence(axis, state)
-        axes[axis] = run_axis_llm_required(axis, state=state, evidence=evidence)
+        state = run_axis_valuation_agent(axis, state)
+    return finalize_valuation_agent(state)
 
-    state.valuation_result = build_final_valuation_result(axes, state=state)
+
+@trace(name="valuation_axis_agent", run_type="chain")
+def run_axis_valuation_agent(axis: str, state: PatentWorkflowState) -> PatentWorkflowState:
+    if state.user_input.get("use_llm_valuation", True) is False:
+        raise RuntimeError("LLM valuation is required, but use_llm_valuation is disabled.")
+    if axis not in VALUATION_AXES:
+        raise ValueError(f"Unknown valuation axis: {axis}")
+
+    current_result = {} if axis == VALUATION_AXES[0] else dict(state.valuation_result or {})
+    axes = dict(current_result.get("axes") or {})
+    evidence = select_axis_evidence(axis, state)
+    axes[axis] = run_axis_llm_required(axis, state=state, evidence=evidence)
+
+    state.valuation_result = {
+        **current_result,
+        "axes": axes,
+    }
+    state.current_stage = "valuation_check"
+    return state
+
+
+@trace(name="valuation_finalize_agent", run_type="chain")
+def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
+    if state.user_input.get("use_llm_final_report", True) is False:
+        raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
+
+    axes = dict((state.valuation_result or {}).get("axes") or {})
+    missing_axes = [axis for axis in VALUATION_AXES if axis not in axes]
+    if missing_axes:
+        raise RuntimeError(f"Valuation axes are incomplete: {', '.join(missing_axes)}.")
+
+    ordered_axes = {axis: axes[axis] for axis in VALUATION_AXES}
+    state.valuation_result = build_final_valuation_result(ordered_axes, state=state)
     state.current_stage = "valuation_check"
     return state
 

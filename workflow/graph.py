@@ -15,7 +15,11 @@ from workflow.nodes import (
     query_rewriting_node,
     summary_node,
     validation_node,
-    valuation_node,
+    valuation_business_fit_node,
+    valuation_finalize_node,
+    valuation_legal_node,
+    valuation_market_node,
+    valuation_technology_node,
 )
 from workflow.supervisor import (
     research_supervisor_node,
@@ -88,7 +92,11 @@ def _build_graph() -> Any:
     graph.add_node("query_rewriting", lambda payload: _run_node(payload, query_rewriting_node))
     graph.add_node("evidence_search", lambda payload: _run_node(payload, evidence_search_node))
     graph.add_node("evidence_compression", lambda payload: _run_node(payload, evidence_compression_node))
-    graph.add_node("valuation", lambda payload: _run_node(payload, valuation_node))
+    graph.add_node("valuation_legal", lambda payload: _run_node(payload, valuation_legal_node))
+    graph.add_node("valuation_technology", lambda payload: _run_node(payload, valuation_technology_node))
+    graph.add_node("valuation_market", lambda payload: _run_node(payload, valuation_market_node))
+    graph.add_node("valuation_business_fit", lambda payload: _run_node(payload, valuation_business_fit_node))
+    graph.add_node("valuation_finalize", lambda payload: _run_node(payload, valuation_finalize_node))
     graph.add_node("valuation_supervisor", lambda payload: _run_node(payload, valuation_supervisor_node))
     graph.add_node("validation", lambda payload: _run_node(payload, validation_node))
     graph.add_node("writing_supervisor", lambda payload: _run_node(payload, writing_supervisor_node))
@@ -103,7 +111,11 @@ def _build_graph() -> Any:
     graph.add_edge("query_rewriting", "evidence_search")
     graph.add_edge("evidence_search", "evidence_compression")
     graph.add_edge("evidence_compression", "research_supervisor")
-    graph.add_edge("valuation", "valuation_supervisor")
+    graph.add_edge("valuation_legal", "valuation_technology")
+    graph.add_edge("valuation_technology", "valuation_market")
+    graph.add_edge("valuation_market", "valuation_business_fit")
+    graph.add_edge("valuation_business_fit", "valuation_finalize")
+    graph.add_edge("valuation_finalize", "valuation_supervisor")
     graph.add_edge("validation", "writing_supervisor")
     graph.add_edge("final_merge", END)
 
@@ -112,7 +124,7 @@ def _build_graph() -> Any:
         _route_after_top_supervisor,
         {
             "research_team": "patent_resolve",
-            "valuation_team": "valuation",
+            "valuation_team": "valuation_legal",
             "writing_team": "validation",
             "final_merge": "final_merge",
             "end": END,
@@ -126,7 +138,7 @@ def _build_graph() -> Any:
             "common_preprocess": "common_preprocess",
             "summary": "summary",
             "query_rewriting": "query_rewriting",
-            "valuation_team": "valuation",
+            "valuation_team": "valuation_legal",
             "top_supervisor": "top_supervisor",
             "end": END,
         },
@@ -136,7 +148,7 @@ def _build_graph() -> Any:
         _route_after_valuation_supervisor,
         {
             "research_team": "patent_resolve",
-            "valuation_team": "valuation",
+            "valuation_team": "valuation_legal",
             "writing_team": "validation",
             "end": END,
         },
