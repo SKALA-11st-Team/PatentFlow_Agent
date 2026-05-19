@@ -250,6 +250,67 @@ def test_parse_google_search_html_extracts_skax_urls_and_removes_duplicates():
     ]
 
 
+def test_parse_google_search_html_allows_only_skax_domain_and_subdomains():
+    html = """
+    <html>
+      <body>
+        <a href="https://www.skax.co.kr/financial/robo-advisor">www SK AX</a>
+        <a href="https://skax.co.kr/data/analytics">root SK AX</a>
+        <a href="https://www.sk.co.kr/news/robo-advisor">SK group</a>
+        <a href="https://news.example.com/skax/robo-advisor">news mirror</a>
+        <a href="https://blog.example.com/skax/robo-advisor">blog mirror</a>
+      </body>
+    </html>
+    """
+
+    results = parse_google_search_html(html)
+
+    assert [result["url"] for result in results] == [
+        "https://www.skax.co.kr/financial/robo-advisor",
+        "https://skax.co.kr/data/analytics",
+    ]
+
+
+def test_collect_returns_empty_when_search_has_no_skax_domain_results():
+    fetched_urls = []
+
+    def searcher(query):
+        return [
+            {
+                "title": "SK 그룹 로보어드바이저",
+                "snippet": "다른 공식 도메인",
+                "url": "https://www.sk.co.kr/news/robo-advisor",
+            },
+            {
+                "title": "뉴스 로보어드바이저",
+                "snippet": "뉴스 미러링",
+                "url": "https://news.example.com/skax/robo-advisor",
+            },
+            {
+                "title": "블로그 로보어드바이저",
+                "snippet": "블로그 미러링",
+                "url": "https://blog.example.com/skax/robo-advisor",
+            },
+        ]
+
+    def fetcher(url):
+        fetched_urls.append(url)
+        return "<html><body><p>외부 문서</p></body></html>"
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        searcher=searcher,
+        fetcher=fetcher,
+        max_queries=1,
+    )
+
+    assert result["items"] == []
+    assert fetched_urls == []
+    assert result["stats"]["filtered_result_count"] == 0
+    assert result["stats"]["fetched_url_count"] == 0
+    assert result["stats"]["collected_evidence_count"] == 0
+
+
 def test_default_html_searcher_uses_fetch_google_search_html(monkeypatch):
     captured = {}
 

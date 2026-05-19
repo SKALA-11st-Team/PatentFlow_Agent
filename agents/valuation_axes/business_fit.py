@@ -26,9 +26,13 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     keywords = business_fit_keywords(state)
+    official_matches = []
     direct_matches = []
     secondary_matches = []
     for item in items:
+        if is_sk_ax_official_evidence(item):
+            official_matches.append(item)
+            continue
         source_type = item.get("source_type")
         if source_type in {"company_disclosure", "portfolio_context"}:
             secondary_matches.append(item)
@@ -39,7 +43,7 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
             direct_matches.append(item)
         else:
             secondary_matches.append(item)
-    return [*direct_matches, *secondary_matches][:5]
+    return [*sort_official_evidence(official_matches, keywords), *direct_matches, *secondary_matches][:5]
 
 
 def business_fit_keywords(state: PatentWorkflowState) -> list[str]:
@@ -75,6 +79,47 @@ def business_fit_scoring_rubric() -> dict[str, Any]:
             "Explain the four component scores and reasoning inside the existing rationale field."
         ),
     }
+
+
+def is_sk_ax_official_evidence(item: dict[str, Any]) -> bool:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    values = [
+        item.get("source"),
+        item.get("source_type"),
+        item.get("evidence_type"),
+        metadata.get("source"),
+        metadata.get("source_type"),
+        metadata.get("evidence_type"),
+    ]
+    return any(normalize_text(value) == "sk_ax_official" for value in values)
+
+
+def sort_official_evidence(items: list[dict[str, Any]], keywords: list[str]) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: (
+            evidence_relevance_score(item),
+            official_keyword_match_count(item, keywords),
+            normalize_text(item.get("published_at") or item.get("collected_at")),
+            normalize_text(item.get("title")),
+        ),
+        reverse=True,
+    )
+
+
+def evidence_relevance_score(item: dict[str, Any]) -> float:
+    value = item.get("relevance_score")
+    if value is None and isinstance(item.get("metadata"), dict):
+        value = item["metadata"].get("relevance_score")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def official_keyword_match_count(item: dict[str, Any], keywords: list[str]) -> int:
+    text = evidence_text(item)
+    return sum(1 for keyword in keywords if keyword and keyword in text)
 
 
 def evidence_text(item: dict[str, Any]) -> str:
