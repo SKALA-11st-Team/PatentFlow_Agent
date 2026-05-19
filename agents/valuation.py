@@ -29,8 +29,6 @@ class AxisRuntime:
 def run_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     if state.user_input.get("use_llm_valuation", True) is False:
         raise RuntimeError("LLM valuation is required, but use_llm_valuation is disabled.")
-    if state.user_input.get("use_llm_final_report", True) is False:
-        raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
 
     for axis in VALUATION_AXES:
         state = run_axis_valuation_agent(axis, state)
@@ -58,9 +56,6 @@ def run_axis_valuation_agent(axis: str, state: PatentWorkflowState) -> PatentWor
 
 @trace(name="valuation_finalize_agent", run_type="chain")
 def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
-    if state.user_input.get("use_llm_final_report", True) is False:
-        raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
-
     axes = dict((state.valuation_result or {}).get("axes") or {})
     missing_axes = [axis for axis in VALUATION_AXES if axis not in axes]
     if missing_axes:
@@ -221,6 +216,7 @@ def build_final_valuation_result(
     *,
     state: PatentWorkflowState | None = None,
 ) -> dict[str, Any]:
+    del state
     total_score = sum(int(axis.get("score") or 0) for axis in axes.values())
     average_score = round(total_score / len(axes), 1) if axes else 0
     final_indicator = total_score_to_indicator(total_score)
@@ -243,140 +239,7 @@ def build_final_valuation_result(
         "required_actions": unique_texts(required_actions),
         "missing_information": missing_information,
     }
-    result["final_report_markdown"] = (
-        build_complete_final_report_markdown(
-            state,
-            run_final_report_llm_required(state, result),
-            result,
-        )
-    )
     return result
-
-
-def run_final_report_llm_required(
-    state: PatentWorkflowState | None,
-    valuation_result: dict[str, Any],
-) -> str:
-    if not state:
-        raise RuntimeError("LLM final report requires workflow state.")
-    markdown = call_llm(build_final_report_prompt(state=state, valuation_result=valuation_result)).strip()
-    if not markdown:
-        raise RuntimeError("LLM final report response was empty.")
-    return markdown
-
-
-def build_final_report_prompt(*, state: PatentWorkflowState, valuation_result: dict[str, Any]) -> str:
-    template = load_prompt("valuation/valuation_final_report.md").strip()
-    payload = build_final_report_input_payload(state=state, valuation_result=valuation_result)
-    save_valuation_input_payload(state, "final_report_input", payload)
-    return f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
-
-
-def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_result: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "patent": {
-            "metadata": final_report_patent_metadata(state),
-            "summary_result": state.summary_result,
-        },
-        "evidence_references": build_evidence_references(state),
-        "valuation_result": {
-            key: value
-            for key, value in valuation_result.items()
-            if key != "final_report_markdown"
-        },
-    }
-
-
-def build_complete_final_report_markdown(
-    state: PatentWorkflowState,
-    body_markdown: str,
-    valuation_result: dict[str, Any],
-) -> str:
-    del valuation_result
-    body = (body_markdown or "").strip()
-    if not body:
-        raise RuntimeError("LLM final report body was empty.")
-    return "\n\n".join(
-        section
-        for section in [
-            build_patent_basic_info_markdown(final_report_patent_metadata(state)),
-            body,
-        ]
-        if section.strip()
-    )
-
-
-def build_patent_basic_info_markdown(metadata: dict[str, Any]) -> str:
-    title = normalize_text(metadata.get("title")) or "N/A"
-    rows = [
-        ("관리번호", metadata.get("management_number")),
-        ("출원번호", metadata.get("application_number")),
-        ("등록번호", metadata.get("registration_number")),
-        ("관련 제품", metadata.get("related_product")),
-        ("사업 분야", metadata.get("business_area")),
-        ("기술 분야", metadata.get("technology_area")),
-        ("상태", metadata.get("status")),
-        ("출원일", metadata.get("application_date")),
-        ("등록일", metadata.get("registration_date")),
-        ("예상 소멸일", metadata.get("expected_expiration_date")),
-    ]
-    lines = [
-        "# 특허 가치판단 종합 보고서",
-        "",
-        f"### {normalize_markdown_table_text(title)}",
-        "",
-        "## 특허 기본 정보",
-        "",
-        "| 항목 | 내용 |",
-        "| --- | --- |",
-    ]
-    for label, value in rows:
-        lines.append(f"| {label} | {normalize_markdown_table_text(value) or 'N/A'} |")
-    return "\n".join(lines)
-
-
-def final_report_patent_metadata(state: PatentWorkflowState) -> dict[str, Any]:
-    patent = state.patent_structured or {}
-    kipris_metadata = ((state.kipris_api_data or {}).get("metadata") or {})
-    return {
-        "patent_id": patent.get("id"),
-        "management_number": patent.get("management_number"),
-        "application_number": patent.get("application_number") or kipris_metadata.get("application_number"),
-        "registration_number": patent.get("registration_number") or kipris_metadata.get("registration_number"),
-        "title": patent.get("title_final") or patent.get("title_draft") or kipris_metadata.get("title"),
-        "related_product": patent.get("related_product"),
-        "business_area": patent.get("business_area"),
-        "technology_area": patent.get("technology_area"),
-        "status": patent.get("status") or kipris_metadata.get("register_status"),
-        "application_date": patent.get("application_date") or kipris_metadata.get("filing_date"),
-        "registration_date": patent.get("registration_date") or kipris_metadata.get("registration_date"),
-        "expected_expiration_date": patent.get("expected_expiration_date"),
-        "assignee": kipris_metadata.get("assignee") or [],
-        "ipc": kipris_metadata.get("ipc") or [],
-        "cpc": kipris_metadata.get("cpc") or [],
-    }
-
-
-def build_evidence_references(state: PatentWorkflowState) -> list[dict[str, Any]]:
-    references = []
-    for item in state.evidence_bundle or []:
-        if item.get("source_type") not in {"news", "industry_report", "company_disclosure", "portfolio_context"}:
-            continue
-        references.append(
-            {
-                "evidence_id": item.get("evidence_id"),
-                "source_type": item.get("source_type"),
-                "source": item.get("source"),
-                "title": item.get("title") or item.get("source"),
-                "citation_title": item.get("title") or item.get("source"),
-                "url": item.get("url"),
-                "published_at": item.get("published_at"),
-                "related_axes": item.get("related_axes") or item.get("related_axis") or [],
-                "compressed_summary": item.get("compressed_summary"),
-                "key_facts": item.get("key_facts") or [],
-            }
-        )
-    return references
 
 
 def save_valuation_input_payload(state: PatentWorkflowState, name: str, payload: dict[str, Any]) -> Path | None:
@@ -437,10 +300,6 @@ def normalize_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [text for text in (normalize_text(item) for item in value) if text]
-
-
-def normalize_markdown_table_text(value: Any) -> str:
-    return normalize_text(value).replace("|", "/").replace("\n", " ")
 
 
 def unique_texts(values: Any) -> list[str]:

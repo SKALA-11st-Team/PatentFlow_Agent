@@ -20,6 +20,7 @@ from services.rag.industry_rag_service import search_and_save_patent_industry_ev
 from services.observability.langsmith_service import trace
 from agents.summary import run_summary_agent
 from agents.valuation import finalize_valuation_agent, run_axis_valuation_agent, run_valuation_agent
+from agents.writing.final_report import run_final_report_agent
 from workflow.state import PatentWorkflowState
 
 
@@ -508,6 +509,11 @@ def valuation_business_fit_node(state: PatentWorkflowState) -> PatentWorkflowSta
 @trace(run_type="tool")
 def valuation_finalize_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return finalize_valuation_agent(state)
+
+
+@trace(run_type="tool")
+def final_report_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    return run_final_report_agent(state)
 
 
 @trace(run_type="tool")

@@ -8,6 +8,7 @@ from workflow.nodes import (
     common_preprocess_node,
     evidence_compression_node,
     evidence_search_node,
+    final_report_node,
     final_merge_node,
     patent_fetch_node,
     patent_resolve_node,
@@ -96,6 +97,7 @@ def _build_graph() -> Any:
     graph.add_node("valuation_business_fit", lambda payload: _run_node(payload, valuation_business_fit_node))
     graph.add_node("valuation_finalize", lambda payload: _run_node(payload, valuation_finalize_node))
     graph.add_node("valuation_supervisor", lambda payload: _run_node(payload, valuation_supervisor_node))
+    graph.add_node("final_report", lambda payload: _run_node(payload, final_report_node))
     graph.add_node("validation", lambda payload: _run_node(payload, validation_node))
     graph.add_node("writing_supervisor", lambda payload: _run_node(payload, writing_supervisor_node))
     graph.add_node("final_merge", lambda payload: _run_node(payload, final_merge_node))
@@ -105,7 +107,8 @@ def _build_graph() -> Any:
     graph.add_edge("patent_fetch", "portfolio_sibling")
     graph.add_edge("portfolio_sibling", "common_preprocess")
     graph.add_edge("common_preprocess", "research_supervisor")
-    graph.add_edge("summary", "writing_supervisor")
+    graph.add_edge("summary", "final_report")
+    graph.add_edge("final_report", "writing_supervisor")
     graph.add_edge("query_rewriting", "evidence_search")
     graph.add_edge("evidence_search", "evidence_compression")
     graph.add_edge("evidence_compression", "research_supervisor")

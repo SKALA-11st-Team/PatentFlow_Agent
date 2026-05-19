@@ -3,6 +3,7 @@ import json
 import pytest
 
 from agents.valuation import run_valuation_agent, select_axis_evidence
+from agents.writing.final_report import run_final_report_agent
 from app.main import build_parser, build_user_input, save_outputs
 from workflow.supervisor import check_valuation_result
 from workflow.state import PatentWorkflowState
@@ -71,7 +72,7 @@ def test_run_valuation_agent_sets_result():
     assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
     assert result.valuation_result["average_score"] == 70
     assert "평균 점수는 70/100점" in result.valuation_result["decision_rationale"][0]
-    assert result.valuation_result["final_report_markdown"].startswith("# 특허 가치판단 종합 보고서")
+    assert "final_report_markdown" not in result.valuation_result
 
 
 def test_business_fit_selects_news_with_company_or_product_context():
@@ -146,6 +147,7 @@ def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
         return "## 1. 의사결정 요약\n\n- AI 권고: 추가 정보 필요"
 
     monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
+    monkeypatch.setattr("agents.writing.final_report.call_llm", fake_call_llm)
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": True, "use_llm_final_report": True},
         patent_structured={"title_final": "문서변환 특허", "related_product": "문서변환 SW"},
@@ -161,6 +163,7 @@ def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
     )
 
     result = run_valuation_agent(state)
+    result = run_final_report_agent(result)
 
     markdown = result.valuation_result["final_report_markdown"]
     assert markdown.startswith("# 특허 가치판단 종합 보고서")
@@ -184,12 +187,14 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
         return '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"missing_information":[],"confidence":0.7}'
 
     monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
+    monkeypatch.setattr("agents.writing.final_report.call_llm", fake_call_llm)
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": True, "use_llm_final_report": True, "no_save": True},
         patent_structured={"related_product": "문서변환 SW"},
     )
 
-    run_valuation_agent(state)
+    state = run_valuation_agent(state)
+    run_final_report_agent(state)
 
     axis_prompts = [prompt for prompt in captured_prompts if "Return ONLY one JSON object" in prompt]
     assert len(axis_prompts) == 4
@@ -213,6 +218,7 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
         """
 
     monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
+    monkeypatch.setattr("agents.writing.final_report.call_llm", fake_call_llm)
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path)},
         patent_structured={
@@ -236,7 +242,8 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
         ],
     )
 
-    run_valuation_agent(state)
+    state = run_valuation_agent(state)
+    run_final_report_agent(state)
 
     input_dir = tmp_path / "valuation_inputs"
     assert (input_dir / "legal_input.json").exists()

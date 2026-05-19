@@ -80,12 +80,20 @@ def test_valuation_team_runs_sequential_axis_nodes(monkeypatch):
     assert calls == ["legal", "technology", "market", "business_fit", "finalize", "valuation_supervisor"]
 
 
-def test_writing_team_runs_summary_before_writing_supervisor(monkeypatch):
+def test_writing_team_runs_summary_and_final_report_before_writing_supervisor(monkeypatch):
     calls = []
 
     def summary_node(state):
         calls.append("summary")
         state.summary_result = {"summary_markdown": "# 특허 요약\n\n본문"}
+        return state
+
+    def final_report_node(state):
+        calls.append("final_report")
+        state.valuation_result = {
+            **(state.valuation_result or {}),
+            "final_report_markdown": "# 가치평가 리포트\n\n본문",
+        }
         return state
 
     def writing_supervisor_node(state):
@@ -94,15 +102,17 @@ def test_writing_team_runs_summary_before_writing_supervisor(monkeypatch):
         return state
 
     monkeypatch.setattr(workflow_graph, "summary_node", summary_node)
+    monkeypatch.setattr(workflow_graph, "final_report_node", final_report_node)
     monkeypatch.setattr(workflow_graph, "writing_supervisor_node", writing_supervisor_node)
 
     state = PatentWorkflowState(
         patent_structured={"id": 1},
         preprocessed_patent={"patent_id": "P1"},
-        valuation_result={"final_report_markdown": "# 가치평가 리포트\n\n본문"},
+        valuation_result={"axes": {}},
     )
 
     result = run_workflow(state)
 
-    assert calls == ["summary", "writing_supervisor"]
+    assert calls == ["summary", "final_report", "writing_supervisor"]
     assert result.final_report["summary"]["summary_markdown"].startswith("# 특허 요약")
+    assert result.final_report["valuation"]["final_report_markdown"].startswith("# 가치평가 리포트")

@@ -11,7 +11,7 @@ PatentFlow Agent를 Swagger 또는 CLI로 전체 실행하려면 보통 아래 3
 산업보고서 RAG 검색을 쓰려면 Postgres/pgvector가 떠 있어야 합니다.
 
 ```bash
-docker compose up -d db
+docker compose up -d postgres
 ```
 
 컨테이너 상태 확인:
@@ -86,19 +86,21 @@ venv/bin/python -m app.main P202405001-KR0
 | Agent A | 권리성 | `agents/valuation_axes/legal.py`, `prompts/valuation/valuation_legal.md` | `tests/test_valuation.py` |
 | Agent B | 기술성 | `agents/valuation_axes/technology.py`, `prompts/valuation/valuation_technology.md` | `tests/test_valuation.py` |
 | Agent C | 시장성 + 사업 연계성 | `agents/valuation_axes/market.py`, `agents/valuation_axes/business_fit.py`, `prompts/valuation/valuation_market.md`, `prompts/valuation/valuation_business_fit.md` | `prompts/evidence/query_rewriting.md`, `services/evidence/*`, `tests/test_evidence_service.py` |
+| Agent D | 최종 가치평가 보고서 | `agents/writing/final_report.py`, `prompts/writing/final_report.md` | `workflow/graph.py`, `tests/test_valuation.py`, `tests/test_graph.py` |
 
-`agents/valuation.py`는 4개 평가축 실행 순서, 공통 input helper, LLM JSON 정규화, 최종 보고서 조립만 담당합니다. 각 담당자는 자기 축의 `agents/valuation_axes/{axis}.py`와 해당 prompt를 먼저 수정하고, 공통 helper가 필요할 때만 한 명이 `agents/valuation.py`를 맡아 반영하는 방식이 좋습니다.
+`agents/valuation.py`는 4개 평가축 실행 순서, 공통 input helper, LLM JSON 정규화, 축별 점수 종합만 담당합니다. 최종 Markdown 보고서는 Writing Team의 `agents/writing/final_report.py`가 담당합니다. 각 담당자는 자기 축의 `agents/valuation_axes/{axis}.py`와 해당 prompt를 먼저 수정하고, 공통 helper가 필요할 때만 한 명이 `agents/valuation.py`를 맡아 반영하는 방식이 좋습니다.
 
 ### 파일별 책임
 
 | 파일 | 책임 | 보통 수정하는 사람 |
 | --- | --- | --- |
-| `agents/valuation.py` | 축 실행 순서, 공통 input payload, 공통 prompt builder, LLM JSON normalize, 최종 보고서 조립 | 공통 담당 1명 |
+| `agents/valuation.py` | 축 실행 순서, 공통 input payload, 공통 prompt builder, LLM JSON normalize, 점수/지표/권고 종합 | 공통 담당 1명 |
 | `agents/valuation_axes/legal.py` | 권리성 축 실행 흐름과 권리성 근거 선택 | 권리성 담당 |
 | `agents/valuation_axes/technology.py` | 기술성 축 실행 흐름과 기술성 근거 선택 | 기술성 담당 |
 | `agents/valuation_axes/market.py` | 시장성 축 실행 흐름과 시장성 근거 선택 | 시장성 담당 |
 | `agents/valuation_axes/business_fit.py` | 사업 연계성 축 실행 흐름, 회사/제품 키워드 기반 근거 선택 | 사업 연계성 담당 |
 | `agents/valuation_axes/common.py` | 여러 축이 같이 쓰는 작은 helper | 공통 담당 또는 합의 후 수정 |
+| `agents/writing/final_report.py` | 종합 가치평가 결과를 Markdown 보고서로 작성 | Writing 담당 |
 
 `common.py`는 “축별 agent”가 아니라 중복 제거용 helper 파일입니다. 현재는 `source_type`/`related_axes` 기반 근거 선택 함수와 간단한 문자열 정규화 함수만 들어 있습니다. 특정 축에만 필요한 판단 로직은 `common.py`로 빼지 말고 각 축 파일에 두는 편이 협업할 때 더 안전합니다.
 
@@ -115,7 +117,7 @@ run_valuation_agent
   → runtime.build_prompt()로 common_valuation.md + valuation_{axis}.md 로드
   → runtime.run_llm_required()로 LLM JSON 결과 normalize
 → build_final_valuation_result
-→ final report LLM 호출
+→ 점수/지표/권고 종합
 ```
 
 축별 입력 근거 선택은 각 축 파일의 `select_evidence()`에서 결정됩니다.
@@ -194,7 +196,7 @@ def run(state, runtime):
 | `portfolio_evidence` | 같은 제품군/관리번호 기반 유사·보완 특허 근거 | 권리성, 기술성, 사업 연계성 |
 | `evidence_bundle` | 뉴스, 산업보고서, 공시, 포트폴리오 등 압축 근거 | 전체 |
 | `query_plan` | query rewriting, 검색, 필터링, compression 통계 | 디버깅, 근거 품질 확인 |
-| `valuation_result` | 4개 평가축 결과와 최종 보고서 | supervisor, final |
+| `valuation_result` | 4개 평가축 결과, 종합 점수, Writing Team이 추가한 최종 보고서 | supervisor, final |
 
 축별 입력은 `agents/valuation.py`의 `build_axis_input_payload()`에서 구성됩니다. 특정 축에만 더 필요한 정보가 있으면 이 함수에서 `axis == "legal"` 같은 조건으로 추가하는 방식이 안전합니다.
 
@@ -228,7 +230,8 @@ full_claims = valuation_claims(state) if axis == "legal" else []
 - `average_score`: 평균 점수
 - `final_indicator`: 유지 / 조건부 유지 / 포기 검토 등
 - `recommendation`: AI 권고 라벨
-- `final_report_markdown`: 최종 Markdown 보고서
+
+최종 Markdown 보고서는 `agents/writing/final_report.py`가 `prompts/writing/final_report.md`를 사용해 생성하고, 기존 API/저장 로직과 호환되도록 `valuation_result["final_report_markdown"]`에 추가합니다.
 
 ## 3. 전체 워크플로우 흐름
 
@@ -258,7 +261,8 @@ flowchart TD
     VS -->|"valuation_team"| VL
     VS -->|"writing_team"| SUMMARY["summary"]
 
-    SUMMARY --> WS["writing_supervisor"]
+    SUMMARY --> REPORT["final_report"]
+    REPORT --> WS["writing_supervisor"]
     WS -->|"writing_team"| SUMMARY
     WS -->|"final_merge"| FINAL["final_merge"]
     FINAL --> END
@@ -278,8 +282,9 @@ flowchart TD
 | `evidence_search` | Naver/GNews/industry RAG 검색 및 필터링 |
 | `evidence_compression` | 뉴스/산업보고서 근거를 LLM으로 압축하고 관련성 낮은 근거 제거 |
 | `valuation_legal` / `valuation_technology` / `valuation_market` / `valuation_business_fit` | 축별 가치평가 수행 |
-| `valuation_finalize` | 축별 평가 결과를 종합하고 최종 보고서 Markdown 생성 |
+| `valuation_finalize` | 축별 평가 결과를 종합해 총점, 평균, 최종 지표, 권고를 생성 |
 | `valuation_supervisor` | 평가 결과 구조와 근거 연결을 검증 |
+| `final_report` | Writing Team에서 가치평가 종합 결과를 최종 Markdown 보고서로 작성 |
 | `writing_supervisor` | 요약문과 최종 보고서 Markdown 존재 여부 및 품질 검증 |
 | `final_merge` | summary, valuation, evidence를 최종 state로 병합 |
 
