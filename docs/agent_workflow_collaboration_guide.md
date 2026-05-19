@@ -190,22 +190,23 @@ flowchart TD
     PORTFOLIO --> PRE["common_preprocess"]
     PRE --> RS["research_supervisor"]
 
-    RS -->|"summary"| SUMMARY["summary"]
-    SUMMARY --> RS
-
     RS -->|"query_rewriting"| QR["query_rewriting"]
     QR --> SEARCH["evidence_search"]
     SEARCH --> COMPRESS["evidence_compression"]
     COMPRESS --> RS
 
-    RS -->|"valuation_team"| VAL["valuation"]
-    VAL --> VS["valuation_supervisor"]
+    RS -->|"valuation_team"| VL["valuation_legal"]
+    VL --> VT["valuation_technology"]
+    VT --> VM["valuation_market"]
+    VM --> VB["valuation_business_fit"]
+    VB --> VF["valuation_finalize"]
+    VF --> VS["valuation_supervisor"]
     VS -->|"research_team"| RESOLVE
-    VS -->|"valuation_team"| VAL
-    VS -->|"writing_team"| VALIDATION["validation"]
+    VS -->|"valuation_team"| VL
+    VS -->|"writing_team"| SUMMARY["summary"]
 
-    VALIDATION --> WS["writing_supervisor"]
-    WS -->|"writing_team"| VALIDATION
+    SUMMARY --> WS["writing_supervisor"]
+    WS -->|"writing_team"| SUMMARY
     WS -->|"final_merge"| FINAL["final_merge"]
     FINAL --> END
 ```
@@ -219,13 +220,13 @@ flowchart TD
 | `patent_fetch` | SQLite 특허 메타데이터, KIPRIS API, PDF/Markdown 수집 |
 | `portfolio_sibling` | 같은 제품군/관리번호 기반 유사·보완 특허 근거 생성 |
 | `common_preprocess` | PDF/KIPRIS 데이터를 공통 특허 구조로 전처리 |
-| `summary` | 특허 요약문 생성 |
+| `summary` | Writing Team에서 특허 요약문 생성 |
 | `query_rewriting` | 뉴스 검색용 `ko/en` 쿼리와 산업 RAG용 `industry_rag` 쿼리 생성 |
 | `evidence_search` | Naver/GNews/industry RAG 검색 및 필터링 |
 | `evidence_compression` | 뉴스/산업보고서 근거를 LLM으로 압축하고 관련성 낮은 근거 제거 |
-| `valuation` | 권리성/기술성/시장성/사업 연계성 평가 및 최종 보고서 생성 |
+| `valuation_legal` / `valuation_technology` / `valuation_market` / `valuation_business_fit` | 축별 가치평가 수행 |
+| `valuation_finalize` | 축별 평가 결과를 종합하고 최종 보고서 Markdown 생성 |
 | `valuation_supervisor` | 평가 결과 구조와 근거 연결을 검증 |
-| `validation` | writing 단계 진입 전 구조 체크 |
 | `writing_supervisor` | 요약문과 최종 보고서 Markdown 존재 여부 및 품질 검증 |
 | `final_merge` | summary, valuation, evidence를 최종 state로 병합 |
 

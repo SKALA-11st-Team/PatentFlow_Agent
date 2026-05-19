@@ -71,6 +71,31 @@ def test_research_supervisor_routes_sufficient_evidence_to_valuation():
     assert result.supervisor_decision["next_action"] == "valuation_team"
 
 
+def test_research_supervisor_does_not_require_summary_result():
+    state = PatentWorkflowState(
+        patent_structured={
+            "id": 1,
+            "application_number": "10-2023-0000001",
+            "registration_number": "10-2000000",
+            "title_final": "테스트 특허",
+            "status": "등록",
+            "application_date": "2023-01-01",
+            "registration_date": "2024-01-01",
+        },
+        preprocessed_patent={"metadata": {"title": "테스트 특허"}},
+        evidence_bundle=[
+            {"evidence_id": "news_1", "source": "naver", "source_type": "news", "content": "본문"},
+            {"evidence_id": "news_2", "source": "naver", "source_type": "news", "content": "본문"},
+            {"evidence_id": "news_3", "source": "gnews", "source_type": "news", "content": "본문"},
+        ],
+    )
+
+    result = research_supervisor_node(state)
+
+    assert result.supervisor_decision["passed"] is True
+    assert result.supervisor_decision["next_action"] == "valuation_team"
+
+
 def test_research_supervisor_uses_llm_judge_after_rule_pass(monkeypatch):
     monkeypatch.setattr(
         "workflow.supervisor.call_llm",

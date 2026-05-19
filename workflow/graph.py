@@ -53,9 +53,7 @@ def _route_after_research_supervisor(payload: dict[str, Any]) -> str:
     action = (state.supervisor_decision or {}).get("next_action")
     if action == "common_preprocess" and not state.parsed_pdf and not state.kipris_api_data:
         return "end"
-    if action == "summary" and not state.preprocessed_patent:
-        return "end"
-    if action in {"patent_fetch", "common_preprocess", "summary", "query_rewriting"}:
+    if action in {"patent_fetch", "common_preprocess", "query_rewriting"}:
         if action == "query_rewriting" and state.retry_count >= settings.max_evidence_search_rounds:
             return "valuation_team"
         return action
@@ -107,7 +105,7 @@ def _build_graph() -> Any:
     graph.add_edge("patent_fetch", "portfolio_sibling")
     graph.add_edge("portfolio_sibling", "common_preprocess")
     graph.add_edge("common_preprocess", "research_supervisor")
-    graph.add_edge("summary", "research_supervisor")
+    graph.add_edge("summary", "writing_supervisor")
     graph.add_edge("query_rewriting", "evidence_search")
     graph.add_edge("evidence_search", "evidence_compression")
     graph.add_edge("evidence_compression", "research_supervisor")
@@ -125,7 +123,7 @@ def _build_graph() -> Any:
         {
             "research_team": "patent_resolve",
             "valuation_team": "valuation_legal",
-            "writing_team": "validation",
+            "writing_team": "summary",
             "final_merge": "final_merge",
             "end": END,
         },
@@ -136,7 +134,6 @@ def _build_graph() -> Any:
         {
             "patent_fetch": "patent_fetch",
             "common_preprocess": "common_preprocess",
-            "summary": "summary",
             "query_rewriting": "query_rewriting",
             "valuation_team": "valuation_legal",
             "top_supervisor": "top_supervisor",
@@ -149,7 +146,7 @@ def _build_graph() -> Any:
         {
             "research_team": "patent_resolve",
             "valuation_team": "valuation_legal",
-            "writing_team": "validation",
+            "writing_team": "summary",
             "end": END,
         },
     )
@@ -157,7 +154,7 @@ def _build_graph() -> Any:
         "writing_supervisor",
         _route_after_writing_supervisor,
         {
-            "writing_team": "validation",
+            "writing_team": "summary",
             "final_merge": "final_merge",
             "end": END,
         },

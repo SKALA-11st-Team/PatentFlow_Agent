@@ -41,8 +41,10 @@ def decide_next_step(state: PatentWorkflowState) -> str:
 @trace(name="supervisor_agent", run_type="chain")
 def supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     stage = state.current_stage
-    if stage in {"patent_check", "summary_check", "evidence_check"}:
+    if stage in {"patent_check", "evidence_check"}:
         return _with_legacy_research_action(research_supervisor_node(state))
+    if stage == "summary_check":
+        return writing_supervisor_node(state)
     if stage == "valuation_check":
         return _with_legacy_valuation_action(valuation_supervisor_node(state))
     if stage == "final_check":
@@ -82,7 +84,7 @@ def top_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     if requested_team in {"research", "valuation", "writing", "final"}:
         next_team = requested_team
         next_action = requested_action or f"{next_team}_team"
-    elif not state.patent_structured or not state.preprocessed_patent or not state.summary_result:
+    elif not state.patent_structured or not state.preprocessed_patent:
         next_team = "research"
         next_action = "research_team"
     elif not state.valuation_result:
@@ -110,7 +112,6 @@ def research_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "research"
     for stage, checker in [
         ("patent_check", check_patent_data),
-        ("summary_check", check_summary_result),
         ("evidence_check", check_evidence_bundle),
     ]:
         decision = checker(state)
@@ -732,6 +733,8 @@ def check_patent_data(state: PatentWorkflowState) -> SupervisorDecision:
     missing = [field for field in required_fields if not patent.get(field)]
     preprocessed = state.preprocessed_patent
     issues = [f"Missing patent field: {field}" for field in missing]
+    if not preprocessed:
+        issues.append("Missing preprocessed_patent")
     if preprocessed:
         validation = preprocessed.get("validation", {})
         warnings = list(validation.get("missing_fields", [])) + list(validation.get("warnings", []))
@@ -739,7 +742,7 @@ def check_patent_data(state: PatentWorkflowState) -> SupervisorDecision:
         warnings = []
     return SupervisorDecision(
         passed=not issues,
-        next_action="summary" if preprocessed and not missing else "common_preprocess" if not missing else "patent_fetch",
+        next_action="query_rewriting" if preprocessed and not missing else "common_preprocess" if not missing else "patent_fetch",
         issues=issues,
         reason="Patent metadata check completed.",
         metadata={"warnings": warnings},
