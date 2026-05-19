@@ -8,6 +8,16 @@ from workflow.supervisor import check_valuation_result
 from workflow.state import PatentWorkflowState
 
 
+def test_valuation_axes_are_split_into_axis_modules():
+    from agents.valuation_axes import AXIS_MODULES
+
+    assert list(AXIS_MODULES) == ["legal", "technology", "market", "business_fit"]
+    assert AXIS_MODULES["legal"].LABEL == "권리성"
+    assert AXIS_MODULES["technology"].LABEL == "기술성"
+    assert AXIS_MODULES["market"].LABEL == "시장성"
+    assert AXIS_MODULES["business_fit"].LABEL == "사업 연계성"
+
+
 def test_run_valuation_agent_sets_result():
     def fake_call_llm(prompt):
         if "Return ONLY Markdown" in prompt:

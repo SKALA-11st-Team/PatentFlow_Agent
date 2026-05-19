@@ -9,17 +9,12 @@ from services.evidence.compression_service import parse_json_object
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.observability.langsmith_service import trace
+from agents.valuation_axes import AXIS_MODULES
 from workflow.state import PatentWorkflowState
 
 
-VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
-
-AXIS_LABELS = {
-    "legal": "권리성",
-    "technology": "기술성",
-    "market": "시장성",
-    "business_fit": "사업 연계성",
-}
+VALUATION_AXES = list(AXIS_MODULES)
+AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
 
 
 @trace(name="valuation_agent", run_type="chain")
@@ -201,71 +196,10 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
 
 
 def select_axis_evidence(axis: str, state: PatentWorkflowState) -> list[dict[str, Any]]:
-    items = state.evidence_bundle or []
-    if axis == "legal":
-        return select_by_types_or_axes(items, source_types={"portfolio_context", "competitor_patent", "patent_api"}, axes={axis})
-    if axis == "technology":
-        return select_by_types_or_axes(items, source_types={"portfolio_context", "industry_report", "patent_api"}, axes={axis})
-    if axis == "market":
-        return select_by_types_or_axes(
-            items,
-            source_types={"news", "industry_report", "company_disclosure"},
-            axes={axis},
-        )
-    if axis == "business_fit":
-        return select_business_fit_evidence(items, state)
-    return []
-
-
-def select_by_types_or_axes(
-    items: list[dict[str, Any]],
-    *,
-    source_types: set[str],
-    axes: set[str],
-) -> list[dict[str, Any]]:
-    selected = []
-    for item in items:
-        item_axes = set(item.get("related_axes") or item.get("related_axis") or [])
-        if item.get("source_type") in source_types or item_axes.intersection(axes):
-            selected.append(item)
-    return selected[:5]
-
-
-def select_business_fit_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
-    keywords = business_fit_keywords(state)
-    direct_matches = []
-    secondary_matches = []
-    for item in items:
-        source_type = item.get("source_type")
-        if source_type in {"company_disclosure", "portfolio_context"}:
-            secondary_matches.append(item)
-        if source_type != "news":
-            continue
-        text = evidence_text(item)
-        if any(keyword and keyword in text for keyword in keywords):
-            direct_matches.append(item)
-        else:
-            secondary_matches.append(item)
-    return [*direct_matches, *secondary_matches][:5]
-
-
-def business_fit_keywords(state: PatentWorkflowState) -> list[str]:
-    patent = state.patent_structured or {}
-    metadata = ((state.kipris_api_data or {}).get("metadata") or {})
-    raw_keywords: list[Any] = [
-        patent.get("title_final"),
-        patent.get("title_draft"),
-        patent.get("related_product"),
-        patent.get("technology_area"),
-        patent.get("business_area"),
-        patent.get("joint_applicant_name"),
-        *(metadata.get("assignee") or []),
-        *(metadata.get("assignee_eng") or []),
-    ]
-    company_context = patent.get("company_context") or state.user_input.get("company_context") or {}
-    if isinstance(company_context, dict):
-        raw_keywords.extend([company_context.get("company_name"), company_context.get("product_name")])
-    return [normalize_text(keyword) for keyword in raw_keywords if normalize_text(keyword)]
+    module = AXIS_MODULES.get(axis)
+    if not module:
+        return []
+    return module.select_evidence(state.evidence_bundle or [], state)
 
 
 def build_final_valuation_result(
@@ -479,17 +413,6 @@ def build_decision_rationale(
         f"가장 강한 축은 {strongest.get('label')}({strongest.get('score')}점)이다.",
         f"보완이 필요한 축은 {weakest.get('label')}({weakest.get('score')}점)이다.",
     ]
-
-
-def evidence_text(item: dict[str, Any]) -> str:
-    values = [
-        item.get("title"),
-        item.get("compressed_summary"),
-        item.get("content"),
-        item.get("context"),
-        " ".join(str(fact) for fact in item.get("key_facts", [])),
-    ]
-    return " ".join(normalize_text(value) for value in values if normalize_text(value))
 
 
 def normalize_text(value: Any) -> str:
