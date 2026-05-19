@@ -14,6 +14,7 @@ PROMPT_PATH = "valuation/valuation_business_fit.md"
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = runtime.build_input_payload(axis=AXIS, state=state, evidence=evidence)
+    payload["business_fit_scoring_rubric"] = business_fit_scoring_rubric()
     prompt = runtime.build_prompt(
         prompt_name=PROMPT_PATH,
         state=state,
@@ -58,6 +59,22 @@ def business_fit_keywords(state: PatentWorkflowState) -> list[str]:
     if isinstance(company_context, dict):
         raw_keywords.extend([company_context.get("company_name"), company_context.get("product_name")])
     return [normalize_text(keyword) for keyword in raw_keywords if normalize_text(keyword)]
+
+
+def business_fit_scoring_rubric() -> dict[str, Any]:
+    return {
+        "total_score": 100,
+        "components": {
+            "business_connection": 40,
+            "portfolio_necessity": 35,
+            "practical_applicability": 15,
+            "evidence_reliability": 10,
+        },
+        "rationale_instruction": (
+            "Do not add sub_scores or any new output field. "
+            "Explain the four component scores and reasoning inside the existing rationale field."
+        ),
+    }
 
 
 def evidence_text(item: dict[str, Any]) -> str:
