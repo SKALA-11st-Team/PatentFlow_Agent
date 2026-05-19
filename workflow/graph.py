@@ -95,6 +95,18 @@ def _start_writing_reports(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _join_writing_validations(payload: dict[str, Any]) -> dict[str, Any]:
+    del payload
+    return {}
+
+
+def _route_after_writing_join(payload: dict[str, Any]) -> str:
+    state = _as_state(payload)
+    if state.summary_validation_result is not None and state.report_validation_result is not None:
+        return "writing_supervisor"
+    return "end"
+
+
 def _run_valuation_axis_result_node(payload: dict[str, Any], axis: str) -> dict[str, Any]:
     state = _as_state(payload)
     return {f"valuation_axis_{axis}": run_axis_valuation_result(axis, state)}
@@ -167,24 +179,15 @@ def _build_graph() -> Any:
     graph.add_node("valuation_supervisor", lambda payload: _run_node(payload, valuation_supervisor_node))
     graph.add_node("writing_start", _start_writing_reports)
     graph.add_node("final_report", lambda payload: _run_node_partial(payload, final_report_node, ["valuation_result"]))
-    graph.add_node("final_report_retry", lambda payload: _run_node_partial(payload, final_report_node, ["valuation_result"]))
     graph.add_node(
         "report_validation",
         lambda payload: _run_node_partial(payload, report_validation_node, ["report_validation_result"]),
     )
     graph.add_node(
-        "report_validation_retry",
-        lambda payload: _run_node_partial(payload, report_validation_node, ["report_validation_result"]),
-    )
-    graph.add_node("summary_retry", lambda payload: _run_node_partial(payload, summary_node, ["summary_result"]))
-    graph.add_node(
         "summary_validation",
         lambda payload: _run_node_partial(payload, summary_validation_node, ["summary_validation_result"]),
     )
-    graph.add_node(
-        "summary_validation_retry",
-        lambda payload: _run_node_partial(payload, summary_validation_node, ["summary_validation_result"]),
-    )
+    graph.add_node("writing_join", _join_writing_validations)
     graph.add_node("writing_supervisor", lambda payload: _run_node(payload, writing_supervisor_node))
     graph.add_node("final_merge", lambda payload: _run_node(payload, final_merge_node))
 
@@ -196,11 +199,8 @@ def _build_graph() -> Any:
     graph.add_edge("writing_start", "final_report")
     graph.add_edge("summary", "summary_validation")
     graph.add_edge("final_report", "report_validation")
-    graph.add_edge(["summary_validation", "report_validation"], "writing_supervisor")
-    graph.add_edge("summary_retry", "summary_validation_retry")
-    graph.add_edge("summary_validation_retry", "writing_supervisor")
-    graph.add_edge("final_report_retry", "report_validation_retry")
-    graph.add_edge("report_validation_retry", "writing_supervisor")
+    graph.add_edge("summary_validation", "writing_join")
+    graph.add_edge("report_validation", "writing_join")
     graph.add_edge("query_rewriting", "evidence_search")
     graph.add_edge("evidence_search", "evidence_compression")
     graph.add_edge("evidence_compression", "research_supervisor")
@@ -247,12 +247,20 @@ def _build_graph() -> Any:
         },
     )
     graph.add_conditional_edges(
+        "writing_join",
+        _route_after_writing_join,
+        {
+            "writing_supervisor": "writing_supervisor",
+            "end": END,
+        },
+    )
+    graph.add_conditional_edges(
         "writing_supervisor",
         _route_after_writing_supervisor,
         {
             "writing_team": "writing_start",
-            "summary": "summary_retry",
-            "final_report": "final_report_retry",
+            "summary": "summary",
+            "final_report": "final_report",
             "final_merge": "final_merge",
             "end": END,
         },
