@@ -312,6 +312,25 @@ def test_legal_axis_input_includes_full_claims(tmp_path):
     assert market_payload["patent"]["claim_availability"]["full_claims_provided"] is False
 
 
+def test_legal_axis_input_includes_prior_art_candidates(tmp_path):
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        preprocessed_patent={
+            "metadata": {
+                "prior_art": ["KR10-1111111", "US2024-0000001A"],
+            }
+        },
+    )
+
+    from agents.valuation import build_axis_input_payload
+
+    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
+    market_payload = build_axis_input_payload(axis="market", state=state, evidence=[])
+
+    assert legal_payload["patent"]["prior_art_candidates"] == ["KR10-1111111", "US2024-0000001A"]
+    assert market_payload["patent"]["prior_art_candidates"] == []
+
+
 def test_valuation_llm_inputs_respect_no_save(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "agents.valuation.call_llm",

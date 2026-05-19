@@ -28,6 +28,7 @@ PAT_UTI_SERVICE_PATH = "/kipo-api/kipi/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
 OVERSEAS_PATENT_SERVICE_PATH = "/kipo-api/kipi/overseasPatentSearchSevice"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
+CITATION_SERVICE_PATH = "/openapi/rest/CitationService"
 
 
 class KiprisError(RuntimeError):
@@ -138,12 +139,13 @@ class KiprisClient:
         *,
         service_path: str = PAT_UTI_SERVICE_PATH,
         parse_xml: bool = True,
+        auth_param: str = "ServiceKey",
     ) -> dict[str, Any] | str:
         """임의의 KIPRIS operationName을 직접 호출합니다."""
         if self.sleep_seconds:
             time.sleep(self.sleep_seconds)
 
-        query = {"ServiceKey": self.service_key}
+        query = {auth_param: self.service_key}
         if params:
             for k, v in params.items():
                 if v is None:
@@ -187,6 +189,18 @@ class KiprisClient:
             "getAppNoPatFamInfoSearch",
             {"applicationNumber": application_number},
             service_path=PAT_FAMILY_SERVICE_PATH,
+        )
+
+    def citation_info_v3(self, application_number: str) -> dict[str, Any]:
+        """인용문헌V3 - citationInfoV3.
+
+        CitationService는 다른 KIPRISPlus API와 달리 인증 파라미터명이 accessKey입니다.
+        """
+        return self.request(
+            "citationInfoV3",
+            {"applicationNumber": application_number},
+            service_path=CITATION_SERVICE_PATH,
+            auth_param="accessKey",
         )
 
     def family_patents(self, application_number: str) -> list[KiprisFamilyPatent]:

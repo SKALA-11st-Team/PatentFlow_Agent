@@ -38,8 +38,7 @@ final_v1/
 
 ```text
 사용자 특허 선택
-→ patent_resolve_node
-→ patent_fetch_node
+→ patent_context_collect
 → portfolio_sibling_node
 → common_preprocess_node
 → supervisor_node
@@ -365,7 +364,7 @@ final_check
 
 현재 실행 흐름은 아래 순서다.
 
-1. `patent_fetch_node`: 로컬 DB, KIPRIS API, KIPRIS PDF를 수집한다.
+1. `patent_context_collect`: 로컬 DB, KIPRIS API, KIPRIS PDF를 수집한다.
 2. `portfolio_sibling_node`: 동일 제품군/관리번호 batch 기반 유사·보완 특허군 evidence를 만든다.
 3. `common_preprocess_node`: KIPRIS API/PDF/DB metadata를 Agent 입력용 구조로 정리한다.
 4. `summary.py`: 특허 요약 Markdown을 생성한다.

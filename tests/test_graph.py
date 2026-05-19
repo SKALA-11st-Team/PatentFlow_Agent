@@ -28,45 +28,37 @@ def test_route_after_writing_supervisor_finishes_at_final_merge():
     assert workflow_graph._route_after_writing_supervisor(state.model_dump()) == "final_merge"
 
 
-def test_valuation_team_runs_sequential_axis_nodes(monkeypatch):
+def test_valuation_team_analyzes_axis_nodes_then_merges_results(monkeypatch):
     calls = []
 
-    def axis_node(name):
-        def _node(state):
+    def axis_result_node(name):
+        def _node(payload):
             calls.append(name)
-            state.valuation_result = {
-                **(state.valuation_result or {}),
-                "axes": {
-                    **((state.valuation_result or {}).get("axes") or {}),
-                    name: {"score": 70},
-                },
-            }
-            return state
+            return {f"valuation_axis_{name}": {"axis": name, "score": 70}}
 
         return _node
 
-    def finalize_node(state):
+    def finalize_node(payload):
         calls.append("finalize")
-        state.valuation_result = {
-            "axes": {
-                "legal": {"score": 70},
-                "technology": {"score": 70},
-                "market": {"score": 70},
-                "business_fit": {"score": 70},
-            }
+        return {
+            **payload,
+            "valuation_result": {
+                "axes": {
+                    "legal": {"score": 70},
+                    "technology": {"score": 70},
+                    "market": {"score": 70},
+                    "business_fit": {"score": 70},
+                }
+            },
         }
-        return state
 
     def supervisor_node(state):
         calls.append("valuation_supervisor")
         state.supervisor_decision = {"next_action": "end"}
         return state
 
-    monkeypatch.setattr(workflow_graph, "valuation_legal_node", axis_node("legal"))
-    monkeypatch.setattr(workflow_graph, "valuation_technology_node", axis_node("technology"))
-    monkeypatch.setattr(workflow_graph, "valuation_market_node", axis_node("market"))
-    monkeypatch.setattr(workflow_graph, "valuation_business_fit_node", axis_node("business_fit"))
-    monkeypatch.setattr(workflow_graph, "valuation_finalize_node", finalize_node)
+    monkeypatch.setattr(workflow_graph, "_run_valuation_axis_result_node", lambda payload, axis: axis_result_node(axis)(payload))
+    monkeypatch.setattr(workflow_graph, "_run_valuation_axes_merge", finalize_node)
     monkeypatch.setattr(workflow_graph, "valuation_supervisor_node", supervisor_node)
 
     state = PatentWorkflowState(
@@ -77,10 +69,31 @@ def test_valuation_team_runs_sequential_axis_nodes(monkeypatch):
 
     run_workflow(state)
 
-    assert calls == ["legal", "technology", "market", "business_fit", "finalize", "valuation_supervisor"]
+    assert set(calls[:4]) == {"legal", "technology", "market", "business_fit"}
+    assert calls[-2:] == ["finalize", "valuation_supervisor"]
 
 
-def test_writing_team_runs_summary_and_final_report_before_writing_supervisor(monkeypatch):
+def test_valuation_axes_analyze_clears_previous_valuation_state():
+    payload = {
+        "valuation_result": {"axes": {"legal": {"score": 5}}},
+        "validation_result": {"passed": True},
+        "valuation_axis_legal": {"score": 5},
+        "valuation_axis_technology": {"score": 5},
+        "valuation_axis_market": {"score": 5},
+        "valuation_axis_business_fit": {"score": 5},
+    }
+
+    result = workflow_graph._start_valuation_axes_analysis(payload)
+
+    assert result["valuation_result"] is None
+    assert result["validation_result"] is None
+    assert result["valuation_axis_legal"] is None
+    assert result["valuation_axis_technology"] is None
+    assert result["valuation_axis_market"] is None
+    assert result["valuation_axis_business_fit"] is None
+
+
+def test_writing_team_runs_summary_final_report_validation_then_writing_supervisor(monkeypatch):
     calls = []
 
     def summary_node(state):
@@ -96,6 +109,11 @@ def test_writing_team_runs_summary_and_final_report_before_writing_supervisor(mo
         }
         return state
 
+    def validation_node(state):
+        calls.append("validation")
+        state.validation_result = {"passed": True, "issues": []}
+        return state
+
     def writing_supervisor_node(state):
         calls.append("writing_supervisor")
         state.supervisor_decision = {"next_action": "final_merge"}
@@ -103,6 +121,7 @@ def test_writing_team_runs_summary_and_final_report_before_writing_supervisor(mo
 
     monkeypatch.setattr(workflow_graph, "summary_node", summary_node)
     monkeypatch.setattr(workflow_graph, "final_report_node", final_report_node)
+    monkeypatch.setattr(workflow_graph, "validation_node", validation_node)
     monkeypatch.setattr(workflow_graph, "writing_supervisor_node", writing_supervisor_node)
 
     state = PatentWorkflowState(
@@ -113,6 +132,6 @@ def test_writing_team_runs_summary_and_final_report_before_writing_supervisor(mo
 
     result = run_workflow(state)
 
-    assert calls == ["summary", "final_report", "writing_supervisor"]
+    assert calls == ["summary", "final_report", "validation", "writing_supervisor"]
     assert result.final_report["summary"]["summary_markdown"].startswith("# 특허 요약")
     assert result.final_report["valuation"]["final_report_markdown"].startswith("# 가치평가 리포트")

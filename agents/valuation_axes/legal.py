@@ -27,6 +27,6 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
     del state
     return select_by_types_or_axes(
         items,
-        source_types={"portfolio_context", "competitor_patent", "patent_api"},
+        source_types={"portfolio_context", "competitor_patent", "patent_api", "prior_art", "citation"},
         axes={AXIS},
     )

@@ -1,7 +1,8 @@
-from typing import Any
+from typing import Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from agents.valuation import VALUATION_AXES, finalize_valuation_axis_results, run_axis_valuation_result
 from app.config import settings
 from services.observability.langsmith_service import trace
 from workflow.nodes import (
@@ -11,16 +12,10 @@ from workflow.nodes import (
     final_report_node,
     final_merge_node,
     patent_fetch_node,
-    patent_resolve_node,
     portfolio_sibling_node,
     query_rewriting_node,
     summary_node,
     validation_node,
-    valuation_business_fit_node,
-    valuation_finalize_node,
-    valuation_legal_node,
-    valuation_market_node,
-    valuation_technology_node,
 )
 from workflow.supervisor import (
     research_supervisor_node,
@@ -31,6 +26,35 @@ from workflow.supervisor import (
 from workflow.state import PatentWorkflowState
 
 
+class WorkflowGraphState(TypedDict, total=False):
+    user_input: dict[str, Any]
+    current_stage: str | None
+    current_team: str | None
+    team_status: dict[str, Any]
+    retry_count: int
+    patent_structured: dict[str, Any] | None
+    kipris_api_data: dict[str, Any] | None
+    kipris_family_patents: list[dict[str, Any]]
+    pdf_paths: list[str]
+    parsed_pdf: dict[str, Any] | None
+    preprocessed_patent: dict[str, Any] | None
+    summary_result: dict[str, Any] | None
+    portfolio_evidence: list[dict[str, Any]]
+    portfolio_result: dict[str, Any] | None
+    query_plan: dict[str, Any] | None
+    search_queries: list[str]
+    evidence_bundle: list[dict[str, Any]]
+    valuation_result: dict[str, Any] | None
+    final_report: dict[str, Any] | None
+    validation_result: dict[str, Any] | None
+    supervisor_decision: dict[str, Any] | None
+    missing_evidence: list[str]
+    valuation_axis_legal: dict[str, Any]
+    valuation_axis_technology: dict[str, Any]
+    valuation_axis_market: dict[str, Any]
+    valuation_axis_business_fit: dict[str, Any]
+
+
 def _as_state(payload: dict[str, Any]) -> PatentWorkflowState:
     return PatentWorkflowState.model_validate(payload)
 
@@ -38,6 +62,34 @@ def _as_state(payload: dict[str, Any]) -> PatentWorkflowState:
 def _run_node(payload: dict[str, Any], fn: Any) -> dict[str, Any]:
     state = _as_state(payload)
     next_state = fn(state)
+    return next_state.model_dump()
+
+
+def _start_valuation_axes_analysis(payload: dict[str, Any]) -> dict[str, Any]:
+    del payload
+    return {
+        "valuation_result": None,
+        "validation_result": None,
+        "valuation_axis_legal": None,
+        "valuation_axis_technology": None,
+        "valuation_axis_market": None,
+        "valuation_axis_business_fit": None,
+    }
+
+
+def _run_valuation_axis_result_node(payload: dict[str, Any], axis: str) -> dict[str, Any]:
+    state = _as_state(payload)
+    return {f"valuation_axis_{axis}": run_axis_valuation_result(axis, state)}
+
+
+def _run_valuation_axes_merge(payload: dict[str, Any]) -> dict[str, Any]:
+    state = _as_state(payload)
+    axis_results = {
+        axis: payload[f"valuation_axis_{axis}"]
+        for axis in VALUATION_AXES
+        if isinstance(payload.get(f"valuation_axis_{axis}"), dict)
+    }
+    next_state = finalize_valuation_axis_results(state, axis_results)
     return next_state.model_dump()
 
 
@@ -54,7 +106,9 @@ def _route_after_research_supervisor(payload: dict[str, Any]) -> str:
     action = (state.supervisor_decision or {}).get("next_action")
     if action == "common_preprocess" and not state.parsed_pdf and not state.kipris_api_data:
         return "end"
-    if action in {"patent_fetch", "common_preprocess", "query_rewriting"}:
+    if action == "patent_fetch":
+        return "patent_context_collect"
+    if action in {"common_preprocess", "query_rewriting"}:
         if action == "query_rewriting" and state.retry_count >= settings.max_evidence_search_rounds:
             return "valuation_team"
         return action
@@ -80,10 +134,9 @@ def _route_after_writing_supervisor(payload: dict[str, Any]) -> str:
 
 
 def _build_graph() -> Any:
-    graph = StateGraph(dict)
+    graph = StateGraph(WorkflowGraphState)
     graph.add_node("top_supervisor", lambda payload: _run_node(payload, top_supervisor_node))
-    graph.add_node("patent_resolve", lambda payload: _run_node(payload, patent_resolve_node))
-    graph.add_node("patent_fetch", lambda payload: _run_node(payload, patent_fetch_node))
+    graph.add_node("patent_context_collect", lambda payload: _run_node(payload, patent_fetch_node))
     graph.add_node("portfolio_sibling", lambda payload: _run_node(payload, portfolio_sibling_node))
     graph.add_node("common_preprocess", lambda payload: _run_node(payload, common_preprocess_node))
     graph.add_node("research_supervisor", lambda payload: _run_node(payload, research_supervisor_node))
@@ -91,11 +144,12 @@ def _build_graph() -> Any:
     graph.add_node("query_rewriting", lambda payload: _run_node(payload, query_rewriting_node))
     graph.add_node("evidence_search", lambda payload: _run_node(payload, evidence_search_node))
     graph.add_node("evidence_compression", lambda payload: _run_node(payload, evidence_compression_node))
-    graph.add_node("valuation_legal", lambda payload: _run_node(payload, valuation_legal_node))
-    graph.add_node("valuation_technology", lambda payload: _run_node(payload, valuation_technology_node))
-    graph.add_node("valuation_market", lambda payload: _run_node(payload, valuation_market_node))
-    graph.add_node("valuation_business_fit", lambda payload: _run_node(payload, valuation_business_fit_node))
-    graph.add_node("valuation_finalize", lambda payload: _run_node(payload, valuation_finalize_node))
+    graph.add_node("valuation_axes_analyze", _start_valuation_axes_analysis)
+    graph.add_node("valuation_legal", lambda payload: _run_valuation_axis_result_node(payload, "legal"))
+    graph.add_node("valuation_technology", lambda payload: _run_valuation_axis_result_node(payload, "technology"))
+    graph.add_node("valuation_market", lambda payload: _run_valuation_axis_result_node(payload, "market"))
+    graph.add_node("valuation_business_fit", lambda payload: _run_valuation_axis_result_node(payload, "business_fit"))
+    graph.add_node("valuation_axes_merge", lambda payload: _run_valuation_axes_merge(payload))
     graph.add_node("valuation_supervisor", lambda payload: _run_node(payload, valuation_supervisor_node))
     graph.add_node("final_report", lambda payload: _run_node(payload, final_report_node))
     graph.add_node("validation", lambda payload: _run_node(payload, validation_node))
@@ -103,20 +157,23 @@ def _build_graph() -> Any:
     graph.add_node("final_merge", lambda payload: _run_node(payload, final_merge_node))
 
     graph.add_edge(START, "top_supervisor")
-    graph.add_edge("patent_resolve", "patent_fetch")
-    graph.add_edge("patent_fetch", "portfolio_sibling")
+    graph.add_edge("patent_context_collect", "portfolio_sibling")
     graph.add_edge("portfolio_sibling", "common_preprocess")
     graph.add_edge("common_preprocess", "research_supervisor")
     graph.add_edge("summary", "final_report")
-    graph.add_edge("final_report", "writing_supervisor")
+    graph.add_edge("final_report", "validation")
     graph.add_edge("query_rewriting", "evidence_search")
     graph.add_edge("evidence_search", "evidence_compression")
     graph.add_edge("evidence_compression", "research_supervisor")
-    graph.add_edge("valuation_legal", "valuation_technology")
-    graph.add_edge("valuation_technology", "valuation_market")
-    graph.add_edge("valuation_market", "valuation_business_fit")
-    graph.add_edge("valuation_business_fit", "valuation_finalize")
-    graph.add_edge("valuation_finalize", "valuation_supervisor")
+    graph.add_edge("valuation_axes_analyze", "valuation_legal")
+    graph.add_edge("valuation_axes_analyze", "valuation_technology")
+    graph.add_edge("valuation_axes_analyze", "valuation_market")
+    graph.add_edge("valuation_axes_analyze", "valuation_business_fit")
+    graph.add_edge(
+        ["valuation_legal", "valuation_technology", "valuation_market", "valuation_business_fit"],
+        "valuation_axes_merge",
+    )
+    graph.add_edge("valuation_axes_merge", "valuation_supervisor")
     graph.add_edge("validation", "writing_supervisor")
     graph.add_edge("final_merge", END)
 
@@ -124,8 +181,8 @@ def _build_graph() -> Any:
         "top_supervisor",
         _route_after_top_supervisor,
         {
-            "research_team": "patent_resolve",
-            "valuation_team": "valuation_legal",
+            "research_team": "patent_context_collect",
+            "valuation_team": "valuation_axes_analyze",
             "writing_team": "summary",
             "final_merge": "final_merge",
             "end": END,
@@ -135,10 +192,10 @@ def _build_graph() -> Any:
         "research_supervisor",
         _route_after_research_supervisor,
         {
-            "patent_fetch": "patent_fetch",
+            "patent_context_collect": "patent_context_collect",
             "common_preprocess": "common_preprocess",
             "query_rewriting": "query_rewriting",
-            "valuation_team": "valuation_legal",
+            "valuation_team": "valuation_axes_analyze",
             "top_supervisor": "top_supervisor",
             "end": END,
         },
@@ -147,8 +204,8 @@ def _build_graph() -> Any:
         "valuation_supervisor",
         _route_after_valuation_supervisor,
         {
-            "research_team": "patent_resolve",
-            "valuation_team": "valuation_legal",
+            "research_team": "patent_context_collect",
+            "valuation_team": "valuation_axes_analyze",
             "writing_team": "summary",
             "end": END,
         },

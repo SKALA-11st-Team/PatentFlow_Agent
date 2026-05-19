@@ -97,6 +97,20 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
         result.setdefault("warnings", []).append(
             f"family_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
         )
+    try:
+        result["citation_documents"] = normalize_kipris_citations(
+            client.citation_info_v3(kipris_application_number)
+        )
+        result["metadata"]["prior_art"] = [
+            item["display_number"] for item in result["citation_documents"] if item.get("display_number")
+        ]
+        result["citation_stats"] = build_citation_stats(result["citation_documents"])
+    except Exception as exc:
+        result["citation_documents"] = []
+        result["citation_stats"] = {"total_count": 0, "standardized_count": 0, "non_standardized_count": 0}
+        result.setdefault("warnings", []).append(
+            f"citation_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
+        )
     return result
 
 
@@ -285,6 +299,145 @@ def _normalize_kipris_family_patents(raw_family_patents: list[Any]) -> list[dict
                 "source": "kipris_family_info_v2",
             }
         )
+    return result
+
+
+def normalize_kipris_citations(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    items = _ensure_list(
+        _get_path(raw, ["response", "body", "items", "citationInfoV3"])
+        or _get_path(raw, ["response", "body", "citationInfoV3"])
+    )
+    normalized = [_normalize_kipris_citation(item) for item in items if isinstance(item, dict)]
+    return _dedupe_kipris_citations(normalized)
+
+
+def build_citation_stats(citations: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total_count": len(citations),
+        "standardized_count": sum(1 for item in citations if item.get("is_standardized")),
+        "non_standardized_count": sum(1 for item in citations if not item.get("is_standardized")),
+    }
+
+
+def _normalize_kipris_citation(item: dict[str, Any]) -> dict[str, Any]:
+    country_code = _clean(item.get("StandardCitationLiteratureCountryCode"))
+    standard_number = _clean(item.get("StandardCitationLiteraturenumber"))
+    kind_code = _clean(item.get("StandardCitationIdentificationCode"))
+    standard_status_name = _clean(item.get("StandardStatusCodeName"))
+    citation_type_name = _clean(item.get("CitationLiteratureTypeCodeName"))
+    original_number = _clean(item.get("OriginalcitationLiteraturenumber"))
+    is_standardized = standard_status_name == "표준화" and bool(standard_number)
+    display_number = _citation_display_number(
+        country_code=country_code,
+        standard_number=standard_number,
+        kind_code=kind_code,
+        original_number=original_number,
+    )
+    return {
+        "application_number": _clean(item.get("ApplicationNumber")),
+        "original_number": original_number,
+        "original_date": _normalize_yyyymmdd(_clean(item.get("OriginalcitationLiteraturenumberDate"))),
+        "standard_number": standard_number,
+        "country_code": country_code,
+        "country_name": _clean(item.get("StandardCitationLiteratureCountryCodeName")),
+        "kind_code": kind_code,
+        "publication_date": _normalize_yyyymmdd(_clean(item.get("StandardCitationLiteraturePublicationDate"))),
+        "standard_status_code": _clean(item.get("StandardStatusCode")),
+        "standard_status_name": standard_status_name,
+        "citation_type_code": _clean(item.get("CitationLiteratureTypeCode")),
+        "citation_type_name": citation_type_name,
+        "citation_type_names": [citation_type_name] if citation_type_name else [],
+        "display_number": display_number,
+        "is_standardized": is_standardized,
+        "raw": item,
+    }
+
+
+def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    index_by_key: dict[str, int] = {}
+    index_by_original_key: dict[str, int] = {}
+    standardized_original_keys = {
+        _citation_original_key(item)
+        for item in items
+        if item.get("is_standardized") and _citation_original_key(item)
+    }
+
+    for item in sorted(items, key=lambda value: 0 if value.get("is_standardized") else 1):
+        if not item.get("display_number"):
+            continue
+        if not item.get("is_standardized") and _citation_original_key(item) in standardized_original_keys:
+            original_key = _citation_original_key(item)
+            if original_key in index_by_original_key:
+                existing = selected[index_by_original_key[original_key]]
+                existing["citation_type_names"] = _unique_texts(
+                    [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
+                )
+            continue
+        key = _citation_dedupe_key(item)
+        if key in index_by_key:
+            existing = selected[index_by_key[key]]
+            existing["citation_type_names"] = _unique_texts(
+                [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
+            )
+            continue
+        index_by_key[key] = len(selected)
+        original_key = _citation_original_key(item)
+        if original_key:
+            index_by_original_key[original_key] = len(selected)
+        selected.append(item)
+    return selected
+
+
+def _citation_display_number(
+    *,
+    country_code: str | None,
+    standard_number: str | None,
+    kind_code: str | None,
+    original_number: str | None,
+) -> str:
+    if country_code and standard_number:
+        return " ".join(part for part in [f"{country_code}{standard_number}", kind_code] if part)
+    return original_number or ""
+
+
+def _citation_dedupe_key(item: dict[str, Any]) -> str:
+    if item.get("is_standardized"):
+        return "|".join(
+            [
+                str(item.get("country_code") or ""),
+                str(item.get("standard_number") or ""),
+                str(item.get("kind_code") or ""),
+            ]
+        )
+    return _citation_original_key(item) or str(item.get("display_number") or "")
+
+
+def _citation_original_key(item: dict[str, Any]) -> str:
+    return re.sub(r"\s+", "", str(item.get("original_number") or item.get("display_number") or "")).upper()
+
+
+def _normalize_yyyymmdd(value: str | None) -> str | None:
+    text = _clean(value)
+    if not text or not re.match(r"^\d{8}$", text):
+        return None
+    return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
+
+
+def _clean(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _unique_texts(values: list[str]) -> list[str]:
+    result = []
+    seen = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
     return result
 
 

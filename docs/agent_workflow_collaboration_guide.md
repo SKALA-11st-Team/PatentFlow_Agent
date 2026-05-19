@@ -109,16 +109,19 @@ venv/bin/python -m app.main P202405001-KR0
 가치평가의 공통 조립 파일은 `agents/valuation.py`이고, 실제 축별 작업 파일은 `agents/valuation_axes/` 아래에 있습니다.
 
 ```text
-run_valuation_agent
-→ VALUATION_AXES 순서대로 legal / technology / market / business_fit 실행
+workflow.graph의 valuation_axes_analyze
+→ legal / technology / market / business_fit 축 노드 fan-out 실행
 → agents/valuation_axes/{axis}.py의 run()
   → select_evidence()
   → runtime.build_input_payload()
   → runtime.build_prompt()로 common_valuation.md + valuation_{axis}.md 로드
   → runtime.run_llm_required()로 LLM JSON 결과 normalize
+→ valuation_axes_merge에서 축별 결과 fan-in
 → build_final_valuation_result
 → 점수/지표/권고 종합
 ```
+
+`run_valuation_agent()`는 단독 호출용 호환 함수이고, 실제 workflow graph에서는 `valuation_axes_analyze`에서 4개 축을 분기한 뒤 `valuation_axes_merge`에서 합치는 fan-out/fan-in 구조를 사용합니다.
 
 축별 입력 근거 선택은 각 축 파일의 `select_evidence()`에서 결정됩니다.
 
@@ -240,9 +243,8 @@ full_claims = valuation_claims(state) if axis == "legal" else []
 ```mermaid
 flowchart TD
     START --> TOP["top_supervisor"]
-    TOP -->|"research_team"| RESOLVE["patent_resolve"]
-    RESOLVE --> FETCH["patent_fetch"]
-    FETCH --> PORTFOLIO["portfolio_sibling"]
+    TOP -->|"research_team"| COLLECT["patent_context_collect"]
+    COLLECT --> PORTFOLIO["portfolio_sibling"]
     PORTFOLIO --> PRE["common_preprocess"]
     PRE --> RS["research_supervisor"]
 
@@ -251,18 +253,23 @@ flowchart TD
     SEARCH --> COMPRESS["evidence_compression"]
     COMPRESS --> RS
 
-    RS -->|"valuation_team"| VL["valuation_legal"]
-    VL --> VT["valuation_technology"]
-    VT --> VM["valuation_market"]
-    VM --> VB["valuation_business_fit"]
-    VB --> VF["valuation_finalize"]
-    VF --> VS["valuation_supervisor"]
-    VS -->|"research_team"| RESOLVE
-    VS -->|"valuation_team"| VL
+    RS -->|"valuation_team"| VA["valuation_axes_analyze"]
+    VA --> VL["valuation_legal"]
+    VA --> VT["valuation_technology"]
+    VA --> VM["valuation_market"]
+    VA --> VB["valuation_business_fit"]
+    VL --> VAM["valuation_axes_merge"]
+    VT --> VAM
+    VM --> VAM
+    VB --> VAM
+    VAM --> VS["valuation_supervisor"]
+    VS -->|"research_team"| COLLECT
+    VS -->|"valuation_team"| VA
     VS -->|"writing_team"| SUMMARY["summary"]
 
     SUMMARY --> REPORT["final_report"]
-    REPORT --> WS["writing_supervisor"]
+    REPORT --> VALIDATION["validation"]
+    VALIDATION --> WS["writing_supervisor"]
     WS -->|"writing_team"| SUMMARY
     WS -->|"final_merge"| FINAL["final_merge"]
     FINAL --> END
@@ -273,18 +280,19 @@ flowchart TD
 | 노드 | 역할 |
 | --- | --- |
 | `top_supervisor` | 현재 상태를 보고 Research / Valuation / Writing 팀으로 라우팅 |
-| `patent_resolve` | 특허 조회 단계로 진입 |
-| `patent_fetch` | SQLite 특허 메타데이터, KIPRIS API, PDF/Markdown 수집 |
+| `patent_context_collect` | SQLite 특허 메타데이터, KIPRIS API, PDF/Markdown 수집 |
 | `portfolio_sibling` | 같은 제품군/관리번호 기반 유사·보완 특허 근거 생성 |
 | `common_preprocess` | PDF/KIPRIS 데이터를 공통 특허 구조로 전처리 |
 | `summary` | Writing Team에서 특허 요약문 생성 |
 | `query_rewriting` | 뉴스 검색용 `ko/en` 쿼리와 산업 RAG용 `industry_rag` 쿼리 생성 |
 | `evidence_search` | Naver/GNews/industry RAG 검색 및 필터링 |
 | `evidence_compression` | 뉴스/산업보고서 근거를 LLM으로 압축하고 관련성 낮은 근거 제거 |
+| `valuation_axes_analyze` | 이전 평가/검증 상태를 초기화하고 4개 평가축 분석을 시작 |
 | `valuation_legal` / `valuation_technology` / `valuation_market` / `valuation_business_fit` | 축별 가치평가 수행 |
-| `valuation_finalize` | 축별 평가 결과를 종합해 총점, 평균, 최종 지표, 권고를 생성 |
+| `valuation_axes_merge` | 축별 평가 결과를 종합해 총점, 평균, 최종 지표, 권고를 생성 |
 | `valuation_supervisor` | 평가 결과 구조와 근거 연결을 검증 |
 | `final_report` | Writing Team에서 가치평가 종합 결과를 최종 Markdown 보고서로 작성 |
+| `validation` | 최종 보고 전 평가축 구조를 검증 |
 | `writing_supervisor` | 요약문과 최종 보고서 Markdown 존재 여부 및 품질 검증 |
 | `final_merge` | summary, valuation, evidence를 최종 state로 병합 |
 

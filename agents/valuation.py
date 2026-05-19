@@ -54,6 +54,23 @@ def run_axis_valuation_agent(axis: str, state: PatentWorkflowState) -> PatentWor
     return state
 
 
+@trace(name="valuation_axis_result_agent", run_type="chain")
+def run_axis_valuation_result(axis: str, state: PatentWorkflowState) -> dict[str, Any]:
+    if state.user_input.get("use_llm_valuation", True) is False:
+        raise RuntimeError("LLM valuation is required, but use_llm_valuation is disabled.")
+    if axis not in VALUATION_AXES:
+        raise ValueError(f"Unknown valuation axis: {axis}")
+    return AXIS_MODULES[axis].run(state, AXIS_RUNTIME)
+
+
+def finalize_valuation_axis_results(
+    state: PatentWorkflowState,
+    axis_results: dict[str, dict[str, Any]],
+) -> PatentWorkflowState:
+    state.valuation_result = {"axes": axis_results}
+    return finalize_valuation_agent(state)
+
+
 @trace(name="valuation_finalize_agent", run_type="chain")
 def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     axes = dict((state.valuation_result or {}).get("axes") or {})
@@ -97,6 +114,7 @@ def build_axis_input_payload(
     representative_claims = valuation_representative_claims(state)
     full_claims = valuation_claims(state) if axis == "legal" else []
     claim_stats = ((state.kipris_api_data or {}).get("claim_stats") or {})
+    prior_art_candidates = valuation_prior_art_candidates(state) if axis == "legal" else []
     return {
         "patent": {
             "metadata": state.patent_structured or {},
@@ -104,10 +122,12 @@ def build_axis_input_payload(
             "claim_stats": claim_stats,
             "representative_claims": representative_claims,
             "claims": full_claims,
+            "prior_art_candidates": prior_art_candidates,
             "claim_availability": {
                 "claim_stats_provided": bool(claim_stats),
                 "representative_claims_provided": bool(representative_claims),
                 "full_claims_provided": bool(full_claims),
+                "prior_art_candidates_provided": bool(prior_art_candidates),
             },
         },
         "summary_result": state.summary_result,
@@ -162,6 +182,20 @@ def valuation_representative_claims(state: PatentWorkflowState, *, limit: int = 
     return result
 
 
+def valuation_prior_art_candidates(state: PatentWorkflowState) -> list[str]:
+    candidates = []
+    for source in (
+        (state.preprocessed_patent or {}).get("metadata") or {},
+        (state.kipris_api_data or {}).get("metadata") or {},
+        state.patent_structured or {},
+    ):
+        values = source.get("prior_art") or source.get("citation_documents") or []
+        if isinstance(values, str):
+            values = [values]
+        candidates.extend(normalize_text(value) for value in values if normalize_text(value))
+    return unique_texts(candidates)
+
+
 def valuation_evidence_payload(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "evidence_id": item.get("evidence_id"),
@@ -176,6 +210,7 @@ def valuation_evidence_payload(item: dict[str, Any]) -> dict[str, Any]:
         "key_facts": item.get("key_facts") or [],
         "sibling_patents": item.get("sibling_patents") or [],
         "group_size": item.get("group_size"),
+        "metadata": item.get("metadata") or {},
     }
 
 

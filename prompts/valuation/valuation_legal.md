@@ -8,10 +8,13 @@
 
 사용 근거:
 - 대표 청구항
+- 전체 청구항
 - 독립항/종속항 수
 - 전체 청구항 수
 - claim_stats
 - representative_claims
+- prior_art_candidates
+- citation/prior_art evidence
 - IPC/CPC
 - 초록
 - 등록 상태
@@ -24,6 +27,8 @@
 
 주의:
 - 무효, 침해, 분쟁 가능성을 단정하지 않는다.
+- prior_art_candidates 또는 citation/prior_art evidence가 제공되면 권리안정성 판단에 참고하되, 후보 문헌만으로 무효 가능성을 단정하지 않는다.
+- 선행기술/인용문헌 후보가 없으면 이를 임의로 만들지 말고 confidence와 missing_information에만 보수적으로 반영한다.
 - “권리범위가 넓다/좁다”는 표현은 청구항 근거가 있을 때만 사용한다.
 - representative_claims 또는 claim_stats가 제공된 경우, 이를 기준으로 권리 구조를 판단하고 “청구항 전문 부재”를 반복하지 않는다.
 - representative_claims와 claim_stats가 모두 부족할 때만 청구항 정보 부족을 missing_information에 남긴다.
