@@ -338,6 +338,66 @@ def test_legal_axis_input_includes_prior_art_candidates(tmp_path):
     assert market_payload["patent"]["prior_art_candidates"] == []
 
 
+def test_legal_axis_input_includes_citation_evidence(tmp_path):
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        kipris_api_data={
+            "citation_evidence": {
+                "kr_citation_documents": [
+                    {
+                        "direction": "cited_by_target",
+                        "country_code": "KR",
+                        "application_number": "1020200012345",
+                        "title": "선행 KR 특허",
+                        "abstract": "선행 KR 초록",
+                        "representative_claims": [
+                            {"claim_no": 1, "text": "선행 독립항", "is_independent": True, "dependency": None}
+                        ],
+                        "lookup_status": "resolved",
+                        "lookup_source": "kipris_bibliography_detail",
+                    }
+                ],
+                "kr_citing_documents": [
+                    {
+                        "direction": "citing_target",
+                        "country_code": "KR",
+                        "application_number": "1020117007865",
+                        "title": "후행 KR 특허",
+                        "abstract": "후행 KR 초록",
+                        "representative_claims": [
+                            {"claim_no": 1, "text": "후행 독립항", "is_independent": True, "dependency": None}
+                        ],
+                        "lookup_status": "resolved",
+                        "lookup_source": "kipris_bibliography_detail",
+                    }
+                ],
+                "foreign_claim_lookup_candidates": [
+                    {
+                        "direction": "cited_by_target",
+                        "country_code": "JP",
+                        "document_number": "29047511",
+                        "kind_code": "A",
+                        "display_number": "JP29047511 A",
+                        "lookup_source": "bigquery_claims",
+                    }
+                ],
+            }
+        },
+    )
+
+    from agents.valuation import build_axis_input_payload
+
+    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
+    technology_payload = build_axis_input_payload(axis="technology", state=state, evidence=[])
+
+    citation_evidence = legal_payload["patent"]["citation_evidence"]
+    assert citation_evidence["kr_citation_documents"][0]["application_number"] == "1020200012345"
+    assert citation_evidence["kr_citing_documents"][0]["representative_claims"][0]["text"] == "후행 독립항"
+    assert citation_evidence["foreign_claim_lookup_candidates"][0]["lookup_source"] == "bigquery_claims"
+    assert legal_payload["patent"]["claim_availability"]["citation_evidence_provided"] is True
+    assert technology_payload["patent"]["citation_evidence"] == {}
+
+
 def test_valuation_llm_inputs_respect_no_save(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "agents.valuation.call_llm",

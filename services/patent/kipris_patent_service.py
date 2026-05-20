@@ -122,6 +122,19 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
         result.setdefault("warnings", []).append(
             f"citing_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
         )
+    try:
+        result["citation_evidence"] = resolve_citation_evidence(
+            client,
+            citation_documents=result.get("citation_documents") or [],
+            citing_documents=result.get("citing_documents") or [],
+        )
+    except Exception as exc:
+        result["citation_evidence"] = {
+            "kr_citation_documents": [],
+            "kr_citing_documents": [],
+            "foreign_claim_lookup_candidates": [],
+            "warnings": [f"citation_evidence_resolve_failed:{exc.__class__.__name__}:{str(exc)[:300]}"],
+        }
     return result
 
 
@@ -347,6 +360,66 @@ def build_citing_stats(citing_documents: list[dict[str, Any]]) -> dict[str, int]
     }
 
 
+def resolve_citation_evidence(
+    client: Any,
+    *,
+    citation_documents: list[dict[str, Any]],
+    citing_documents: list[dict[str, Any]],
+    max_kr_citations: int = 3,
+    max_kr_citing: int = 3,
+) -> dict[str, Any]:
+    """권리성 평가용 인용/피인용 근거를 조회 가능한 형태로 보강합니다."""
+    warnings: list[str] = []
+    kr_citation_documents = []
+    kr_citing_documents = []
+    foreign_claim_lookup_candidates = []
+
+    for citation in _rank_citation_documents(citation_documents):
+        country_code = citation.get("country_code")
+        if country_code != "KR":
+            candidate = _foreign_claim_lookup_candidate(citation)
+            if candidate:
+                foreign_claim_lookup_candidates.append(candidate)
+            continue
+        if len(kr_citation_documents) >= max_kr_citations:
+            continue
+
+        application_number = _resolve_kr_citation_application_number(client, citation)
+        if not application_number:
+            warnings.append(f"kr_citation_application_number_not_found:{citation.get('display_number')}")
+            continue
+        enriched = _enrich_kr_reference_document(
+            client,
+            application_number,
+            direction="cited_by_target",
+            source_document=citation,
+        )
+        if enriched:
+            kr_citation_documents.append(enriched)
+
+    for citing in _rank_citing_documents(citing_documents)[:max_kr_citing]:
+        application_number = citing.get("citing_application_number")
+        if not application_number:
+            continue
+        enriched = _enrich_kr_reference_document(
+            client,
+            application_number,
+            direction="citing_target",
+            source_document=citing,
+        )
+        if enriched:
+            kr_citing_documents.append(enriched)
+
+    return {
+        "kr_citation_documents": kr_citation_documents,
+        "kr_citing_documents": kr_citing_documents,
+        "foreign_claim_lookup_candidates": _dedupe_foreign_claim_lookup_candidates(
+            foreign_claim_lookup_candidates
+        ),
+        "warnings": warnings,
+    }
+
+
 def _normalize_kipris_citation(item: dict[str, Any]) -> dict[str, Any]:
     country_code = _clean(item.get("StandardCitationLiteratureCountryCode"))
     standard_number = _clean(item.get("StandardCitationLiteraturenumber"))
@@ -450,6 +523,145 @@ def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]
             index_by_original_key[original_key] = len(selected)
         selected.append(item)
     return selected
+
+
+def _rank_citation_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _key(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        kind = str(item.get("kind_code") or "").upper()
+        return (
+            0 if item.get("is_standardized") else 1,
+            0 if kind.startswith("B") else 1,
+            0 if item.get("country_code") == "KR" else 1,
+            str(item.get("display_number") or ""),
+        )
+
+    return sorted(items, key=_key)
+
+
+def _rank_citing_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: (
+            0 if item.get("is_standardized") else 1,
+            str(item.get("citing_application_number") or ""),
+        ),
+    )
+
+
+def _resolve_kr_citation_application_number(client: Any, citation: dict[str, Any]) -> str | None:
+    standard_number = _clean(citation.get("standard_number"))
+    kind_code = str(citation.get("kind_code") or "").upper()
+    if not standard_number:
+        return None
+
+    search_params: dict[str, Any]
+    if kind_code.startswith("B"):
+        search_params = {"registerNumber": standard_number}
+    else:
+        search_params = {"openNumber": standard_number}
+
+    raw = client.advanced_search(
+        **search_params,
+        patent=True,
+        utility=False,
+        pageNo=1,
+        numOfRows=1,
+    )
+    item = _first_item(
+        _get_path(raw, ["response", "body", "items", "item"])
+        or _get_path(raw, ["response", "body", "items", "PatentUtilityInfo"])
+        or _get_path(raw, ["response", "body", "item"])
+    )
+    if not isinstance(item, dict):
+        return None
+    return _clean(
+        item.get("applicationNumber")
+        or item.get("ApplicationNumber")
+        or item.get("application_number")
+    )
+
+
+def _enrich_kr_reference_document(
+    client: Any,
+    application_number: str,
+    *,
+    direction: str,
+    source_document: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        normalized = normalize_kipris_bibliography(
+            client.bibliography_detail(application_number),
+            application_number=application_number,
+        )
+    except Exception as exc:
+        return {
+            "direction": direction,
+            "country_code": "KR",
+            "application_number": application_number,
+            "lookup_status": "failed",
+            "failure_reason": f"{exc.__class__.__name__}:{str(exc)[:300]}",
+            "source_document": source_document,
+        }
+
+    metadata = normalized.get("metadata") or {}
+    claims = normalized.get("claims") or []
+    representative_claims = [claim for claim in claims if claim.get("is_independent") and claim.get("text")]
+    if not representative_claims and claims:
+        representative_claims = [claims[0]]
+    return {
+        "direction": direction,
+        "country_code": "KR",
+        "application_number": metadata.get("application_number") or application_number,
+        "registration_number": metadata.get("registration_number"),
+        "publication_number": metadata.get("publication_number"),
+        "title": metadata.get("title"),
+        "abstract": (normalized.get("sections") or {}).get("abstract"),
+        "register_status": metadata.get("register_status"),
+        "claim_stats": normalized.get("claim_stats") or {},
+        "representative_claims": [
+            {
+                "claim_no": claim.get("claim_no"),
+                "text": claim.get("text"),
+                "is_independent": claim.get("is_independent"),
+                "dependency": claim.get("dependency"),
+            }
+            for claim in representative_claims[:3]
+        ],
+        "lookup_status": "resolved",
+        "lookup_source": "kipris_bibliography_detail",
+        "source_document": source_document,
+    }
+
+
+def _foreign_claim_lookup_candidate(citation: dict[str, Any]) -> dict[str, Any] | None:
+    country_code = citation.get("country_code")
+    document_number = citation.get("standard_number")
+    if not country_code or not document_number:
+        return None
+    return {
+        "direction": "cited_by_target",
+        "country_code": country_code,
+        "document_number": document_number,
+        "kind_code": citation.get("kind_code"),
+        "display_number": citation.get("display_number"),
+        "lookup_source": "bigquery_claims",
+    }
+
+
+def _dedupe_foreign_claim_lookup_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    seen = set()
+    for item in items:
+        key = (
+            item.get("country_code"),
+            item.get("document_number"),
+            item.get("kind_code"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _citation_display_number(

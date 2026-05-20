@@ -115,6 +115,7 @@ def build_axis_input_payload(
     full_claims = valuation_claims(state) if axis == "legal" else []
     claim_stats = ((state.kipris_api_data or {}).get("claim_stats") or {})
     prior_art_candidates = valuation_prior_art_candidates(state) if axis == "legal" else []
+    citation_evidence = valuation_citation_evidence(state) if axis == "legal" else {}
     return {
         "patent": {
             "metadata": state.patent_structured or {},
@@ -123,11 +124,13 @@ def build_axis_input_payload(
             "representative_claims": representative_claims,
             "claims": full_claims,
             "prior_art_candidates": prior_art_candidates,
+            "citation_evidence": citation_evidence,
             "claim_availability": {
                 "claim_stats_provided": bool(claim_stats),
                 "representative_claims_provided": bool(representative_claims),
                 "full_claims_provided": bool(full_claims),
                 "prior_art_candidates_provided": bool(prior_art_candidates),
+                "citation_evidence_provided": bool(citation_evidence),
             },
         },
         "summary_result": state.summary_result,
@@ -194,6 +197,63 @@ def valuation_prior_art_candidates(state: PatentWorkflowState) -> list[str]:
             values = [values]
         candidates.extend(normalize_text(value) for value in values if normalize_text(value))
     return unique_texts(candidates)
+
+
+def valuation_citation_evidence(state: PatentWorkflowState, *, claim_text_limit: int = 1200) -> dict[str, Any]:
+    evidence = (state.kipris_api_data or {}).get("citation_evidence") or {}
+    if not isinstance(evidence, dict):
+        return {}
+    return {
+        "kr_citation_documents": [
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit)
+            for item in (evidence.get("kr_citation_documents") or [])
+            if isinstance(item, dict)
+        ],
+        "kr_citing_documents": [
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit)
+            for item in (evidence.get("kr_citing_documents") or [])
+            if isinstance(item, dict)
+        ],
+        "foreign_claim_lookup_candidates": [
+            {
+                "direction": item.get("direction"),
+                "country_code": item.get("country_code"),
+                "document_number": item.get("document_number"),
+                "kind_code": item.get("kind_code"),
+                "display_number": item.get("display_number"),
+                "lookup_source": item.get("lookup_source"),
+            }
+            for item in (evidence.get("foreign_claim_lookup_candidates") or [])
+            if isinstance(item, dict)
+        ],
+        "warnings": evidence.get("warnings") or [],
+    }
+
+
+def _valuation_reference_document_payload(item: dict[str, Any], *, claim_text_limit: int) -> dict[str, Any]:
+    return {
+        "direction": item.get("direction"),
+        "country_code": item.get("country_code"),
+        "application_number": item.get("application_number"),
+        "registration_number": item.get("registration_number"),
+        "publication_number": item.get("publication_number"),
+        "title": item.get("title"),
+        "abstract": normalize_text(item.get("abstract"))[:1500],
+        "register_status": item.get("register_status"),
+        "claim_stats": item.get("claim_stats") or {},
+        "representative_claims": [
+            {
+                "claim_no": claim.get("claim_no"),
+                "is_independent": claim.get("is_independent"),
+                "dependency": claim.get("dependency"),
+                "text": normalize_text(claim.get("text"))[:claim_text_limit],
+            }
+            for claim in (item.get("representative_claims") or [])[:3]
+            if isinstance(claim, dict) and claim.get("text")
+        ],
+        "lookup_status": item.get("lookup_status"),
+        "lookup_source": item.get("lookup_source"),
+    }
 
 
 def valuation_evidence_payload(item: dict[str, Any]) -> dict[str, Any]:

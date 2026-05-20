@@ -24,7 +24,9 @@
 - 현재 유효 청구항 수와 claim_stats
 - 발명의 효과와 summary_result
 - prior_art_candidates
-- citation/prior_art evidence
+- citation_evidence.kr_citation_documents: 대상 특허가 인용한 국내 선행문헌의 KIPRIS 상세조회 결과
+- citation_evidence.kr_citing_documents: 대상 특허를 인용한 국내 후행문헌의 KIPRIS 상세조회 결과
+- citation_evidence.foreign_claim_lookup_candidates: 해외 인용문헌 청구항 조회 후보. 청구항 전문이 없으면 문헌번호 후보로만 취급한다.
 - 패밀리 특허 정보
 - 해외 등록 B 문헌 여부
 - portfolio_context 및 sibling 특허
@@ -55,6 +57,8 @@
 - 입력에 심사이력 정보가 없더라도 이를 필수 누락으로 보지 않는다.
 - 다만 선행기술/인용문헌 정보가 부족하면 안정성 판단의 confidence를 낮춘다.
 - prior_art_candidates 또는 citation/prior_art evidence가 제공되면 참고하되, 후보 문헌만으로 무효 가능성을 단정하지 않는다.
+- citation_evidence에 국내 인용/피인용 문헌의 title, abstract, representative_claims가 있으면 대표 청구항의 핵심 구성과 비교해 신규성/진보성 리스크를 판단한다.
+- foreign_claim_lookup_candidates는 해외 문헌 청구항 조회가 필요한 후보 목록이다. 실제 청구항 텍스트가 없으면 직접 충돌 근거로 단정하지 않는다.
 
 점수화:
 - 30점: 현재 등록상태가 유효하고, 최종 청구항 기준 핵심 차별점이 명확하며, 유사 선행기술/인용문헌 리스크가 낮고, 패밀리 등록 또는 유지 정보가 긍정적임.
