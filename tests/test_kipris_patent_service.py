@@ -5,6 +5,7 @@ from services.patent.kipris_patent_service import (
     normalize_kipris_citing_documents,
     resolve_citation_evidence,
     _fetch_foreign_claims_from_kipris,
+    _foreign_literature_number_candidates,
     _select_fulltext_pdf,
     fulltext_application_number_candidates,
 )
@@ -583,3 +584,18 @@ def test_fetch_foreign_claims_from_kipris_uses_literature_number_candidates():
     assert result[0]["literature_number"] == "000004002589B2"
     assert result[0]["lookup_source"] == "kipris_foreign_bibliographic_claims"
     assert result[0]["representative_claims"][0]["text"].startswith("搬送コンベヤ")
+
+
+def test_foreign_literature_number_candidates_try_twelve_digit_kind_first():
+    candidate = {
+        "country_code": "JP",
+        "document_number": "7401073",
+        "kind_code": "B2",
+        "original_number": "JP7401073 B2",
+        "display_number": "JP7401073 B2",
+    }
+
+    assert _foreign_literature_number_candidates(candidate)[:2] == [
+        "000007401073B2",
+        "7401073B2",
+    ]
