@@ -447,6 +447,9 @@ def _normalize_kipris_citation(item: dict[str, Any]) -> dict[str, Any]:
         "standard_status_name": standard_status_name,
         "citation_type_code": _clean(item.get("CitationLiteratureTypeCode")),
         "citation_type_name": citation_type_name,
+        "citation_type_codes": [_clean(item.get("CitationLiteratureTypeCode"))]
+        if _clean(item.get("CitationLiteratureTypeCode"))
+        else [],
         "citation_type_names": [citation_type_name] if citation_type_name else [],
         "display_number": display_number,
         "is_standardized": is_standardized,
@@ -464,6 +467,9 @@ def _normalize_kipris_citing_document(item: dict[str, Any]) -> dict[str, Any]:
         "standard_status_name": standard_status_name,
         "citation_type_code": _clean(item.get("CitationLiteratureTypeCode")),
         "citation_type_name": citation_type_name,
+        "citation_type_codes": [_clean(item.get("CitationLiteratureTypeCode"))]
+        if _clean(item.get("CitationLiteratureTypeCode"))
+        else [],
         "citation_type_names": [citation_type_name] if citation_type_name else [],
         "is_standardized": standard_status_name == "표준화",
         "raw": item,
@@ -479,6 +485,9 @@ def _dedupe_kipris_citing_documents(items: list[dict[str, Any]]) -> list[dict[st
             continue
         if application_number in index_by_application_number:
             existing = selected[index_by_application_number[application_number]]
+            existing["citation_type_codes"] = _unique_texts(
+                [*existing.get("citation_type_codes", []), *item.get("citation_type_codes", [])]
+            )
             existing["citation_type_names"] = _unique_texts(
                 [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
             )
@@ -506,6 +515,9 @@ def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]
             original_key = _citation_original_key(item)
             if original_key in index_by_original_key:
                 existing = selected[index_by_original_key[original_key]]
+                existing["citation_type_codes"] = _unique_texts(
+                    [*existing.get("citation_type_codes", []), *item.get("citation_type_codes", [])]
+                )
                 existing["citation_type_names"] = _unique_texts(
                     [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
                 )
@@ -513,6 +525,9 @@ def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]
         key = _citation_dedupe_key(item)
         if key in index_by_key:
             existing = selected[index_by_key[key]]
+            existing["citation_type_codes"] = _unique_texts(
+                [*existing.get("citation_type_codes", []), *item.get("citation_type_codes", [])]
+            )
             existing["citation_type_names"] = _unique_texts(
                 [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
             )
@@ -531,6 +546,7 @@ def _rank_citation_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]
         return (
             0 if item.get("is_standardized") else 1,
             0 if kind.startswith("B") else 1,
+            _citation_type_priority(item),
             0 if item.get("country_code") == "KR" else 1,
             str(item.get("display_number") or ""),
         )
@@ -543,9 +559,22 @@ def _rank_citing_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         items,
         key=lambda item: (
             0 if item.get("is_standardized") else 1,
+            _citation_type_priority(item),
             str(item.get("citing_application_number") or ""),
         ),
     )
+
+
+def _citation_type_priority(item: dict[str, Any]) -> int:
+    codes = set(item.get("citation_type_codes") or [])
+    names = set(item.get("citation_type_names") or [])
+    if codes & {"E0802", "E0805"} or names & {"선행기술조사보고서", "선행기술조사문헌"}:
+        return 0
+    if "E0801" in codes or "발송문서" in names:
+        return 1
+    if "E0806" in codes or "출원서인용문헌이력정보" in names:
+        return 2
+    return 3
 
 
 def _resolve_kr_citation_application_number(client: Any, citation: dict[str, Any]) -> str | None:

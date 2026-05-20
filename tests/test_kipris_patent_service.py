@@ -214,6 +214,7 @@ def test_normalize_kipris_citing_documents_merges_duplicate_application_numbers(
     assert result[0]["standard_citation_application_number"] == "1020060089973"
     assert result[0]["citing_application_number"] == "1020117007865"
     assert result[0]["is_standardized"] is True
+    assert result[0]["citation_type_codes"] == ["E0801", "E0805"]
     assert result[0]["citation_type_names"] == ["발송문서", "선행기술조사문헌"]
 
 
@@ -417,4 +418,72 @@ def test_resolve_citation_evidence_enriches_kr_citation_and_citing_documents():
             "display_number": "JP29047511 A",
             "lookup_source": "bigquery_claims",
         }
+    ]
+
+
+def test_resolve_citation_evidence_prioritizes_search_report_citing_documents():
+    class Client:
+        def __init__(self):
+            self.detail_calls = []
+
+        def bibliography_detail(self, application_number):
+            self.detail_calls.append(application_number)
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "biblioSummaryInfoArray": {
+                                "biblioSummaryInfo": {
+                                    "applicationNumber": application_number,
+                                    "inventionTitle": f"{application_number} 제목",
+                                    "registerStatus": "등록",
+                                    "claimCount": "1",
+                                }
+                            },
+                            "claimInfoArray": {"claimInfo": [{"claim": "1. 대표 청구항"}]},
+                        }
+                    }
+                }
+            }
+
+    client = Client()
+    citing_documents = [
+        {
+            "citing_application_number": "1020210152256",
+            "citation_type_codes": ["E0806"],
+            "citation_type_names": ["출원서인용문헌이력정보"],
+            "is_standardized": True,
+        },
+        {
+            "citing_application_number": "1020210140457",
+            "citation_type_codes": ["E0801"],
+            "citation_type_names": ["발송문서"],
+            "is_standardized": True,
+        },
+        {
+            "citing_application_number": "1020210146956",
+            "citation_type_codes": ["E0805"],
+            "citation_type_names": ["선행기술조사문헌"],
+            "is_standardized": True,
+        },
+        {
+            "citing_application_number": "1020210152036",
+            "citation_type_codes": ["E0802"],
+            "citation_type_names": ["선행기술조사보고서"],
+            "is_standardized": True,
+        },
+    ]
+
+    result = resolve_citation_evidence(
+        client,
+        citation_documents=[],
+        citing_documents=citing_documents,
+        max_kr_citing=3,
+    )
+
+    assert client.detail_calls == ["1020210146956", "1020210152036", "1020210140457"]
+    assert [item["application_number"] for item in result["kr_citing_documents"]] == [
+        "1020210146956",
+        "1020210152036",
+        "1020210140457",
     ]
