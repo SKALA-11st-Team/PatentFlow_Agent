@@ -13,6 +13,7 @@ opendataloader-pdf
 langsmith
 openai
 langgraph
+google-cloud-bigquery
 psycopg[binary]
 pytest
 pypdf

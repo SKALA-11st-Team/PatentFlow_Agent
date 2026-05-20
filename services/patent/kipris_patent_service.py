@@ -365,14 +365,17 @@ def resolve_citation_evidence(
     *,
     citation_documents: list[dict[str, Any]],
     citing_documents: list[dict[str, Any]],
+    foreign_claims_fetcher: Any | None = None,
     max_kr_citations: int = 3,
     max_kr_citing: int = 3,
+    max_foreign_citations: int = 3,
 ) -> dict[str, Any]:
     """권리성 평가용 인용/피인용 근거를 조회 가능한 형태로 보강합니다."""
     warnings: list[str] = []
     kr_citation_documents = []
     kr_citing_documents = []
     foreign_claim_lookup_candidates = []
+    foreign_citation_documents = []
 
     for citation in _rank_citation_documents(citation_documents):
         country_code = citation.get("country_code")
@@ -410,12 +413,22 @@ def resolve_citation_evidence(
         if enriched:
             kr_citing_documents.append(enriched)
 
+    deduped_foreign_candidates = _dedupe_foreign_claim_lookup_candidates(foreign_claim_lookup_candidates)
+    if deduped_foreign_candidates:
+        try:
+            fetcher = foreign_claims_fetcher or _fetch_foreign_claims_from_bigquery
+            foreign_citation_documents = fetcher(
+                deduped_foreign_candidates,
+                max_candidates=max_foreign_citations,
+            )
+        except Exception as exc:
+            warnings.append(f"foreign_claims_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}")
+
     return {
         "kr_citation_documents": kr_citation_documents,
         "kr_citing_documents": kr_citing_documents,
-        "foreign_claim_lookup_candidates": _dedupe_foreign_claim_lookup_candidates(
-            foreign_claim_lookup_candidates
-        ),
+        "foreign_claim_lookup_candidates": deduped_foreign_candidates,
+        "foreign_citation_documents": foreign_citation_documents,
         "warnings": warnings,
     }
 
@@ -672,9 +685,16 @@ def _foreign_claim_lookup_candidate(citation: dict[str, Any]) -> dict[str, Any] 
         "country_code": country_code,
         "document_number": document_number,
         "kind_code": citation.get("kind_code"),
+        "original_number": citation.get("original_number"),
         "display_number": citation.get("display_number"),
         "lookup_source": "bigquery_claims",
     }
+
+
+def _fetch_foreign_claims_from_bigquery(candidates: list[dict[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
+    from services.patent.bigquery_patent_service import fetch_foreign_claims_from_bigquery
+
+    return fetch_foreign_claims_from_bigquery(candidates, **kwargs)
 
 
 def _dedupe_foreign_claim_lookup_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:

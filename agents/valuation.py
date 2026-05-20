@@ -214,12 +214,18 @@ def valuation_citation_evidence(state: PatentWorkflowState, *, claim_text_limit:
             for item in (evidence.get("kr_citing_documents") or [])
             if isinstance(item, dict)
         ],
+        "foreign_citation_documents": [
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit)
+            for item in (evidence.get("foreign_citation_documents") or [])
+            if isinstance(item, dict)
+        ],
         "foreign_claim_lookup_candidates": [
             {
                 "direction": item.get("direction"),
                 "country_code": item.get("country_code"),
                 "document_number": item.get("document_number"),
                 "kind_code": item.get("kind_code"),
+                "original_number": item.get("original_number"),
                 "display_number": item.get("display_number"),
                 "lookup_source": item.get("lookup_source"),
             }

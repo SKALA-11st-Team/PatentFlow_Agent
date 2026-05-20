@@ -26,6 +26,7 @@
 - prior_art_candidates
 - citation_evidence.kr_citation_documents: 대상 특허가 인용한 국내 선행문헌의 KIPRIS 상세조회 결과
 - citation_evidence.kr_citing_documents: 대상 특허를 인용한 국내 후행문헌의 KIPRIS 상세조회 결과
+- citation_evidence.foreign_citation_documents: BigQuery로 조회한 해외 인용문헌의 제목, 초록, 대표 청구항
 - citation_evidence.foreign_claim_lookup_candidates: 해외 인용문헌 청구항 조회 후보. 청구항 전문이 없으면 문헌번호 후보로만 취급한다.
 - 패밀리 특허 정보
 - 해외 등록 B 문헌 여부
@@ -58,6 +59,7 @@
 - 다만 선행기술/인용문헌 정보가 부족하면 안정성 판단의 confidence를 낮춘다.
 - prior_art_candidates 또는 citation/prior_art evidence가 제공되면 참고하되, 후보 문헌만으로 무효 가능성을 단정하지 않는다.
 - citation_evidence에 국내 인용/피인용 문헌의 title, abstract, representative_claims가 있으면 대표 청구항의 핵심 구성과 비교해 신규성/진보성 리스크를 판단한다.
+- citation_evidence에 foreign_citation_documents가 있으면 해외 문헌도 대표 청구항의 핵심 구성과 비교한다.
 - foreign_claim_lookup_candidates는 해외 문헌 청구항 조회가 필요한 후보 목록이다. 실제 청구항 텍스트가 없으면 직접 충돌 근거로 단정하지 않는다.
 
 점수화:

@@ -377,8 +377,23 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
                         "country_code": "JP",
                         "document_number": "29047511",
                         "kind_code": "A",
+                        "original_number": "JP2017047511 A",
                         "display_number": "JP29047511 A",
                         "lookup_source": "bigquery_claims",
+                    }
+                ],
+                "foreign_citation_documents": [
+                    {
+                        "direction": "cited_by_target",
+                        "country_code": "JP",
+                        "publication_number": "JP-2017047511-A",
+                        "title": "해외 선행 특허",
+                        "abstract": "해외 선행 초록",
+                        "representative_claims": [
+                            {"claim_no": 1, "text": "foreign claim", "is_independent": True, "dependency": None}
+                        ],
+                        "lookup_status": "resolved",
+                        "lookup_source": "bigquery_patents_publications",
                     }
                 ],
             }
@@ -393,6 +408,7 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
     citation_evidence = legal_payload["patent"]["citation_evidence"]
     assert citation_evidence["kr_citation_documents"][0]["application_number"] == "1020200012345"
     assert citation_evidence["kr_citing_documents"][0]["representative_claims"][0]["text"] == "후행 독립항"
+    assert citation_evidence["foreign_citation_documents"][0]["publication_number"] == "JP-2017047511-A"
     assert citation_evidence["foreign_claim_lookup_candidates"][0]["lookup_source"] == "bigquery_claims"
     assert legal_payload["patent"]["claim_availability"]["citation_evidence_provided"] is True
     assert technology_payload["patent"]["citation_evidence"] == {}

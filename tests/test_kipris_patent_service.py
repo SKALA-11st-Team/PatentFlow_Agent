@@ -415,6 +415,7 @@ def test_resolve_citation_evidence_enriches_kr_citation_and_citing_documents():
             "country_code": "JP",
             "document_number": "29047511",
             "kind_code": "A",
+            "original_number": None,
             "display_number": "JP29047511 A",
             "lookup_source": "bigquery_claims",
         }
@@ -487,3 +488,41 @@ def test_resolve_citation_evidence_prioritizes_search_report_citing_documents():
         "1020210152036",
         "1020210140457",
     ]
+
+
+def test_resolve_citation_evidence_attaches_bigquery_foreign_claims():
+    citation_documents = [
+        {
+            "country_code": "CN",
+            "standard_number": "113039310",
+            "kind_code": "A",
+            "original_number": "CN113039310 A",
+            "display_number": "CN113039310 A",
+            "is_standardized": True,
+        }
+    ]
+
+    def foreign_claims_fetcher(candidates, **kwargs):
+        assert kwargs["max_candidates"] == 3
+        return [
+            {
+                "direction": "cited_by_target",
+                "country_code": "CN",
+                "publication_number": "CN-113039310-A",
+                "title": "CN 특허",
+                "representative_claims": [{"claim_no": 1, "text": "CN claim"}],
+                "lookup_status": "resolved",
+                "lookup_source": "bigquery_patents_publications",
+            }
+        ]
+
+    result = resolve_citation_evidence(
+        object(),
+        citation_documents=citation_documents,
+        citing_documents=[],
+        foreign_claims_fetcher=foreign_claims_fetcher,
+    )
+
+    assert result["foreign_claim_lookup_candidates"][0]["original_number"] == "CN113039310 A"
+    assert result["foreign_citation_documents"][0]["publication_number"] == "CN-113039310-A"
+    assert result["foreign_citation_documents"][0]["representative_claims"][0]["text"] == "CN claim"
