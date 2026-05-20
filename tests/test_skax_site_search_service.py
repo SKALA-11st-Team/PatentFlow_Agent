@@ -1,4 +1,5 @@
 from services.evidence.skax_site_search_service import (
+    GoogleHtmlSearchClient,
     build_search_queries,
     collect_skax_site_evidence,
     default_html_searcher,
@@ -273,6 +274,29 @@ def test_parse_google_search_html_extracts_escaped_skax_urls_without_anchor_href
     ]
 
 
+def test_parse_google_search_html_extracts_js_escaped_skax_urls():
+    html = """
+    <html>
+      <body>
+        <script>
+          window.result = "https:\\/\\/www.skax.co.kr\\/digital-based-financial-service";
+          window.external = "https:\\/\\/news.example.com\\/skax\\/financial";
+        </script>
+      </body>
+    </html>
+    """
+
+    results = parse_google_search_html(html)
+
+    assert results == [
+        {
+            "title": "https://www.skax.co.kr/digital-based-financial-service",
+            "url": "https://www.skax.co.kr/digital-based-financial-service",
+            "snippet": "",
+        }
+    ]
+
+
 def test_parse_google_search_html_allows_only_skax_domain_and_subdomains():
     html = """
     <html>
@@ -486,3 +510,208 @@ def test_collect_reports_google_consent_page_when_search_results_are_zero(monkey
     assert diagnostics["parsed_link_count"] == 0
     assert diagnostics["parsed_result_count"] == 0
     assert diagnostics["search_failure_reason"] == "google_consent_page"
+
+
+def test_collect_reports_google_requires_javascript_for_enablejs_retry_html(monkeypatch):
+    html = """
+    <html>
+      <head><title>Google Search</title></head>
+      <body>
+        <script nonce="abc">location.href='/httpservice/retry/enablejs?sei=abc'</script>
+        <noscript>몇 초 안에 이동하지 않는 경우 여기를 클릭하세요.</noscript>
+      </body>
+    </html>
+    """
+
+    def fake_google_response(query):
+        return {
+            "status_code": 200,
+            "url": "https://www.google.com/search?q=site%3Askax.co.kr+AI",
+            "html": html,
+        }
+
+    monkeypatch.setattr(
+        "services.evidence.skax_site_search_service.fetch_google_search_response",
+        fake_google_response,
+    )
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        fetcher=lambda url: "<html></html>",
+        max_queries=1,
+    )
+
+    diagnostics = result["search_diagnostics"][0]
+    assert result["items"] == []
+    assert diagnostics["search_status_code"] == 200
+    assert diagnostics["search_html_length"] == len(html)
+    assert diagnostics["parsed_result_count"] == 0
+    assert diagnostics["search_failure_reason"] == "google_requires_javascript"
+
+
+def test_collect_reports_google_requires_javascript_for_noscript_enablejs_html(monkeypatch):
+    html = """
+    <html>
+      <body>
+        <noscript>
+          JavaScript를 사용 설정하거나 enablejs 링크로 이동해야 합니다.
+        </noscript>
+      </body>
+    </html>
+    """
+
+    def fake_google_response(query):
+        return {
+            "status_code": 200,
+            "url": "https://www.google.com/search?q=site%3Askax.co.kr+AI",
+            "html": html,
+        }
+
+    monkeypatch.setattr(
+        "services.evidence.skax_site_search_service.fetch_google_search_response",
+        fake_google_response,
+    )
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        fetcher=lambda url: "<html></html>",
+        max_queries=1,
+    )
+
+    diagnostics = result["search_diagnostics"][0]
+    assert result["items"] == []
+    assert diagnostics["parsed_result_count"] == 0
+    assert diagnostics["search_failure_reason"] == "google_requires_javascript"
+
+
+def test_collect_uses_search_client_and_normalizes_skax_evidence():
+    class MockSearchClient:
+        def search(self, query, *, max_results=5):
+            return {
+                "results": [
+                    {
+                        "title": "SK AX 로보어드바이저 자산배분",
+                        "snippet": "데이터분석 서비스",
+                        "url": "https://www.skax.co.kr/digital-based-financial-service",
+                    }
+                ],
+                "diagnostics": {
+                    "query": query,
+                    "parsed_link_count": 1,
+                    "parsed_result_count": 1,
+                },
+            }
+
+    def fetcher(url):
+        return "<html><head><title>SK AX 금융</title></head><body><p>로보어드바이저 데이터분석 사업 근거</p></body></html>"
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=MockSearchClient(),
+        fetcher=fetcher,
+        max_queries=1,
+    )
+
+    assert result["items"][0]["source"] == "sk_ax_official"
+    assert result["items"][0]["source_type"] == "company_disclosure"
+    assert result["items"][0]["url"] == "https://www.skax.co.kr/digital-based-financial-service"
+    assert result["stats"]["searched_result_count"] == 1
+    assert result["search_diagnostics"][0]["parsed_result_count"] == 1
+
+
+def test_collect_excludes_external_urls_from_search_client():
+    fetched_urls = []
+
+    class MockSearchClient:
+        def search(self, query, *, max_results=5):
+            return {
+                "results": [
+                    {
+                        "title": "외부 로보어드바이저",
+                        "snippet": "외부 뉴스",
+                        "url": "https://news.example.com/skax/robo-advisor",
+                    }
+                ],
+                "diagnostics": {"query": query, "parsed_result_count": 1},
+            }
+
+    def fetcher(url):
+        fetched_urls.append(url)
+        return "<html><body><p>외부 문서</p></body></html>"
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=MockSearchClient(),
+        fetcher=fetcher,
+        max_queries=1,
+    )
+
+    assert result["items"] == []
+    assert fetched_urls == []
+    assert result["stats"]["filtered_result_count"] == 0
+    assert result["stats"]["fetched_url_count"] == 0
+
+
+def test_collect_returns_empty_with_empty_search_client_results():
+    class MockSearchClient:
+        def search(self, query, *, max_results=5):
+            return {
+                "results": [],
+                "diagnostics": {"query": query, "parsed_link_count": 0, "parsed_result_count": 0},
+            }
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=MockSearchClient(),
+        max_queries=1,
+    )
+
+    assert result["items"] == []
+    assert result["stats"]["searched_result_count"] == 0
+    assert result["search_diagnostics"][0]["parsed_result_count"] == 0
+
+
+def test_collect_records_search_client_exception_in_diagnostics():
+    class FailingSearchClient:
+        def search(self, query, *, max_results=5):
+            raise RuntimeError("search api down")
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=FailingSearchClient(),
+        max_queries=1,
+    )
+
+    assert result["items"] == []
+    assert result["stats"]["searched_result_count"] == 0
+    assert result["search_diagnostics"][0]["search_failure_reason"] == "fetch_error:RuntimeError"
+
+
+def test_google_html_search_client_returns_compatible_structure(monkeypatch):
+    html = """
+    <html>
+      <body>
+        <a href="/url?q=https%3A%2F%2Fwww.skax.co.kr%2Ffinancial%2Frobo-advisor&sa=U">
+          SK AX 로보어드바이저
+        </a>
+      </body>
+    </html>
+    """
+
+    def fake_google_response(query):
+        return {
+            "status_code": 200,
+            "url": "https://www.google.com/search?q=site%3Askax.co.kr+robo",
+            "html": html,
+        }
+
+    monkeypatch.setattr(
+        "services.evidence.skax_site_search_service.fetch_google_search_response",
+        fake_google_response,
+    )
+
+    result = GoogleHtmlSearchClient().search("site:skax.co.kr 로보어드바이저")
+
+    assert result["results"][0]["url"] == "https://www.skax.co.kr/financial/robo-advisor"
+    assert result["diagnostics"]["search_status_code"] == 200
+    assert result["diagnostics"]["parsed_result_count"] == 1

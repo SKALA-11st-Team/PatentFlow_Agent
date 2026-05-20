@@ -60,6 +60,20 @@ Searcher = Callable[[str], list[SearchResult]]
 Fetcher = Callable[[str], str]
 
 
+class SearchClient:
+    def search(self, query: str, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+class GoogleHtmlSearchClient(SearchClient):
+    def search(self, query: str, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> dict[str, Any]:
+        results, diagnostics = default_html_searcher_with_diagnostics(query, max_results=max_results)
+        return {
+            "results": results,
+            "diagnostics": diagnostics,
+        }
+
+
 class PageHTMLParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -213,6 +227,7 @@ def collect_skax_site_evidence(
     *,
     fetcher: Fetcher | None = None,
     searcher: Searcher | None = None,
+    search_client: SearchClient | None = None,
     max_queries: int = DEFAULT_MAX_QUERIES,
     max_results_per_query: int = DEFAULT_MAX_RESULTS_PER_QUERY,
     max_fetch_pages: int = DEFAULT_MAX_FETCH_PAGES,
@@ -228,7 +243,21 @@ def collect_skax_site_evidence(
     truncated_content_count = 0
 
     for query in queries:
-        if searcher:
+        if search_client:
+            try:
+                search_response = search_client.search(query, max_results=max_results_per_query)
+                results = list(search_response.get("results", []))[: max(1, int(max_results_per_query))]
+                search_diagnostics.append(
+                    normalize_search_diagnostics(
+                        query,
+                        search_response.get("diagnostics"),
+                        results,
+                    )
+                )
+            except Exception as exc:
+                results = []
+                search_diagnostics.append(build_search_error_diagnostics(query, exc))
+        elif searcher:
             try:
                 results = searcher(query)[: max(1, int(max_results_per_query))]
                 search_diagnostics.append(build_injected_search_diagnostics(query, results))
@@ -236,11 +265,15 @@ def collect_skax_site_evidence(
                 results = []
                 search_diagnostics.append(build_search_error_diagnostics(query, exc))
         else:
-            results, diagnostics = default_html_searcher_with_diagnostics(
-                query,
-                max_results=max_results_per_query,
+            search_response = GoogleHtmlSearchClient().search(query, max_results=max_results_per_query)
+            results = list(search_response.get("results", []))[: max(1, int(max_results_per_query))]
+            search_diagnostics.append(
+                normalize_search_diagnostics(
+                    query,
+                    search_response.get("diagnostics"),
+                    results,
+                )
             )
-            search_diagnostics.append(diagnostics)
         searched_result_count += len(results)
         for result in results:
             normalized = normalize_search_result(result, query)
@@ -329,6 +362,12 @@ def default_html_searcher_with_diagnostics(
     )
     results, parse_diagnostics = parse_google_search_html_with_diagnostics(html, max_results=max_results)
     diagnostics.update(parse_diagnostics)
+    if (
+        not diagnostics["search_failure_reason"]
+        and diagnostics["parsed_result_count"] == 0
+        and looks_like_google_requires_javascript(html)
+    ):
+        diagnostics["search_failure_reason"] = "google_requires_javascript"
     if not diagnostics["search_failure_reason"] and not results and diagnostics["parsed_link_count"] == 0:
         diagnostics["search_failure_reason"] = "no_parseable_google_links"
     return results, diagnostics
@@ -459,6 +498,22 @@ def build_injected_search_diagnostics(query: str, results: list[SearchResult]) -
     return diagnostics
 
 
+def normalize_search_diagnostics(
+    query: str,
+    diagnostics: Any,
+    results: list[SearchResult],
+) -> dict[str, Any]:
+    normalized = build_empty_search_diagnostics(query)
+    if isinstance(diagnostics, dict):
+        normalized.update(diagnostics)
+    normalized["query"] = query
+    if normalized.get("parsed_link_count") in {None, 0} and results:
+        normalized["parsed_link_count"] = len(results)
+    if normalized.get("parsed_result_count") in {None, 0} and results:
+        normalized["parsed_result_count"] = len(results)
+    return normalized
+
+
 def build_search_error_diagnostics(query: str, exc: Exception) -> dict[str, Any]:
     diagnostics = build_empty_search_diagnostics(query)
     diagnostics["search_failure_reason"] = f"fetch_error:{exc.__class__.__name__}"
@@ -474,6 +529,8 @@ def detect_google_search_failure(
     if status_code and status_code >= 400:
         return f"http_status_{status_code}"
     haystack = normalize_text(f"{final_url or ''} {html}").lower()
+    if looks_like_google_requires_javascript(html, final_url=final_url):
+        return "google_requires_javascript"
     if "consent.google" in haystack or "before you continue" in haystack:
         return "google_consent_page"
     if "sorry/index" in haystack or "unusual traffic" in haystack:
@@ -483,10 +540,23 @@ def detect_google_search_failure(
     return None
 
 
+def looks_like_google_requires_javascript(html: str, *, final_url: str | None = None) -> bool:
+    haystack = normalize_text(f"{final_url or ''} {html}").lower()
+    return any(
+        marker in haystack
+        for marker in (
+            "/httpservice/retry/enablejs",
+            "enablejs",
+            "<noscript",
+            "몇 초 안에 이동하지 않는 경우",
+        )
+    )
+
+
 def extract_google_target_url(href: str | None) -> str | None:
     if not href:
         return None
-    text = normalize_text(href)
+    text = normalize_text(href).replace("\\/", "/")
     if text.startswith("/url?") or text.startswith("https://www.google.com/url?"):
         parsed = urlparse(text)
         query = parse_qs(parsed.query)
@@ -498,7 +568,7 @@ def extract_google_target_url(href: str | None) -> str | None:
 
 
 def extract_skax_urls_from_text(text: str) -> list[str]:
-    decoded = html_unescape(unquote(normalize_text(text)))
+    decoded = html_unescape(unquote(normalize_text(text))).replace("\\/", "/")
     candidates = re.findall(r"https?://(?:[A-Za-z0-9-]+\.)*skax\.co\.kr[^\s\"'<>)]*", decoded)
     urls: list[str] = []
     for candidate in candidates:
