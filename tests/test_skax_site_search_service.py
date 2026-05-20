@@ -250,6 +250,29 @@ def test_parse_google_search_html_extracts_skax_urls_and_removes_duplicates():
     ]
 
 
+def test_parse_google_search_html_extracts_escaped_skax_urls_without_anchor_href():
+    html = """
+    <html>
+      <body>
+        <script>
+          var result = "https%3A%2F%2Fwww.skax.co.kr%2Fai%2Fagent-platform%3Futm_source%3Dgoogle";
+          var external = "https%3A%2F%2Fnews.example.com%2Fskax%2Fai";
+        </script>
+      </body>
+    </html>
+    """
+
+    results = parse_google_search_html(html)
+
+    assert results == [
+        {
+            "title": "https://www.skax.co.kr/ai/agent-platform?utm_source=google",
+            "url": "https://www.skax.co.kr/ai/agent-platform?utm_source=google",
+            "snippet": "",
+        }
+    ]
+
+
 def test_parse_google_search_html_allows_only_skax_domain_and_subdomains():
     html = """
     <html>
@@ -344,19 +367,28 @@ def test_default_html_searcher_returns_empty_list_on_fetch_failure(monkeypatch):
 
 
 def test_collect_uses_default_searcher_when_searcher_is_not_provided(monkeypatch):
-    def fake_default_searcher(query):
-        return [
-            {
-                "title": "SK AX 로보어드바이저 자산배분 데이터분석",
-                "snippet": "로보어드바이저 자산배분",
-                "url": "https://www.skax.co.kr/financial/robo-advisor",
-            }
-        ]
+    def fake_google_response(query):
+        return {
+            "status_code": 200,
+            "url": "https://www.google.com/search?q=site%3Askax.co.kr+robo",
+            "html": """
+            <html>
+              <body>
+                <a href="/url?q=https%3A%2F%2Fwww.skax.co.kr%2Ffinancial%2Frobo-advisor&sa=U">
+                  SK AX 로보어드바이저 자산배분 데이터분석
+                </a>
+              </body>
+            </html>
+            """,
+        }
 
     def fetcher(url):
         return "<html><head><title>기본 검색</title></head><body><p>로보어드바이저 사업 근거</p></body></html>"
 
-    monkeypatch.setattr("services.evidence.skax_site_search_service.default_html_searcher", fake_default_searcher)
+    monkeypatch.setattr(
+        "services.evidence.skax_site_search_service.fetch_google_search_response",
+        fake_google_response,
+    )
 
     result = collect_skax_site_evidence(
         PATENT_CONTEXT,
@@ -366,3 +398,91 @@ def test_collect_uses_default_searcher_when_searcher_is_not_provided(monkeypatch
 
     assert result["items"][0]["url"] == "https://www.skax.co.kr/financial/robo-advisor"
     assert result["stats"]["searched_result_count"] == 1
+
+
+def test_collect_reports_google_search_diagnostics_with_mock_html(monkeypatch):
+    html = """
+    <html>
+      <body>
+        <a href="/url?q=https%3A%2F%2Fwww.skax.co.kr%2Fdigital-based-financial-service&sa=U">
+          SK AX AI 디지털 금융 서비스
+        </a>
+      </body>
+    </html>
+    """
+
+    def fake_google_response(query):
+        return {
+            "status_code": 200,
+            "url": "https://www.google.com/search?q=site%3Askax.co.kr+AI",
+            "html": html,
+        }
+
+    def fetcher(url):
+        return "<html><head><title>SK AX 금융</title></head><body><p>AI 데이터분석 로보어드바이저 서비스</p></body></html>"
+
+    monkeypatch.setattr(
+        "services.evidence.skax_site_search_service.fetch_google_search_response",
+        fake_google_response,
+    )
+
+    result = collect_skax_site_evidence(
+        {
+            "management_number": "TEST",
+            "title_final": "",
+            "business_area": "AI",
+            "technology_area": "AI",
+            "related_product": "AI",
+        },
+        fetcher=fetcher,
+        max_queries=1,
+    )
+
+    diagnostics = result["search_diagnostics"][0]
+    assert result["stats"]["searched_result_count"] == 1
+    assert result["items"][0]["url"] == "https://www.skax.co.kr/digital-based-financial-service"
+    assert diagnostics["search_status_code"] == 200
+    assert diagnostics["search_html_length"] == len(html)
+    assert 0 < len(diagnostics["search_html_preview"]) <= 800
+    assert diagnostics["parsed_link_count"] == 1
+    assert diagnostics["parsed_result_count"] == 1
+    assert diagnostics["search_failure_reason"] is None
+
+
+def test_collect_reports_google_consent_page_when_search_results_are_zero(monkeypatch):
+    html = """
+    <html>
+      <head><title>Before you continue to Google Search</title></head>
+      <body>Before you continue consent.google.com</body>
+    </html>
+    """
+
+    def fake_google_response(query):
+        return {
+            "status_code": 200,
+            "url": "https://consent.google.com/",
+            "html": html,
+        }
+
+    def fetcher(url):
+        raise AssertionError("No SK AX URL should be fetched from a consent page.")
+
+    monkeypatch.setattr(
+        "services.evidence.skax_site_search_service.fetch_google_search_response",
+        fake_google_response,
+    )
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        fetcher=fetcher,
+        max_queries=1,
+    )
+
+    diagnostics = result["search_diagnostics"][0]
+    assert result["items"] == []
+    assert result["stats"]["searched_result_count"] == 0
+    assert diagnostics["search_status_code"] == 200
+    assert diagnostics["search_html_length"] == len(html)
+    assert diagnostics["parsed_link_count"] == 0
+    assert diagnostics["parsed_result_count"] == 0
+    assert diagnostics["search_failure_reason"] == "google_consent_page"

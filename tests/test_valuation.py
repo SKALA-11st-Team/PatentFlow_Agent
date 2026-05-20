@@ -3,10 +3,19 @@ import json
 import pytest
 
 from agents.valuation import run_valuation_agent, select_axis_evidence
+from agents.valuation_axes.business_fit import append_skax_official_evidence_to_state, build_patent_context_from_state
 from agents.writing.final_report import run_final_report_agent
 from app.main import build_parser, build_user_input, save_outputs
 from workflow.supervisor import check_valuation_result
 from workflow.state import PatentWorkflowState
+
+
+@pytest.fixture(autouse=True)
+def disable_skax_site_search(monkeypatch):
+    monkeypatch.setattr(
+        "agents.valuation_axes.business_fit.collect_skax_site_evidence",
+        lambda patent_context: {"items": [], "stats": {}},
+    )
 
 
 def test_valuation_axes_are_split_into_axis_modules():
@@ -203,6 +212,149 @@ def test_business_fit_fallback_without_official_evidence_matches_existing_order(
     selected = select_axis_evidence("business_fit", state)
 
     assert [item["evidence_id"] for item in selected] == ["news_direct", "portfolio_001", "news_secondary"]
+
+
+def test_business_fit_builds_patent_context_from_state():
+    state = PatentWorkflowState(
+        user_input={"management_number": "USER-MGMT"},
+        patent_structured={
+            "management_number": "P202405001-KR0",
+            "title_final": "상품 트렌드 예측 자산배분 특허",
+            "business_area": "Data",
+            "technology_area": "데이터분석",
+            "related_product": "로보어드바이저",
+        },
+        kipris_api_data={"metadata": {"title": "KIPRIS 제목"}},
+        preprocessed_patent={"metadata": {"title": "전처리 제목"}},
+        summary_result={"title": "요약 제목"},
+    )
+
+    context = build_patent_context_from_state(state)
+
+    assert context == {
+        "management_number": "P202405001-KR0",
+        "title_final": "상품 트렌드 예측 자산배분 특허",
+        "title_draft": "",
+        "business_area": "Data",
+        "technology_area": "데이터분석",
+        "related_product": "로보어드바이저",
+    }
+
+
+def test_business_fit_builds_patent_context_from_korean_patent_fields():
+    state = PatentWorkflowState(
+        patent_structured={
+            "관리번호": "P202405001-KR0",
+            "발명의 명칭(가제)": "상품 트렌드 예측을 반영한 강화학습 모델",
+            "발명의 명칭(최종)": "강화학습 모델을 적용한 자산배분 시스템 및 방법",
+            "관련사업 분야": "Data",
+            "관련기술 분야": "데이터분석",
+            "관련제품": "로보어드바이저",
+        },
+        evidence_bundle=[],
+    )
+
+    context = build_patent_context_from_state(state)
+
+    assert context == {
+        "management_number": "P202405001-KR0",
+        "title_final": "강화학습 모델을 적용한 자산배분 시스템 및 방법",
+        "title_draft": "상품 트렌드 예측을 반영한 강화학습 모델",
+        "business_area": "Data",
+        "technology_area": "데이터분석",
+        "related_product": "로보어드바이저",
+    }
+
+
+def test_business_fit_builds_patent_context_from_spaced_korean_patent_fields():
+    state = PatentWorkflowState(
+        patent_structured={
+            "관리번호": "P202405001-KR0",
+            "발명의 명칭(최종)": "상품 트렌드 예측을 반영한 강화학습 모델을 적용한 자산배분 시스템 및 방법",
+            "관련 사업 분야": "Data",
+            "관련 기술 분야": "데이터분석",
+            "관련제품": "로보어드바이저",
+        },
+        evidence_bundle=[],
+    )
+
+    context = build_patent_context_from_state(state)
+
+    assert context["business_area"] == "Data"
+    assert context["technology_area"] == "데이터분석"
+    assert context["related_product"] == "로보어드바이저"
+
+
+def test_business_fit_appends_skax_official_evidence_to_state(monkeypatch):
+    def fake_collect(patent_context):
+        assert patent_context["related_product"] == "로보어드바이저"
+        return {
+            "items": [
+                {
+                    "evidence_id": "skax_001",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "title": "SK AX 로보어드바이저",
+                    "url": "https://www.skax.co.kr/financial/robo-advisor",
+                    "content": "로보어드바이저 사업 근거",
+                    "related_axes": ["business_fit"],
+                    "relevance_score": 0.9,
+                }
+            ],
+            "stats": {"collected_evidence_count": 1},
+        }
+
+    monkeypatch.setattr("agents.valuation_axes.business_fit.collect_skax_site_evidence", fake_collect)
+    state = PatentWorkflowState(
+        patent_structured={
+            "title_final": "강화학습 자산배분 특허",
+            "related_product": "로보어드바이저",
+        },
+        evidence_bundle=[
+            {
+                "evidence_id": "news_001",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "로보어드바이저 시장 확대",
+            }
+        ],
+    )
+
+    result = append_skax_official_evidence_to_state(state)
+    selected = select_axis_evidence("business_fit", result)
+
+    assert [item["evidence_id"] for item in result.evidence_bundle] == ["news_001", "skax_001"]
+    assert selected[0]["evidence_id"] == "skax_001"
+
+
+def test_business_fit_keeps_evidence_bundle_when_skax_result_is_empty(monkeypatch):
+    monkeypatch.setattr(
+        "agents.valuation_axes.business_fit.collect_skax_site_evidence",
+        lambda patent_context: {"items": [], "stats": {"collected_evidence_count": 0}},
+    )
+    state = PatentWorkflowState(
+        patent_structured={"title_final": "문서변환 특허", "related_product": "문서변환 SW"},
+        evidence_bundle=[{"evidence_id": "news_001", "source_type": "news"}],
+    )
+
+    result = append_skax_official_evidence_to_state(state)
+
+    assert result.evidence_bundle == [{"evidence_id": "news_001", "source_type": "news"}]
+
+
+def test_business_fit_keeps_evidence_bundle_when_skax_service_fails(monkeypatch):
+    def failing_collect(patent_context):
+        raise RuntimeError("search failed")
+
+    monkeypatch.setattr("agents.valuation_axes.business_fit.collect_skax_site_evidence", failing_collect)
+    state = PatentWorkflowState(
+        patent_structured={"title_final": "문서변환 특허", "related_product": "문서변환 SW"},
+        evidence_bundle=[{"evidence_id": "news_001", "source_type": "news"}],
+    )
+
+    result = append_skax_official_evidence_to_state(state)
+
+    assert result.evidence_bundle == [{"evidence_id": "news_001", "source_type": "news"}]
 
 
 def test_valuation_fails_when_llm_valuation_is_disabled():

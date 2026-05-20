@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from html.parser import HTMLParser
 from typing import Any, Callable
+from html import unescape as html_unescape
 from urllib.parse import parse_qs, quote_plus, unquote, urldefrag, urlparse
 import re
 
@@ -17,6 +18,7 @@ DEFAULT_MAX_RESULTS_PER_QUERY = 5
 DEFAULT_MAX_FETCH_PAGES = 5
 DEFAULT_MAX_CONTENT_CHARS = 5000
 DEFAULT_SEARCH_TIMEOUT_SECONDS = 5
+DEFAULT_SEARCH_HTML_PREVIEW_CHARS = 800
 GOOGLE_SEARCH_URL = "https://www.google.com/search"
 SEARCH_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -209,7 +211,7 @@ def extract_title_keywords(title: Any, *, limit: int = 4) -> list[str]:
 def collect_skax_site_evidence(
     patent_context: dict[str, Any],
     *,
-    fetcher: Fetcher,
+    fetcher: Fetcher | None = None,
     searcher: Searcher | None = None,
     max_queries: int = DEFAULT_MAX_QUERIES,
     max_results_per_query: int = DEFAULT_MAX_RESULTS_PER_QUERY,
@@ -219,17 +221,26 @@ def collect_skax_site_evidence(
     queries = build_search_queries(patent_context, max_queries=max_queries)
     searched_result_count = 0
     search_results: list[dict[str, Any]] = []
+    search_diagnostics: list[dict[str, Any]] = []
     failed_urls: list[str] = []
     skipped_url_count = 0
     fetched_url_count = 0
     truncated_content_count = 0
 
     for query in queries:
-        try:
-            active_searcher = searcher or default_html_searcher
-            results = active_searcher(query)[: max(1, int(max_results_per_query))]
-        except Exception:
-            results = []
+        if searcher:
+            try:
+                results = searcher(query)[: max(1, int(max_results_per_query))]
+                search_diagnostics.append(build_injected_search_diagnostics(query, results))
+            except Exception as exc:
+                results = []
+                search_diagnostics.append(build_search_error_diagnostics(query, exc))
+        else:
+            results, diagnostics = default_html_searcher_with_diagnostics(
+                query,
+                max_results=max_results_per_query,
+            )
+            search_diagnostics.append(diagnostics)
         searched_result_count += len(results)
         for result in results:
             normalized = normalize_search_result(result, query)
@@ -244,7 +255,8 @@ def collect_skax_site_evidence(
     for result in selected:
         url = result["url"]
         try:
-            html = fetcher(url)
+            active_fetcher = fetcher or fetch_skax_page_html
+            html = active_fetcher(url)
             fetched_url_count += 1
         except Exception:
             failed_urls.append(url)
@@ -278,6 +290,7 @@ def collect_skax_site_evidence(
         },
         "queries": queries,
         "failed_urls": failed_urls,
+        "search_diagnostics": search_diagnostics,
     }
 
 
@@ -288,14 +301,46 @@ def default_html_searcher(query: str) -> list[SearchResult]:
         return []
 
 
-def fetch_google_search_html(
+def default_html_searcher_with_diagnostics(
     query: str,
+    *,
+    max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
+) -> tuple[list[SearchResult], dict[str, Any]]:
+    diagnostics = build_empty_search_diagnostics(query)
+    try:
+        response = fetch_google_search_response(query)
+    except Exception as exc:
+        diagnostics.update(build_search_error_diagnostics(query, exc))
+        return [], diagnostics
+
+    html = response["html"]
+    diagnostics.update(
+        {
+            "search_status_code": response["status_code"],
+            "search_final_url": response["url"],
+            "search_html_length": len(html),
+            "search_html_preview": html[:DEFAULT_SEARCH_HTML_PREVIEW_CHARS],
+            "search_failure_reason": detect_google_search_failure(
+                html,
+                status_code=response["status_code"],
+                final_url=response["url"],
+            ),
+        }
+    )
+    results, parse_diagnostics = parse_google_search_html_with_diagnostics(html, max_results=max_results)
+    diagnostics.update(parse_diagnostics)
+    if not diagnostics["search_failure_reason"] and not results and diagnostics["parsed_link_count"] == 0:
+        diagnostics["search_failure_reason"] = "no_parseable_google_links"
+    return results, diagnostics
+
+
+def fetch_skax_page_html(
+    url: str,
     *,
     timeout: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
 ) -> str:
-    search_url = f"{GOOGLE_SEARCH_URL}?q={quote_plus(query)}"
     response = requests.get(
-        search_url,
+        url,
         headers={"User-Agent": SEARCH_USER_AGENT},
         timeout=timeout,
     )
@@ -303,15 +348,57 @@ def fetch_google_search_html(
     return response.text
 
 
+def fetch_google_search_html(
+    query: str,
+    *,
+    timeout: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
+) -> str:
+    return fetch_google_search_response(query, timeout=timeout)["html"]
+
+
+def fetch_google_search_response(
+    query: str,
+    *,
+    timeout: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    search_url = f"{GOOGLE_SEARCH_URL}?q={quote_plus(query)}"
+    response = requests.get(
+        search_url,
+        headers={"User-Agent": SEARCH_USER_AGENT},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    return {
+        "status_code": response.status_code,
+        "url": response.url,
+        "html": response.text,
+    }
+
+
 def parse_google_search_html(html: str, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> list[SearchResult]:
+    results, _ = parse_google_search_html_with_diagnostics(html, max_results=max_results)
+    return results
+
+
+def parse_google_search_html_with_diagnostics(
+    html: str,
+    *,
+    max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
+) -> tuple[list[SearchResult], dict[str, Any]]:
+    diagnostics = {
+        "parsed_link_count": 0,
+        "parsed_result_count": 0,
+    }
     if not normalize_text(html):
-        return []
+        return [], diagnostics
     parser = GoogleSearchHTMLParser()
     try:
         parser.feed(html)
         parser.close()
     except Exception:
-        return []
+        diagnostics["search_failure_reason"] = "html_parse_error"
+        return [], diagnostics
+    diagnostics["parsed_link_count"] = len(parser.links)
 
     results: list[SearchResult] = []
     seen: set[str] = set()
@@ -329,7 +416,71 @@ def parse_google_search_html(html: str, *, max_results: int = DEFAULT_MAX_RESULT
         )
         if len(results) >= max(1, int(max_results)):
             break
-    return results
+
+    if len(results) < max(1, int(max_results)):
+        for url in extract_skax_urls_from_text(html):
+            if url in seen or is_file_url(url):
+                continue
+            seen.add(url)
+            results.append(
+                {
+                    "title": url,
+                    "url": url,
+                    "snippet": "",
+                }
+            )
+            if len(results) >= max(1, int(max_results)):
+                break
+    diagnostics["parsed_result_count"] = len(results)
+    return results, diagnostics
+
+
+def build_empty_search_diagnostics(query: str) -> dict[str, Any]:
+    return {
+        "query": query,
+        "search_status_code": None,
+        "search_final_url": None,
+        "search_html_length": 0,
+        "search_html_preview": "",
+        "parsed_link_count": 0,
+        "parsed_result_count": 0,
+        "search_failure_reason": None,
+    }
+
+
+def build_injected_search_diagnostics(query: str, results: list[SearchResult]) -> dict[str, Any]:
+    diagnostics = build_empty_search_diagnostics(query)
+    diagnostics.update(
+        {
+            "parsed_link_count": len(results),
+            "parsed_result_count": len(results),
+        }
+    )
+    return diagnostics
+
+
+def build_search_error_diagnostics(query: str, exc: Exception) -> dict[str, Any]:
+    diagnostics = build_empty_search_diagnostics(query)
+    diagnostics["search_failure_reason"] = f"fetch_error:{exc.__class__.__name__}"
+    return diagnostics
+
+
+def detect_google_search_failure(
+    html: str,
+    *,
+    status_code: int | None,
+    final_url: str | None,
+) -> str | None:
+    if status_code and status_code >= 400:
+        return f"http_status_{status_code}"
+    haystack = normalize_text(f"{final_url or ''} {html}").lower()
+    if "consent.google" in haystack or "before you continue" in haystack:
+        return "google_consent_page"
+    if "sorry/index" in haystack or "unusual traffic" in haystack:
+        return "google_blocked_or_captcha"
+    if "captcha" in haystack:
+        return "captcha_page"
+    return None
 
 
 def extract_google_target_url(href: str | None) -> str | None:
@@ -344,6 +495,21 @@ def extract_google_target_url(href: str | None) -> str | None:
     if text.startswith("/search?") or text.startswith("#"):
         return None
     return normalize_url(text)
+
+
+def extract_skax_urls_from_text(text: str) -> list[str]:
+    decoded = html_unescape(unquote(normalize_text(text)))
+    candidates = re.findall(r"https?://(?:[A-Za-z0-9-]+\.)*skax\.co\.kr[^\s\"'<>)]*", decoded)
+    urls: list[str] = []
+    for candidate in candidates:
+        url = normalize_url(strip_google_tail_params(candidate).rstrip(".,;:"))
+        if url and is_skax_url(url) and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def strip_google_tail_params(url: str) -> str:
+    return re.split(r"&(sa|ved|usg|ei|source)=", url, maxsplit=1)[0]
 
 
 def filter_search_results(results: list[dict[str, Any]], patent_context: dict[str, Any]) -> list[dict[str, Any]]:
