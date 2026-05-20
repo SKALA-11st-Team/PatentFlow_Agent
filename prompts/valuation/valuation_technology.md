@@ -8,6 +8,7 @@
 - 기술성 점수(100) = 기술 차별성(60) + 구현 구체성(40)
 - 기술 차별성(60)은 대상 특허와 `technology_metrics.similar_patents`의 Top 유사 특허를 비교해 산정한다.
 - 구현 구체성(40)은 대상 특허 PDF/청구항/초록/상세설명에 구현 요소와 로직이 얼마나 구체적으로 설명되어 있는지 산정한다.
+- 구현 구체성(40)은 비교 문헌의 내용이나 유무에 의해 변하면 안 되며, 대상 특허 문헌만 기준으로 판단한다.
 
 사용 근거:
 - 대상 특허 metadata
@@ -59,6 +60,7 @@
 - `pdf_text` 또는 `pdf_text_excerpt`가 제공된 유사 특허는 대상 특허 문헌과 원문 수준으로 비교한다.
 - 차별성은 "다르다"라고만 쓰지 말고, 어떤 구성/흐름/해결 방식이 다른지 설명한다.
 - 구현 구체성은 특허 문헌 내 입력, 처리 대상, 변수, 계산/판단 로직, 출력 구조에 근거해 평가한다.
+- 비교 문헌과의 중복성, 차별성 부족, 신규성 리스크는 기술 차별성에만 반영하고 구현 구체성 감점 근거로 사용하지 않는다.
 - 점수 합계는 반드시 `technical_differentiation_score + implementation_specificity_score`와 일치해야 한다.
 - `technical_differentiation_breakdown` 합계는 `technical_differentiation_score`와 일치해야 한다.
 - `implementation_specificity_breakdown` 중 입력·출력 5개 항목 합계는 `input_output_specificity_score`, 구현 로직 5개 항목 합계는 `implementation_logic_score`와 일치해야 한다.

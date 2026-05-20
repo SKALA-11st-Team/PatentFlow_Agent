@@ -27,6 +27,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pdf-path", help="Use an existing PDF path instead of downloading from KIPRIS.")
     parser.add_argument("--skip-pdf", action="store_true", help="Do not parse target PDF; use KIPRIS/DB metadata only.")
     parser.add_argument("--no-save", action="store_true", help="Do not save intermediate valuation input payloads.")
+    parser.add_argument(
+        "--mode",
+        choices=["similar", "prior-art", "hybrid"],
+        default="similar",
+        help="Technology comparison source: similar patents, prior-art references, or both.",
+    )
     return parser.parse_args()
 
 
@@ -97,6 +103,7 @@ def run_technology_only(args: argparse.Namespace) -> dict[str, Any]:
             "artifact_dir": str(artifact_dir),
             "use_llm_valuation": True,
             "no_save": args.no_save,
+            "technology_comparison_mode": args.mode,
         },
         patent_structured=patent,
         kipris_api_data=kipris_api_data,
@@ -105,14 +112,14 @@ def run_technology_only(args: argparse.Namespace) -> dict[str, Any]:
         evidence_bundle=[],
     )
     log_step("technology valuation start")
-    log_step("similar patent search/PDF collection runs inside technology valuation")
+    log_step(f"technology comparison mode: {args.mode}")
     state = run_axis_valuation_agent("technology", state)
     technology_result = state.valuation_result["axes"]["technology"]
     metrics = technology_result.get("technology_metrics") or {}
     log_step(
         "technology valuation done: "
         f"score={technology_result.get('score')}, "
-        f"similar_count={len(metrics.get('similar_patents') or [])}, "
+        f"comparison_count={len(metrics.get('similar_patents') or [])}, "
         f"candidate_count={metrics.get('candidate_count')}"
     )
 
@@ -143,6 +150,9 @@ def render_technology_report(result: dict[str, Any]) -> str:
     patent = result.get("patent") or {}
     technology = result.get("technology_result") or {}
     metrics = technology.get("technology_metrics") or {}
+    mode = str(metrics.get("comparison_mode") or "similar")
+    source_heading = comparison_heading(mode)
+    items = metrics.get("similar_patents") or []
     sub_scores = technology.get("sub_scores") or {}
 
     lines = [
@@ -160,8 +170,6 @@ def render_technology_report(result: dict[str, Any]) -> str:
         "| --- | ---: |",
         f"| 기술 차별성 | {format_score(sub_scores.get('technical_differentiation_score'))} / 60 |",
         f"| 구현 구체성 | {format_score(sub_scores.get('implementation_specificity_score'))} / 40 |",
-        f"| 입력·출력 구성요소 구체성 | {format_score(sub_scores.get('input_output_specificity_score'))} / 15 |",
-        f"| 구현 로직 구체성 | {format_score(sub_scores.get('implementation_logic_score'))} / 25 |",
         "",
         "## 기술 차별성 근거",
         "",
@@ -212,32 +220,32 @@ def render_technology_report(result: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "## 유사 특허 근거",
+            f"## {source_heading}",
             "",
-            f"- 후보 수: {metrics.get('candidate_count', 0)}",
-            f"- Top 유사 특허 수: {len(metrics.get('similar_patents') or [])}",
+            f"- 비교 방식: {mode}",
+            f"- 사용 비교 문헌 수: {len(items)}",
             "",
-            "| 순위 | 출원번호 | 출원일 | 상태 | 유사도 | PDF | 원문자수 | 제목 |",
-            "| ---: | --- | --- | --- | ---: | --- | ---: | --- |",
+            "| 순위 | 구분 | 표시번호 | 출원번호 | 출원일 | 상태 | PDF | 원문자수 | 제목 |",
+            "| ---: | --- | --- | --- | --- | --- | --- | ---: | --- |",
         ]
     )
-    similar_patents = metrics.get("similar_patents") or []
-    if similar_patents:
-        for index, item in enumerate(similar_patents, start=1):
+    if items:
+        for index, item in enumerate(items, start=1):
             pdf_state = "수집" if item.get("pdf_collected") else "미수집"
             lines.append(
                 "| "
                 f"{index} | "
+                f"{escape_table(item.get('source_label') or comparison_item_label(item))} | "
+                f"{escape_table(item.get('display_number') or '-')} | "
                 f"{item.get('application_number') or '-'} | "
                 f"{item.get('application_date') or '-'} | "
                 f"{item.get('status') or '-'} | "
-                f"{format_similarity(item.get('similarity'))} | "
                 f"{pdf_state} | "
                 f"{format_score(item.get('pdf_text_chars'))} | "
                 f"{escape_table(item.get('title') or '-')} |"
             )
     else:
-        lines.append("| - | - | - | - | - | - | - | - |")
+        lines.append("| - | - | - | - | - | - | - | - | - |")
 
     warnings = metrics.get("warnings") or []
     if warnings:
@@ -279,34 +287,28 @@ def format_score(value: Any) -> str:
     except (TypeError, ValueError):
         return str(value)
 
-
-def format_similarity(value: Any) -> str:
-    if value is None:
-        return "-"
-    try:
-        return f"{float(value):.4f}"
-    except (TypeError, ValueError):
-        return str(value)
-
-
 def escape_table(value: Any) -> str:
     return str(value or "").replace("|", "\\|").replace("\n", " ").strip()
 
 
+def comparison_heading(mode: str) -> str:
+    if mode == "prior-art":
+        return "선행기술조사문헌 근거"
+    if mode == "hybrid":
+        return "선행기술/유사특허 비교 근거"
+    return "유사 특허 근거"
+
+
+def comparison_item_label(item: dict[str, Any]) -> str:
+    if item.get("comparison_source") == "prior-art":
+        return "선행문헌"
+    return "유사특허"
+
+
 def main() -> None:
     result = run_technology_only(parse_args())
-    print(
-        json.dumps(
-            {
-                "output_path": result["output_path"],
-                "report_path": result["report_path"],
-                "technology_result": result["technology_result"],
-                "cpc": (result.get("preprocessed_metadata") or {}).get("cpc") or [],
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
-    )
+    print(f"report_path={result['report_path']}")
+    print(f"output_path={result['output_path']}")
 
 
 if __name__ == "__main__":

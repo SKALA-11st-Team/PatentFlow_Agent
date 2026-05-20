@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import math
 from datetime import date, datetime
 from pathlib import Path
+import re
 from typing import Any
 
 from open_api.kipris_client import KiprisClient
-from rag.industry_vector_store import OpenAIEmbeddingModel
 from services.evidence.api_normalizers import extract_kipris_items
 from services.patent.kipris_patent_service import download_and_parse_patent_pdf
-from services.patent.markdown_preprocess_service import preprocess_patent_markdown
+from services.patent.markdown_preprocess_service import extract_sections, preprocess_patent_markdown
 
 
 def build_similar_patent_context(
@@ -21,7 +20,6 @@ def build_similar_patent_context(
     collect_pdf: bool = False,
     output_dir: str | Path | None = None,
     pdf_text_limit: int | None = None,
-    embedding_model: Any | None = None,
 ) -> dict[str, Any]:
     if not representative_cpc:
         return {
@@ -50,16 +48,13 @@ def build_similar_patent_context(
     target_application_number = normalize_digits(
         first_present(target_metadata, "application_number", "applicationNumber")
     )
-    target_text = render_similarity_text(
-        first_present(target_metadata, "title", "title_final", "inventionTitle"),
-        first_present(target_metadata, "abstract", "astrtCont"),
-    )
+    target_text = target_similarity_text(target_metadata)
     if not target_text:
         return {
             "representative_cpc": representative_cpc,
             "candidate_count": 0,
             "similar_patents": [],
-            "warnings": ["target_title_abstract_not_found"],
+            "warnings": ["target_claims_not_found"],
         }
 
     candidates = collect_similar_patent_candidates(
@@ -76,20 +71,7 @@ def build_similar_patent_context(
             "warnings": ["similar_patent_candidates_not_found"],
         }
 
-    model = embedding_model or OpenAIEmbeddingModel()
-    texts = [target_text, *[candidate["similarity_text"] for candidate in candidates]]
-    embeddings = model.embed_many(texts)
-    target_embedding = embeddings[0]
-    candidate_embeddings = embeddings[1:]
-    ranked = []
-    for candidate, embedding in zip(candidates, candidate_embeddings):
-        ranked.append(
-            {
-                **candidate,
-                "similarity": round(cosine_similarity(target_embedding, embedding), 6),
-            }
-        )
-    ranked.sort(key=lambda item: item.get("similarity", 0), reverse=True)
+    ranked = rank_similar_patent_candidates(target_text=target_text, candidates=candidates)
     similar_patents = [
         {
             key: value
@@ -100,13 +82,15 @@ def build_similar_patent_context(
     ]
     warnings: list[str] = []
     if collect_pdf:
-        similar_patents, warnings = collect_similar_patent_pdfs(
+        similar_patents, pdf_warnings = collect_similar_patent_pdfs(
             similar_patents,
             output_dir=Path(output_dir) if output_dir else None,
             text_limit=pdf_text_limit,
         )
+        warnings.extend(pdf_warnings)
+        similar_patents = rank_similar_patent_candidates(target_text=target_text, candidates=similar_patents)
     else:
-        warnings.append("similar_patent_pdf_not_collected")
+        warnings.append("similarity_scoring_disabled")
     return {
         "representative_cpc": representative_cpc,
         "candidate_count": len(candidates),
@@ -148,6 +132,11 @@ def collect_similar_patent_pdfs(
                     "pdf_text_truncated": text_limit is not None and len(markdown_text) > text_limit,
                     "pdf_drawings_removed": True,
                     "pdf_collected": True,
+                    "similarity_text": patent_similarity_text_from_markdown(
+                        markdown_text,
+                        title=patent.get("title"),
+                        abstract=patent.get("abstract"),
+                    ),
                 }
             )
         except Exception as exc:
@@ -157,8 +146,6 @@ def collect_similar_patent_pdfs(
                 f"{exc.__class__.__name__}:{str(exc)[:160]}"
             )
     return enriched, warnings
-
-
 def collect_similar_patent_candidates(
     *,
     representative_cpc: str,
@@ -220,7 +207,59 @@ def collect_similar_patent_candidates(
 
 
 def render_similarity_text(title: Any, abstract: Any) -> str:
-    return "\n".join(part for part in [normalize_text(title), normalize_text(abstract)] if part)
+    parts = [
+        normalize_text(title),
+        normalize_text(abstract),
+    ]
+    text = "\n".join(part for part in parts if part)
+    return text[:MAX_SIMILARITY_TEXT_CHARS]
+
+
+def target_similarity_text(target_metadata: dict[str, Any]) -> str:
+    return render_similarity_text(
+        target_metadata.get("title"),
+        target_metadata.get("abstract") or target_metadata.get("astrtCont"),
+    )
+
+
+def rank_similar_patent_candidates(*, target_text: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    ranked = [
+        {
+            **candidate,
+            "similarity": round(text_overlap_similarity(target_text, candidate.get("similarity_text")), 4),
+        }
+        for candidate in candidates
+    ]
+    ranked.sort(key=lambda item: item.get("similarity") or 0.0, reverse=True)
+    return ranked
+
+
+def patent_similarity_text_from_markdown(markdown_text: str, *, title: Any = None, abstract: Any = None) -> str:
+    sections = extract_sections(markdown_text)
+    return render_similarity_text(
+        title,
+        abstract or sections.get("abstract"),
+    )
+
+
+def text_overlap_similarity(left: Any, right: Any) -> float:
+    left_tokens = tokenize_similarity_text(left)
+    right_tokens = tokenize_similarity_text(right)
+    if not left_tokens or not right_tokens:
+        return 0.0
+    intersection = len(left_tokens & right_tokens)
+    union = len(left_tokens | right_tokens)
+    if union == 0:
+        return 0.0
+    return intersection / union
+
+
+def tokenize_similarity_text(value: Any) -> set[str]:
+    text = normalize_text(value).lower()
+    if not text:
+        return set()
+    tokens = [token for token in re.split(r"[^0-9a-zA-Z가-힣]+", text) if len(token) >= 2]
+    return set(tokens)
 
 
 def parse_date(value: Any) -> date | None:
@@ -263,15 +302,6 @@ def is_individual_applicant(value: Any) -> bool:
     return not any(marker in upper for marker in organization_markers)
 
 
-def cosine_similarity(left: list[float], right: list[float]) -> float:
-    numerator = sum(a * b for a, b in zip(left, right))
-    left_norm = math.sqrt(sum(a * a for a in left))
-    right_norm = math.sqrt(sum(b * b for b in right))
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return numerator / (left_norm * right_norm)
-
-
 def first_present(item: dict[str, Any], *keys: str) -> Any:
     for key in keys:
         value = item.get(key)
@@ -287,3 +317,4 @@ def normalize_digits(value: Any) -> str | None:
 
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
+MAX_SIMILARITY_TEXT_CHARS = 12000
