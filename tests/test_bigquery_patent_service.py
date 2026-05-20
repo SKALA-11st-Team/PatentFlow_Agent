@@ -105,3 +105,35 @@ def test_fetch_foreign_claims_from_bigquery_maps_claim_rows():
             "source_document": candidates[0],
         }
     ]
+
+
+def test_fetch_foreign_claims_from_bigquery_keeps_metadata_without_claims():
+    client = Client(
+        [
+            {
+                "publication_number": "CN-113039310-A",
+                "country_code": "CN",
+                "kind_code": "A",
+                "title": "해외 특허 제목",
+                "abstract": "해외 특허 초록",
+                "claim_language": None,
+                "claim_text": None,
+            }
+        ]
+    )
+    candidates = [
+        {
+            "direction": "cited_by_target",
+            "country_code": "CN",
+            "document_number": "113039310",
+            "kind_code": "A",
+            "display_number": "CN113039310 A",
+        }
+    ]
+
+    result = fetch_foreign_claims_from_bigquery(candidates, client=client)
+
+    assert result[0]["publication_number"] == "CN-113039310-A"
+    assert result[0]["title"] == "해외 특허 제목"
+    assert result[0]["representative_claims"] == []
+    assert result[0]["lookup_status"] == "metadata_only"

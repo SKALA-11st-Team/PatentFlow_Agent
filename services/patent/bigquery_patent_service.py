@@ -41,7 +41,7 @@ def fetch_foreign_claims_from_bigquery(
 
     rows = list(
         query_client.query(
-            _claims_query(table),
+            _publication_query(table),
             job_config=_bigquery_job_config(publication_numbers, languages),
         ).result()
     )
@@ -113,6 +113,10 @@ def _bigquery_job_config(publication_numbers: list[str], languages: list[str]) -
 
 
 def _claims_query(table: str) -> str:
+    return _publication_query(table)
+
+
+def _publication_query(table: str) -> str:
     safe_table = table.replace("`", "")
     return f"""
 SELECT
@@ -135,11 +139,10 @@ SELECT
   ) AS abstract,
   claim.language AS claim_language,
   claim.text AS claim_text
-FROM `{safe_table}` AS p,
-UNNEST(p.claims_localized) AS claim
+FROM `{safe_table}` AS p
+LEFT JOIN UNNEST(p.claims_localized) AS claim
 WHERE p.publication_number IN UNNEST(@publication_numbers)
-  AND claim.text IS NOT NULL
-  AND (claim.language IN UNNEST(@languages) OR claim.language IS NULL)
+  AND (claim.text IS NULL OR claim.language IN UNNEST(@languages) OR claim.language IS NULL)
 ORDER BY p.publication_number, IF(claim.language IN UNNEST(@languages), 0, 1), claim.language
 """
 
@@ -162,6 +165,7 @@ def _foreign_claim_document_payload(
                 "dependency": None,
             }
         )
+    representative_claims = [claim for claim in claims if claim.get("text")]
     return {
         "direction": candidate.get("direction"),
         "country_code": first.get("country_code") or candidate.get("country_code"),
@@ -171,8 +175,8 @@ def _foreign_claim_document_payload(
         "display_number": candidate.get("display_number"),
         "title": first.get("title"),
         "abstract": first.get("abstract"),
-        "representative_claims": [claim for claim in claims if claim.get("text")],
-        "lookup_status": "resolved",
+        "representative_claims": representative_claims,
+        "lookup_status": "resolved" if representative_claims else "metadata_only",
         "lookup_source": "bigquery_patents_publications",
         "source_document": candidate,
     }

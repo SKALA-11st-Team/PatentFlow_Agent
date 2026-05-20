@@ -282,6 +282,10 @@ def test_fetch_kipris_bibliography_adds_citation_documents(monkeypatch):
             }
 
     monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: Client())
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_bigquery",
+        lambda candidates, **kwargs: [],
+    )
 
     result = fetch_kipris_bibliography("10-2022-0150081")
 
@@ -396,6 +400,7 @@ def test_resolve_citation_evidence_enriches_kr_citation_and_citing_documents():
         client,
         citation_documents=citation_documents,
         citing_documents=citing_documents,
+        foreign_claims_fetcher=lambda candidates, **kwargs: [],
     )
 
     assert client.advanced_calls == [
