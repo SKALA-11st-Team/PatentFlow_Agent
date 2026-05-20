@@ -26,7 +26,7 @@ import requests
 DEFAULT_BASE_URL = "http://plus.kipris.or.kr"
 PAT_UTI_SERVICE_PATH = "/kipo-api/kipi/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
-OVERSEAS_PATENT_SERVICE_PATH = "/kipo-api/kipi/overseasPatentSearchSevice"
+OVERSEAS_PATENT_SERVICE_PATH = "/openapi/rest/ForeignPatentBibliographicService"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
 CITATION_SERVICE_PATH = "/openapi/rest/CitationService"
 CITING_SERVICE_PATH = "/openapi/rest/CitingService"
@@ -322,6 +322,7 @@ class KiprisClient:
                 "countryCode": country_code,
             },
             service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
         )
 
     def overseas_us_patent_documents(
@@ -337,6 +338,7 @@ class KiprisClient:
                 "countryCode": country_code,
             },
             service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
         )
 
     def overseas_foreign_patent_documents(
@@ -352,6 +354,7 @@ class KiprisClient:
                 "countryCode": country_code,
             },
             service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
         )
 
     def download_publication_fulltext_pdf(

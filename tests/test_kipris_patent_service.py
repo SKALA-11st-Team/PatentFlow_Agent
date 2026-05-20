@@ -4,6 +4,7 @@ from services.patent.kipris_patent_service import (
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
     resolve_citation_evidence,
+    _fetch_foreign_claims_from_kipris,
     _select_fulltext_pdf,
     fulltext_application_number_candidates,
 )
@@ -71,6 +72,20 @@ def test_citing_info_uses_access_key_auth_param():
     assert call["params"]["accessKey"] == "test-key"
     assert "ServiceKey" not in call["params"]
     assert call["params"]["standardCitationApplicationNumber"] == "1020060089973"
+
+
+def test_overseas_demand_paragraph_uses_foreign_bibliographic_access_key():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.overseas_demand_paragraph("000004002589B2", "JP")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/ForeignPatentBibliographicService/demandParagraphInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["literatureNumber"] == "000004002589B2"
+    assert call["params"]["countryCode"] == "JP"
 
 
 def test_fulltext_application_number_candidates_include_normalized_and_original():
@@ -531,3 +546,40 @@ def test_resolve_citation_evidence_attaches_bigquery_foreign_claims():
     assert result["foreign_claim_lookup_candidates"][0]["original_number"] == "CN113039310 A"
     assert result["foreign_citation_documents"][0]["publication_number"] == "CN-113039310-A"
     assert result["foreign_citation_documents"][0]["representative_claims"][0]["text"] == "CN claim"
+
+
+def test_fetch_foreign_claims_from_kipris_uses_literature_number_candidates():
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def overseas_demand_paragraph(self, literature_number, country_code):
+            self.calls.append((literature_number, country_code))
+            if literature_number == "000004002589B2":
+                return {
+                    "response": {
+                        "body": {
+                            "items": {
+                                "demandParagraphInfo": {
+                                    "claimText": "搬送コンベヤにより搬送中のガス容器を洗浄する装置。"
+                                }
+                            }
+                        }
+                    }
+                }
+            return {"response": {"body": {"items": {}}}}
+
+    candidate = {
+        "direction": "cited_by_target",
+        "country_code": "JP",
+        "document_number": "04002589",
+        "kind_code": "B2",
+        "original_number": "JP4002589 B2",
+        "display_number": "JP04002589 B2",
+    }
+
+    result = _fetch_foreign_claims_from_kipris(Client(), [candidate])
+
+    assert result[0]["literature_number"] == "000004002589B2"
+    assert result[0]["lookup_source"] == "kipris_foreign_bibliographic_claims"
+    assert result[0]["representative_claims"][0]["text"].startswith("搬送コンベヤ")

@@ -416,7 +416,9 @@ def resolve_citation_evidence(
     deduped_foreign_candidates = _dedupe_foreign_claim_lookup_candidates(foreign_claim_lookup_candidates)
     if deduped_foreign_candidates:
         try:
-            fetcher = foreign_claims_fetcher or _fetch_foreign_claims_from_bigquery
+            fetcher = foreign_claims_fetcher or (
+                lambda candidates, **kwargs: _fetch_foreign_claims(client, candidates, **kwargs)
+            )
             foreign_citation_documents = fetcher(
                 deduped_foreign_candidates,
                 max_candidates=max_foreign_citations,
@@ -689,6 +691,134 @@ def _foreign_claim_lookup_candidate(citation: dict[str, Any]) -> dict[str, Any] 
         "display_number": citation.get("display_number"),
         "lookup_source": "bigquery_claims",
     }
+
+
+def _fetch_foreign_claims(
+    client: Any,
+    candidates: list[dict[str, Any]],
+    *,
+    max_candidates: int = 3,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    kipris_documents = _fetch_foreign_claims_from_kipris(
+        client,
+        candidates,
+        max_candidates=max_candidates,
+    )
+    resolved_keys = {
+        (
+            document.get("country_code"),
+            document.get("document_number"),
+            document.get("kind_code"),
+        )
+        for document in kipris_documents
+    }
+    remaining_candidates = [
+        candidate
+        for candidate in candidates[:max_candidates]
+        if (candidate.get("country_code"), candidate.get("document_number"), candidate.get("kind_code"))
+        not in resolved_keys
+    ]
+    if not remaining_candidates:
+        return kipris_documents
+    try:
+        return [
+            *kipris_documents,
+            *_fetch_foreign_claims_from_bigquery(remaining_candidates, max_candidates=max_candidates, **kwargs),
+        ]
+    except Exception:
+        return kipris_documents
+
+
+def _fetch_foreign_claims_from_kipris(
+    client: Any,
+    candidates: list[dict[str, Any]],
+    *,
+    max_candidates: int = 3,
+) -> list[dict[str, Any]]:
+    documents = []
+    for candidate in candidates[:max_candidates]:
+        country_code = candidate.get("country_code")
+        if not country_code:
+            continue
+        for literature_number in _foreign_literature_number_candidates(candidate):
+            raw = client.overseas_demand_paragraph(literature_number, country_code)
+            claims = _normalize_foreign_kipris_claims(raw)
+            if not claims:
+                continue
+            documents.append(
+                {
+                    "direction": candidate.get("direction"),
+                    "country_code": country_code,
+                    "literature_number": literature_number,
+                    "document_number": candidate.get("document_number"),
+                    "kind_code": candidate.get("kind_code"),
+                    "display_number": candidate.get("display_number"),
+                    "representative_claims": claims[:3],
+                    "lookup_status": "resolved",
+                    "lookup_source": "kipris_foreign_bibliographic_claims",
+                    "source_document": candidate,
+                }
+            )
+            break
+    return documents
+
+
+def _normalize_foreign_kipris_claims(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    items = _ensure_list(
+        _get_path(raw, ["response", "body", "items", "demandParagraphInfo"])
+        or _get_path(raw, ["response", "body", "demandParagraphInfo"])
+    )
+    claims = []
+    for index, item in enumerate(items, 1):
+        if isinstance(item, dict):
+            text = _clean(item.get("claimText"))
+        else:
+            text = _clean(item)
+        if not text:
+            continue
+        claims.append(
+            {
+                "claim_no": index,
+                "text": text,
+                "is_independent": index == 1,
+                "dependency": None,
+                "source": "kipris_foreign_bibliographic_claims",
+            }
+        )
+    return claims
+
+
+def _foreign_literature_number_candidates(candidate: dict[str, Any]) -> list[str]:
+    document_number = re.sub(r"\D+", "", str(candidate.get("document_number") or ""))
+    kind_code = str(candidate.get("kind_code") or "").strip().upper()
+    original_number = _clean(candidate.get("original_number"))
+    display_number = _clean(candidate.get("display_number"))
+    candidates = []
+    for value in (original_number, display_number):
+        parsed = _foreign_literature_number_from_text(value)
+        if parsed:
+            candidates.append(parsed)
+    if document_number and kind_code:
+        candidates.append(f"{document_number.zfill(12)}{kind_code}")
+        candidates.append(f"{document_number}{kind_code}")
+    if document_number:
+        candidates.append(document_number.zfill(12))
+        candidates.append(document_number)
+    return _unique_texts(candidates)
+
+
+def _foreign_literature_number_from_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = re.search(r"\b[A-Z]{2}\s*-?\s*([0-9][0-9A-Z./-]*)\s*-?\s*([A-Z][0-9]?)?\b", value.upper())
+    if not match:
+        return None
+    document_number = re.sub(r"\D+", "", match.group(1))
+    kind_code = match.group(2) or ""
+    if not document_number:
+        return None
+    return f"{document_number.zfill(12)}{kind_code}"
 
 
 def _fetch_foreign_claims_from_bigquery(candidates: list[dict[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:

@@ -18,9 +18,9 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import Response
 
 try:
-    from .kipris_client import KiprisClient, KiprisError, PAT_UTI_SERVICE_PATH
+    from .kipris_client import KiprisClient, KiprisError, OVERSEAS_PATENT_SERVICE_PATH, PAT_UTI_SERVICE_PATH
 except ImportError:
-    from kipris_client import KiprisClient, KiprisError, PAT_UTI_SERVICE_PATH
+    from kipris_client import KiprisClient, KiprisError, OVERSEAS_PATENT_SERVICE_PATH, PAT_UTI_SERVICE_PATH
 
 load_dotenv()
 
