@@ -45,8 +45,6 @@ def test_fetch_foreign_claims_from_bigquery_maps_claim_rows():
                 "publication_number": "CN-113039310-A",
                 "country_code": "CN",
                 "kind_code": "A",
-                "title": "해외 특허 제목",
-                "abstract": "해외 특허 초록",
                 "claim_language": "en",
                 "claim_text": "A first foreign claim.",
             },
@@ -54,8 +52,6 @@ def test_fetch_foreign_claims_from_bigquery_maps_claim_rows():
                 "publication_number": "CN-113039310-A",
                 "country_code": "CN",
                 "kind_code": "A",
-                "title": "해외 특허 제목",
-                "abstract": "해외 특허 초록",
                 "claim_language": "en",
                 "claim_text": "A second foreign claim.",
             },
@@ -82,8 +78,6 @@ def test_fetch_foreign_claims_from_bigquery_maps_claim_rows():
             "document_number": "113039310",
             "kind_code": "A",
             "display_number": "CN113039310 A",
-            "title": "해외 특허 제목",
-            "abstract": "해외 특허 초록",
             "representative_claims": [
                 {
                     "claim_no": 1,
@@ -107,20 +101,8 @@ def test_fetch_foreign_claims_from_bigquery_maps_claim_rows():
     ]
 
 
-def test_fetch_foreign_claims_from_bigquery_keeps_metadata_without_claims():
-    client = Client(
-        [
-            {
-                "publication_number": "CN-113039310-A",
-                "country_code": "CN",
-                "kind_code": "A",
-                "title": "해외 특허 제목",
-                "abstract": "해외 특허 초록",
-                "claim_language": None,
-                "claim_text": None,
-            }
-        ]
-    )
+def test_fetch_foreign_claims_from_bigquery_omits_documents_without_claims():
+    client = Client([])
     candidates = [
         {
             "direction": "cited_by_target",
@@ -133,7 +115,4 @@ def test_fetch_foreign_claims_from_bigquery_keeps_metadata_without_claims():
 
     result = fetch_foreign_claims_from_bigquery(candidates, client=client)
 
-    assert result[0]["publication_number"] == "CN-113039310-A"
-    assert result[0]["title"] == "해외 특허 제목"
-    assert result[0]["representative_claims"] == []
-    assert result[0]["lookup_status"] == "metadata_only"
+    assert result == []

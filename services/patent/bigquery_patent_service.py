@@ -41,7 +41,7 @@ def fetch_foreign_claims_from_bigquery(
 
     rows = list(
         query_client.query(
-            _publication_query(table),
+            _claims_query(table),
             job_config=_bigquery_job_config(publication_numbers, languages),
         ).result()
     )
@@ -113,36 +113,19 @@ def _bigquery_job_config(publication_numbers: list[str], languages: list[str]) -
 
 
 def _claims_query(table: str) -> str:
-    return _publication_query(table)
-
-
-def _publication_query(table: str) -> str:
     safe_table = table.replace("`", "")
     return f"""
 SELECT
   p.publication_number,
   p.country_code,
   p.kind_code,
-  (
-    SELECT title.text
-    FROM UNNEST(p.title_localized) AS title
-    WHERE title.text IS NOT NULL
-    ORDER BY IF(title.language IN UNNEST(@languages), 0, 1), title.language
-    LIMIT 1
-  ) AS title,
-  (
-    SELECT abstract.text
-    FROM UNNEST(p.abstract_localized) AS abstract
-    WHERE abstract.text IS NOT NULL
-    ORDER BY IF(abstract.language IN UNNEST(@languages), 0, 1), abstract.language
-    LIMIT 1
-  ) AS abstract,
   claim.language AS claim_language,
   claim.text AS claim_text
-FROM `{safe_table}` AS p
-LEFT JOIN UNNEST(p.claims_localized) AS claim
+FROM `{safe_table}` AS p,
+UNNEST(p.claims_localized) AS claim
 WHERE p.publication_number IN UNNEST(@publication_numbers)
-  AND (claim.text IS NULL OR claim.language IN UNNEST(@languages) OR claim.language IS NULL)
+  AND claim.text IS NOT NULL
+  AND (claim.language IN UNNEST(@languages) OR claim.language IS NULL)
 ORDER BY p.publication_number, IF(claim.language IN UNNEST(@languages), 0, 1), claim.language
 """
 
@@ -173,10 +156,8 @@ def _foreign_claim_document_payload(
         "document_number": candidate.get("document_number"),
         "kind_code": first.get("kind_code") or candidate.get("kind_code"),
         "display_number": candidate.get("display_number"),
-        "title": first.get("title"),
-        "abstract": first.get("abstract"),
         "representative_claims": representative_claims,
-        "lookup_status": "resolved" if representative_claims else "metadata_only",
+        "lookup_status": "resolved",
         "lookup_source": "bigquery_patents_publications",
         "source_document": candidate,
     }
@@ -241,8 +222,6 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
             "publication_number",
             "country_code",
             "kind_code",
-            "title",
-            "abstract",
             "claim_language",
             "claim_text",
         )
