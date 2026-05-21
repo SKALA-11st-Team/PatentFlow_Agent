@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from agents.valuation import run_legal_valuation_agent, run_valuation_agent, select_axis_evidence
+from agents.valuation import run_axis_valuation_agent, run_valuation_agent
+from agents.valuation_axes.business_fit import select_evidence as select_business_fit_evidence
 from agents.writing.final_report import run_final_report_agent
 from app.main import build_parser, build_user_input, save_outputs
 from workflow.supervisor import check_valuation_result
@@ -76,7 +77,7 @@ def test_run_valuation_agent_sets_result():
     assert "final_report_markdown" not in result.valuation_result
 
 
-def test_run_legal_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
+def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     captured_prompts = []
 
     def fake_call_llm(prompt):
@@ -142,7 +143,7 @@ def test_run_legal_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
         ],
     )
 
-    result = run_legal_valuation_agent(state)
+    result = run_axis_valuation_agent("legal", state)
 
     axes = result.valuation_result["axes"]
     assert list(axes) == ["legal"]
@@ -178,7 +179,7 @@ def test_business_fit_selects_news_with_company_or_product_context():
         ],
     )
 
-    selected = select_axis_evidence("business_fit", state)
+    selected = select_business_fit_evidence(state.evidence_bundle, state)
 
     assert selected[0]["evidence_id"] == "news_001"
 
@@ -218,7 +219,7 @@ def test_business_fit_prioritizes_sk_ax_official_evidence():
         ],
     )
 
-    selected = select_axis_evidence("business_fit", state)
+    selected = select_business_fit_evidence(state.evidence_bundle, state)
 
     assert [item["evidence_id"] for item in selected[:3]] == ["skax_high", "skax_low", "news_001"]
 
@@ -243,7 +244,7 @@ def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
         ],
     )
 
-    selected = select_axis_evidence("business_fit", state)
+    selected = select_business_fit_evidence(state.evidence_bundle, state)
 
     assert selected[0]["evidence_id"] == "skax_meta"
 
@@ -277,7 +278,7 @@ def test_business_fit_fallback_without_official_evidence_matches_existing_order(
         ],
     )
 
-    selected = select_axis_evidence("business_fit", state)
+    selected = select_business_fit_evidence(state.evidence_bundle, state)
 
     assert [item["evidence_id"] for item in selected] == ["news_direct", "portfolio_001", "news_secondary"]
 

@@ -53,11 +53,6 @@ def run_axis_valuation_agent(axis: str, state: PatentWorkflowState) -> PatentWor
     return state
 
 
-@trace(name="legal_valuation_agent", run_type="chain")
-def run_legal_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
-    return run_axis_valuation_agent("legal", state)
-
-
 @trace(name="valuation_axis_result_agent", run_type="chain")
 def run_axis_valuation_result(axis: str, state: PatentWorkflowState) -> dict[str, Any]:
     if state.user_input.get("use_llm_valuation", True) is False:
@@ -83,7 +78,7 @@ def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
         raise RuntimeError(f"Valuation axes are incomplete: {', '.join(missing_axes)}.")
 
     ordered_axes = {axis: axes[axis] for axis in VALUATION_AXES}
-    state.valuation_result = build_final_valuation_result(ordered_axes, state=state)
+    state.valuation_result = build_final_valuation_result(ordered_axes)
     state.current_stage = "valuation_check"
     return state
 
@@ -177,19 +172,7 @@ def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
     return normalized
 
 
-def select_axis_evidence(axis: str, state: PatentWorkflowState) -> list[dict[str, Any]]:
-    module = AXIS_MODULES.get(axis)
-    if not module:
-        return []
-    return module.select_evidence(state.evidence_bundle or [], state)
-
-
-def build_final_valuation_result(
-    axes: dict[str, dict[str, Any]],
-    *,
-    state: PatentWorkflowState | None = None,
-) -> dict[str, Any]:
-    del state
+def build_final_valuation_result(axes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     total_score = sum(int(axis.get("score") or 0) for axis in axes.values())
     average_score = round(total_score / len(axes), 1) if axes else 0
     final_indicator = total_score_to_indicator(total_score)
