@@ -313,6 +313,18 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         "missing_information": normalize_list(parsed.get("missing_information")),
         "confidence": max(0.0, min(1.0, float(parsed["confidence"]))),
     }
+    for optional_field in (
+        "industry_marketability_score",
+        "technical_differentiation_score",
+        "implementation_specificity_score",
+        "sub_scores",
+        "marketability_metrics",
+        "technology_metrics",
+        "technical_differentiation_breakdown",
+        "implementation_specificity_breakdown",
+    ):
+        if optional_field in parsed:
+            result[optional_field] = parsed[optional_field]
     subscores = normalize_subscores(parsed.get("subscores"))
     if subscores:
         result["subscores"] = subscores

@@ -226,6 +226,9 @@ def extract_kipris_items(raw: dict[str, Any]) -> list[dict[str, Any]]:
     candidates = [
         raw.get("items"),
         raw.get("item"),
+        ((raw.get("response") or {}).get("body") or {}).get("items", {}).get("PatentUtilityInfo")
+        if isinstance(((raw.get("response") or {}).get("body") or {}).get("items"), dict)
+        else None,
         (((raw.get("response") or {}).get("body") or {}).get("items") or {}).get("item")
         if isinstance((((raw.get("response") or {}).get("body") or {}).get("items") or {}), dict)
         else None,
