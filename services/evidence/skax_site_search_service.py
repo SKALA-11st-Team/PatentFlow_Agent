@@ -4,6 +4,8 @@ from html.parser import HTMLParser
 from typing import Any, Callable
 from html import unescape as html_unescape
 from urllib.parse import parse_qs, quote_plus, unquote, urldefrag, urlparse
+import json
+import os
 import re
 
 import requests
@@ -19,7 +21,9 @@ DEFAULT_MAX_FETCH_PAGES = 5
 DEFAULT_MAX_CONTENT_CHARS = 5000
 DEFAULT_SEARCH_TIMEOUT_SECONDS = 5
 DEFAULT_SEARCH_HTML_PREVIEW_CHARS = 800
+DEFAULT_API_ERROR_BODY_PREVIEW_CHARS = 1000
 GOOGLE_SEARCH_URL = "https://www.google.com/search"
+GOOGLE_CUSTOM_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
 SEARCH_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -72,6 +76,71 @@ class GoogleHtmlSearchClient(SearchClient):
             "results": results,
             "diagnostics": diagnostics,
         }
+
+
+class GoogleCustomSearchClient(SearchClient):
+    provider = "google_custom_search_json"
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        cx: str | None = None,
+        timeout: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
+    ) -> None:
+        self.api_key = api_key if api_key is not None else os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY")
+        self.cx = cx if cx is not None else os.getenv("GOOGLE_CUSTOM_SEARCH_CX")
+        self.timeout = timeout
+
+    @classmethod
+    def has_config(cls) -> bool:
+        return bool(os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY") and os.getenv("GOOGLE_CUSTOM_SEARCH_CX"))
+
+    def search(self, query: str, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> dict[str, Any]:
+        diagnostics = build_empty_search_diagnostics(query)
+        diagnostics.update(
+            {
+                "search_provider": self.provider,
+                "search_request_url": GOOGLE_CUSTOM_SEARCH_URL,
+                "missing_config": False,
+            }
+        )
+        if not self.api_key or not self.cx:
+            diagnostics["missing_config"] = True
+            diagnostics["search_failure_reason"] = "missing_config"
+            return {"results": [], "diagnostics": diagnostics}
+
+        try:
+            response = requests.get(
+                GOOGLE_CUSTOM_SEARCH_URL,
+                params={
+                    "key": self.api_key,
+                    "cx": self.cx,
+                    "q": query,
+                    "num": min(10, max(1, int(max_results))),
+                    "hl": "ko",
+                    "gl": "kr",
+                    "siteSearch": SK_AX_DOMAIN,
+                    "siteSearchFilter": "i",
+                },
+                timeout=self.timeout,
+            )
+            diagnostics["search_status_code"] = response.status_code
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            diagnostics["search_failure_reason"] = f"fetch_error:{exc.__class__.__name__}"
+            response = getattr(exc, "response", None)
+            if response is not None:
+                diagnostics.update(parse_google_api_error_response(response, sensitive_values=[self.api_key, self.cx]))
+            return {"results": [], "diagnostics": diagnostics}
+
+        results = parse_custom_search_json(payload, max_results=max_results)
+        diagnostics["parsed_link_count"] = len(payload.get("items", [])) if isinstance(payload, dict) else 0
+        diagnostics["parsed_result_count"] = len(results)
+        if not results:
+            diagnostics["search_failure_reason"] = "no_skax_results"
+        return {"results": results, "diagnostics": diagnostics}
 
 
 class PageHTMLParser(HTMLParser):
@@ -265,7 +334,7 @@ def collect_skax_site_evidence(
                 results = []
                 search_diagnostics.append(build_search_error_diagnostics(query, exc))
         else:
-            search_response = GoogleHtmlSearchClient().search(query, max_results=max_results_per_query)
+            search_response = default_search_client().search(query, max_results=max_results_per_query)
             results = list(search_response.get("results", []))[: max(1, int(max_results_per_query))]
             search_diagnostics.append(
                 normalize_search_diagnostics(
@@ -325,6 +394,12 @@ def collect_skax_site_evidence(
         "failed_urls": failed_urls,
         "search_diagnostics": search_diagnostics,
     }
+
+
+def default_search_client() -> SearchClient:
+    if GoogleCustomSearchClient.has_config():
+        return GoogleCustomSearchClient()
+    return GoogleHtmlSearchClient()
 
 
 def default_html_searcher(query: str) -> list[SearchResult]:
@@ -474,6 +549,65 @@ def parse_google_search_html_with_diagnostics(
     return results, diagnostics
 
 
+def parse_custom_search_json(payload: Any, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> list[SearchResult]:
+    if not isinstance(payload, dict):
+        return []
+    results: list[SearchResult] = []
+    seen: set[str] = set()
+    for item in payload.get("items", []) or []:
+        if not isinstance(item, dict):
+            continue
+        url = normalize_url(item.get("link"))
+        if not url or url in seen or not is_skax_url(url) or is_file_url(url):
+            continue
+        seen.add(url)
+        results.append(
+            {
+                "title": normalize_text(item.get("title")) or url,
+                "url": url,
+                "snippet": normalize_text(item.get("snippet")),
+            }
+        )
+        if len(results) >= max(1, int(max_results)):
+            break
+    return results
+
+
+def parse_google_api_error_response(
+    response: Any,
+    *,
+    sensitive_values: list[str | None] | None = None,
+) -> dict[str, Any]:
+    body_text = sanitize_sensitive_text(normalize_text(getattr(response, "text", "")), sensitive_values or [])
+    payload: Any
+    try:
+        payload = response.json()
+    except Exception:
+        try:
+            payload = json.loads(body_text)
+        except Exception:
+            payload = {}
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    details = error.get("errors", []) if isinstance(error, dict) else []
+    first_detail = details[0] if details and isinstance(details[0], dict) else {}
+    return {
+        "api_error_body_preview": body_text[:DEFAULT_API_ERROR_BODY_PREVIEW_CHARS],
+        "api_error_code": error.get("code") if isinstance(error, dict) else None,
+        "api_error_status": error.get("status") if isinstance(error, dict) else None,
+        "api_error_message": error.get("message") if isinstance(error, dict) else None,
+        "api_error_reason": first_detail.get("reason"),
+    }
+
+
+def sanitize_sensitive_text(text: str, sensitive_values: list[str | None]) -> str:
+    sanitized = text
+    for value in sensitive_values:
+        secret = normalize_text(value)
+        if len(secret) >= 6:
+            sanitized = sanitized.replace(secret, "[REDACTED]")
+    return sanitized
+
+
 def build_empty_search_diagnostics(query: str) -> dict[str, Any]:
     return {
         "query": query,
@@ -484,6 +618,11 @@ def build_empty_search_diagnostics(query: str) -> dict[str, Any]:
         "parsed_link_count": 0,
         "parsed_result_count": 0,
         "search_failure_reason": None,
+        "api_error_body_preview": None,
+        "api_error_code": None,
+        "api_error_status": None,
+        "api_error_message": None,
+        "api_error_reason": None,
     }
 
 

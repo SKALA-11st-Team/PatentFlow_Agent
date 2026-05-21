@@ -1,7 +1,11 @@
+import requests
+
 from services.evidence.skax_site_search_service import (
+    GoogleCustomSearchClient,
     GoogleHtmlSearchClient,
     build_search_queries,
     collect_skax_site_evidence,
+    default_search_client,
     default_html_searcher,
     filter_search_results,
     parse_google_search_html,
@@ -391,6 +395,9 @@ def test_default_html_searcher_returns_empty_list_on_fetch_failure(monkeypatch):
 
 
 def test_collect_uses_default_searcher_when_searcher_is_not_provided(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_CX", raising=False)
+
     def fake_google_response(query):
         return {
             "status_code": 200,
@@ -425,6 +432,9 @@ def test_collect_uses_default_searcher_when_searcher_is_not_provided(monkeypatch
 
 
 def test_collect_reports_google_search_diagnostics_with_mock_html(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_CX", raising=False)
+
     html = """
     <html>
       <body>
@@ -474,6 +484,9 @@ def test_collect_reports_google_search_diagnostics_with_mock_html(monkeypatch):
 
 
 def test_collect_reports_google_consent_page_when_search_results_are_zero(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_CX", raising=False)
+
     html = """
     <html>
       <head><title>Before you continue to Google Search</title></head>
@@ -513,6 +526,9 @@ def test_collect_reports_google_consent_page_when_search_results_are_zero(monkey
 
 
 def test_collect_reports_google_requires_javascript_for_enablejs_retry_html(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_CX", raising=False)
+
     html = """
     <html>
       <head><title>Google Search</title></head>
@@ -550,6 +566,9 @@ def test_collect_reports_google_requires_javascript_for_enablejs_retry_html(monk
 
 
 def test_collect_reports_google_requires_javascript_for_noscript_enablejs_html(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_CX", raising=False)
+
     html = """
     <html>
       <body>
@@ -715,3 +734,254 @@ def test_google_html_search_client_returns_compatible_structure(monkeypatch):
     assert result["results"][0]["url"] == "https://www.skax.co.kr/financial/robo-advisor"
     assert result["diagnostics"]["search_status_code"] == 200
     assert result["diagnostics"]["parsed_result_count"] == 1
+
+
+def test_google_custom_search_client_extracts_only_skax_results(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "title": "SK AX 로보어드바이저",
+                        "link": "https://www.skax.co.kr/digital-based-financial-service",
+                        "snippet": "로보어드바이저 데이터분석",
+                    },
+                    {
+                        "title": "외부 뉴스",
+                        "link": "https://news.example.com/skax/robo-advisor",
+                        "snippet": "외부",
+                    },
+                    {
+                        "title": "중복",
+                        "link": "https://www.skax.co.kr/digital-based-financial-service#section",
+                        "snippet": "중복",
+                    },
+                ]
+            }
+
+    def fake_get(url, *, params, timeout):
+        captured["url"] = url
+        captured["params"] = params
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.get", fake_get)
+
+    result = GoogleCustomSearchClient(api_key="key", cx="cx").search(
+        "site:skax.co.kr 로보어드바이저",
+        max_results=10,
+    )
+
+    assert captured["url"] == "https://www.googleapis.com/customsearch/v1"
+    assert captured["params"]["key"] == "key"
+    assert captured["params"]["cx"] == "cx"
+    assert captured["params"]["q"] == "site:skax.co.kr 로보어드바이저"
+    assert captured["params"]["num"] == 10
+    assert captured["params"]["hl"] == "ko"
+    assert captured["params"]["gl"] == "kr"
+    assert captured["params"]["siteSearch"] == "skax.co.kr"
+    assert captured["params"]["siteSearchFilter"] == "i"
+    assert result["results"] == [
+        {
+            "title": "SK AX 로보어드바이저",
+            "url": "https://www.skax.co.kr/digital-based-financial-service",
+            "snippet": "로보어드바이저 데이터분석",
+        }
+    ]
+    assert result["diagnostics"]["search_provider"] == "google_custom_search_json"
+    assert result["diagnostics"]["parsed_link_count"] == 3
+    assert result["diagnostics"]["parsed_result_count"] == 1
+    assert result["diagnostics"]["search_failure_reason"] is None
+
+
+def test_google_custom_search_client_reports_missing_config():
+    result = GoogleCustomSearchClient(api_key="", cx="").search("site:skax.co.kr AI")
+
+    assert result["results"] == []
+    assert result["diagnostics"]["search_provider"] == "google_custom_search_json"
+    assert result["diagnostics"]["missing_config"] is True
+    assert result["diagnostics"]["search_failure_reason"] == "missing_config"
+
+
+def test_google_custom_search_client_handles_api_failure(monkeypatch):
+    def fake_get(url, *, params, timeout):
+        raise RuntimeError("api down")
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.get", fake_get)
+
+    result = GoogleCustomSearchClient(api_key="key", cx="cx").search("site:skax.co.kr AI")
+
+    assert result["results"] == []
+    assert result["diagnostics"]["search_status_code"] is None
+    assert result["diagnostics"]["search_failure_reason"] == "fetch_error:RuntimeError"
+
+
+def test_google_custom_search_client_reports_http_error_body_without_key(monkeypatch):
+    class FakeResponse:
+        status_code = 403
+        text = '{"error":{"code":403,"message":"Custom Search API has not been used in project. key=secret-key","status":"PERMISSION_DENIED","errors":[{"reason":"accessNotConfigured","message":"Custom Search API has not been used in project."}]}}'
+
+        def raise_for_status(self):
+            raise requests.HTTPError("403 Client Error", response=self)
+
+        def json(self):
+            return {
+                "error": {
+                    "code": 403,
+                    "message": "Custom Search API has not been used in project.",
+                    "status": "PERMISSION_DENIED",
+                    "errors": [
+                        {
+                            "reason": "accessNotConfigured",
+                            "message": "Custom Search API has not been used in project.",
+                        }
+                    ],
+                }
+            }
+
+    def fake_get(url, *, params, timeout):
+        assert params["key"] == "secret-key"
+        return FakeResponse()
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.get", fake_get)
+
+    result = GoogleCustomSearchClient(api_key="secret-key", cx="cx").search("site:skax.co.kr AI")
+    diagnostics = result["diagnostics"]
+
+    assert result["results"] == []
+    assert diagnostics["search_request_url"] == "https://www.googleapis.com/customsearch/v1"
+    assert "secret-key" not in diagnostics["search_request_url"]
+    assert "secret-key" not in diagnostics["api_error_body_preview"]
+    assert "[REDACTED]" in diagnostics["api_error_body_preview"]
+    assert diagnostics["search_status_code"] == 403
+    assert diagnostics["search_failure_reason"] == "fetch_error:HTTPError"
+    assert diagnostics["api_error_code"] == 403
+    assert diagnostics["api_error_status"] == "PERMISSION_DENIED"
+    assert diagnostics["api_error_message"] == "Custom Search API has not been used in project."
+    assert diagnostics["api_error_reason"] == "accessNotConfigured"
+
+
+def test_collect_handles_custom_search_http_error_without_raising(monkeypatch):
+    class FakeResponse:
+        status_code = 403
+        text = '{"error":{"code":403,"message":"Quota exceeded","status":"RESOURCE_EXHAUSTED","errors":[{"reason":"dailyLimitExceeded","message":"Quota exceeded"}]}}'
+
+        def raise_for_status(self):
+            raise requests.HTTPError("403 Client Error", response=self)
+
+        def json(self):
+            return {
+                "error": {
+                    "code": 403,
+                    "message": "Quota exceeded",
+                    "status": "RESOURCE_EXHAUSTED",
+                    "errors": [{"reason": "dailyLimitExceeded", "message": "Quota exceeded"}],
+                }
+            }
+
+    def fake_get(url, *, params, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.get", fake_get)
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=GoogleCustomSearchClient(api_key="key", cx="cx"),
+        max_queries=1,
+    )
+    diagnostics = result["search_diagnostics"][0]
+
+    assert result["items"] == []
+    assert result["stats"]["searched_result_count"] == 0
+    assert diagnostics["api_error_code"] == 403
+    assert diagnostics["api_error_status"] == "RESOURCE_EXHAUSTED"
+    assert diagnostics["api_error_reason"] == "dailyLimitExceeded"
+    assert "Quota exceeded" in diagnostics["api_error_body_preview"]
+
+
+def test_google_custom_search_client_parses_http_error_text_when_json_method_fails(monkeypatch):
+    class FakeResponse:
+        status_code = 403
+        text = '{"error":{"code":403,"message":"API key not valid.","status":"INVALID_ARGUMENT","errors":[{"reason":"keyInvalid","message":"API key not valid."}]}}'
+
+        def raise_for_status(self):
+            raise requests.HTTPError("403 Client Error", response=self)
+
+        def json(self):
+            raise ValueError("not json")
+
+    def fake_get(url, *, params, timeout):
+        return FakeResponse()
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.get", fake_get)
+
+    result = GoogleCustomSearchClient(api_key="key", cx="cx").search("site:skax.co.kr AI")
+    diagnostics = result["diagnostics"]
+
+    assert diagnostics["api_error_code"] == 403
+    assert diagnostics["api_error_status"] == "INVALID_ARGUMENT"
+    assert diagnostics["api_error_message"] == "API key not valid."
+    assert diagnostics["api_error_reason"] == "keyInvalid"
+
+
+def test_collect_uses_custom_search_client_and_fetches_page(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "items": [
+                    {
+                        "title": "SK AX 로보어드바이저 자산배분 데이터분석",
+                        "link": "https://www.skax.co.kr/digital-based-financial-service",
+                        "snippet": "로보어드바이저 데이터분석",
+                    }
+                ]
+            }
+
+    def fake_get(url, *, params, timeout):
+        return FakeResponse()
+
+    def fetcher(url):
+        return "<html><head><title>SK AX 금융</title></head><body><p>로보어드바이저 데이터분석 사업 근거</p></body></html>"
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.get", fake_get)
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=GoogleCustomSearchClient(api_key="key", cx="cx"),
+        fetcher=fetcher,
+        max_queries=1,
+    )
+
+    evidence = result["items"][0]
+    diagnostics = result["search_diagnostics"][0]
+    assert evidence["source"] == "sk_ax_official"
+    assert evidence["source_type"] == "company_disclosure"
+    assert evidence["url"] == "https://www.skax.co.kr/digital-based-financial-service"
+    assert diagnostics["search_provider"] == "google_custom_search_json"
+    assert diagnostics["parsed_result_count"] == 1
+
+
+def test_default_search_client_prefers_custom_search_when_config_exists(monkeypatch):
+    monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_API_KEY", "key")
+    monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_CX", "cx")
+
+    assert isinstance(default_search_client(), GoogleCustomSearchClient)
+
+
+def test_default_search_client_falls_back_to_google_html_without_config(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_CX", raising=False)
+
+    assert isinstance(default_search_client(), GoogleHtmlSearchClient)
