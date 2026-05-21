@@ -10,6 +10,8 @@ from workflow.state import PatentWorkflowState
 AXIS = "business_fit"
 LABEL = "사업 연계성"
 PROMPT_PATH = "valuation/valuation_business_fit.md"
+DESCRIPTION_TEXT_LIMIT = 1000
+EVIDENCE_EXCERPT_LIMIT = 1500
 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
@@ -26,7 +28,73 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    return build_base_input_payload(state=state, evidence=evidence)
+    payload = build_base_input_payload(state=state, evidence=evidence)
+    payload["business_fit_context"] = {
+        "patent_description": build_business_fit_patent_description(state),
+        "skax_official_evidence": build_skax_official_evidence_summary(evidence, state=state),
+    }
+    return payload
+
+
+def build_business_fit_patent_description(state: PatentWorkflowState) -> dict[str, Any]:
+    patent = state.patent_structured or {}
+    summary = state.summary_result or {}
+    preprocessed = state.preprocessed_patent or {}
+    sections = preprocessed.get("sections") or {}
+    kipris_sections = (state.kipris_api_data or {}).get("sections") or {}
+
+    return {
+        "management_number": first_text(patent.get("management_number"), patent.get("관리번호")),
+        "title": first_text(patent.get("title"), patent.get("발명의 명칭")),
+        "title_final": first_text(patent.get("title_final"), patent.get("발명의 명칭(최종)")),
+        "title_draft": first_text(patent.get("title_draft"), patent.get("발명의 명칭(가제)")),
+        "related_product": first_text(patent.get("related_product"), patent.get("관련제품")),
+        "business_area": first_text(patent.get("business_area"), patent.get("관련사업 분야"), patent.get("관련 사업 분야")),
+        "technology_area": first_text(patent.get("technology_area"), patent.get("관련기술 분야"), patent.get("관련 기술 분야")),
+        "summary": limit_text(first_text(summary.get("plain_summary"), sections.get("abstract"), kipris_sections.get("abstract"))),
+        "key_points": [limit_text(item, 500) for item in summary.get("key_points", []) if normalize_text(item)][:8],
+        "problem_or_purpose": limit_text(first_text(sections.get("problem"), sections.get("purpose"))),
+        "solution_or_core_technology": limit_text(first_text(sections.get("solution"), sections.get("technical_field"))),
+        "effect_or_expected_benefit": limit_text(first_text(sections.get("effect"))),
+        "use_case_or_application": limit_text(first_text(sections.get("application"), sections.get("use_case"))),
+        "key_terms": business_fit_keywords(state)[:12],
+    }
+
+
+def build_skax_official_evidence_summary(
+    evidence_items: list[dict[str, Any]],
+    state: PatentWorkflowState | None = None,
+    *,
+    max_items: int = 3,
+    max_content_chars: int = EVIDENCE_EXCERPT_LIMIT,
+) -> list[dict[str, Any]]:
+    del state
+    official_items = [item for item in evidence_items if is_sk_ax_official_evidence(item)]
+    ordered = sort_official_evidence(official_items, []) if official_items else []
+    summaries = []
+    for item in ordered[: max(1, int(max_items))]:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        score = item.get("relevance_score") or item.get("candidate_relevance_score") or metadata.get("relevance_score")
+        summaries.append(
+            {
+                "evidence_id": item.get("evidence_id"),
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "source": item.get("source"),
+                "source_type": item.get("source_type"),
+                "relevance_score": score,
+                "matched_keywords": item.get("matched_keywords") or metadata.get("matched_keywords") or [],
+                "matched_terms": item.get("matched_terms") or metadata.get("matched_terms") or [],
+                "content_excerpt": limit_text(item.get("content") or item.get("compressed_summary"), max_content_chars),
+                "business_context_hint": first_text(
+                    item.get("business_context_hint"),
+                    item.get("business_area"),
+                    metadata.get("business_context_hint"),
+                    metadata.get("business_area"),
+                ),
+            }
+        )
+    return summaries
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
@@ -113,9 +181,9 @@ def sort_official_evidence(items: list[dict[str, Any]], keywords: list[str]) -> 
 
 
 def evidence_relevance_score(item: dict[str, Any]) -> float:
-    value = item.get("relevance_score")
+    value = item.get("relevance_score") or item.get("candidate_relevance_score")
     if value is None and isinstance(item.get("metadata"), dict):
-        value = item["metadata"].get("relevance_score")
+        value = item["metadata"].get("relevance_score") or item["metadata"].get("candidate_relevance_score")
     try:
         return float(value)
     except (TypeError, ValueError):
@@ -136,3 +204,15 @@ def evidence_text(item: dict[str, Any]) -> str:
         " ".join(str(fact) for fact in item.get("key_facts", [])),
     ]
     return " ".join(normalize_text(value) for value in values if normalize_text(value))
+
+
+def first_text(*values: Any) -> str:
+    for value in values:
+        text = normalize_text(value)
+        if text:
+            return text
+    return ""
+
+
+def limit_text(value: Any, limit: int = DESCRIPTION_TEXT_LIMIT) -> str:
+    return normalize_text(value)[:limit]

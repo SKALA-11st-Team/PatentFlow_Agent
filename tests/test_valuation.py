@@ -283,6 +283,92 @@ def test_business_fit_fallback_without_official_evidence_matches_existing_order(
     assert [item["evidence_id"] for item in selected] == ["news_direct", "portfolio_001", "news_secondary"]
 
 
+def test_business_fit_input_context_uses_summary_and_limited_official_evidence():
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    long_content = "SK AX 공식 사업 근거 " * 120
+    state = PatentWorkflowState(
+        patent_structured={
+            "관리번호": "P202405001-KR0",
+            "발명의 명칭(최종)": "강화학습 자산배분 특허",
+            "관련제품": "로보어드바이저",
+            "관련 사업 분야": "Data",
+            "관련 기술 분야": "데이터분석",
+        },
+        summary_result={
+            "plain_summary": "요약 우선 사용",
+            "key_points": ["핵심 1", "핵심 2"],
+        },
+        preprocessed_patent={
+            "sections": {
+                "abstract": "초록 fallback",
+                "problem": "해결 과제",
+                "solution": "핵심 해결수단",
+                "effect": "기대 효과",
+                "claims_text": "청구항 전체 원문은 들어가면 안 됨",
+            },
+            "cleaned_markdown": "정제된 전체 원문은 들어가면 안 됨",
+        },
+        parsed_pdf={"markdown_text": "PDF 전체 원문은 들어가면 안 됨"},
+    )
+    evidence = [
+        {
+            "evidence_id": f"skax_{score}",
+            "source": "sk_ax_official",
+            "source_type": "company_disclosure",
+            "title": f"SK AX 공식 근거 {score}",
+            "url": f"https://www.skax.co.kr/finance/{score}",
+            "content": long_content,
+            "relevance_score": score / 10,
+            "matched_keywords": ["로보어드바이저"],
+            "candidate_results": [{"url": "debug"}],
+            "search_request_url": "https://api.tavily.com/search",
+        }
+        for score in [1, 5, 9, 7, 3]
+    ]
+
+    payload = build_input_payload(state=state, evidence=evidence)
+    context = payload["business_fit_context"]
+    description = context["patent_description"]
+    official = context["skax_official_evidence"]
+    serialized = json.dumps(context, ensure_ascii=False)
+
+    assert description["management_number"] == "P202405001-KR0"
+    assert description["title_final"] == "강화학습 자산배분 특허"
+    assert description["related_product"] == "로보어드바이저"
+    assert description["business_area"] == "Data"
+    assert description["technology_area"] == "데이터분석"
+    assert description["summary"] == "요약 우선 사용"
+    assert description["key_points"] == ["핵심 1", "핵심 2"]
+    assert description["problem_or_purpose"] == "해결 과제"
+    assert description["solution_or_core_technology"] == "핵심 해결수단"
+    assert description["effect_or_expected_benefit"] == "기대 효과"
+    assert [item["evidence_id"] for item in official] == ["skax_9", "skax_7", "skax_5"]
+    assert all(len(item["content_excerpt"]) <= 1500 for item in official)
+    assert official[0]["matched_keywords"] == ["로보어드바이저"]
+    assert "candidate_results" not in serialized
+    assert "search_request_url" not in serialized
+    assert "청구항 전체 원문은 들어가면 안 됨" not in serialized
+    assert "정제된 전체 원문은 들어가면 안 됨" not in serialized
+    assert "PDF 전체 원문은 들어가면 안 됨" not in serialized
+
+
+def test_business_fit_patent_description_falls_back_to_sections_and_kipris():
+    from agents.valuation_axes.business_fit import build_business_fit_patent_description
+
+    state = PatentWorkflowState(
+        patent_structured={"title_final": "fallback 특허"},
+        preprocessed_patent={"sections": {"abstract": "", "solution": "섹션 해결수단"}},
+        kipris_api_data={"sections": {"abstract": "KIPRIS 초록"}},
+    )
+
+    description = build_business_fit_patent_description(state)
+
+    assert description["title_final"] == "fallback 특허"
+    assert description["summary"] == "KIPRIS 초록"
+    assert description["solution_or_core_technology"] == "섹션 해결수단"
+
+
 def test_market_score_helpers_apply_40_40_20_structure():
     from datetime import datetime
 
@@ -592,6 +678,9 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
     market_input = json.loads((input_dir / "market_input.json").read_text(encoding="utf-8"))
     assert market_input["evidence"][0]["url"] == "https://example.com/news"
     business_fit_input = json.loads((input_dir / "business_fit_input.json").read_text(encoding="utf-8"))
+    assert "business_fit_context" in business_fit_input
+    assert business_fit_input["business_fit_context"]["patent_description"]["title_final"] == "문서변환 특허"
+    assert business_fit_input["business_fit_context"]["skax_official_evidence"] == []
     rubric = business_fit_input["business_fit_scoring_rubric"]
     assert rubric["components"]["business_connection"] == 40
     assert rubric["components"]["portfolio_necessity"] == 35
