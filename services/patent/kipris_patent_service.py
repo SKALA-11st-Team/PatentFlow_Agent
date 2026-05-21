@@ -111,6 +111,30 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
         result.setdefault("warnings", []).append(
             f"citation_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
         )
+    try:
+        result["citing_documents"] = normalize_kipris_citing_documents(
+            client.citing_info(kipris_application_number)
+        )
+        result["citing_stats"] = build_citing_stats(result["citing_documents"])
+    except Exception as exc:
+        result["citing_documents"] = []
+        result["citing_stats"] = {"total_count": 0, "standardized_count": 0, "non_standardized_count": 0}
+        result.setdefault("warnings", []).append(
+            f"citing_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
+        )
+    try:
+        result["citation_evidence"] = resolve_citation_evidence(
+            client,
+            citation_documents=result.get("citation_documents") or [],
+            citing_documents=result.get("citing_documents") or [],
+        )
+    except Exception as exc:
+        result["citation_evidence"] = {
+            "kr_citation_documents": [],
+            "kr_citing_documents": [],
+            "foreign_claim_lookup_candidates": [],
+            "warnings": [f"citation_evidence_resolve_failed:{exc.__class__.__name__}:{str(exc)[:300]}"],
+        }
     return result
 
 
@@ -319,6 +343,98 @@ def build_citation_stats(citations: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def normalize_kipris_citing_documents(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    items = _ensure_list(
+        _get_path(raw, ["response", "body", "items", "citingInfo"])
+        or _get_path(raw, ["response", "body", "citingInfo"])
+    )
+    normalized = [_normalize_kipris_citing_document(item) for item in items if isinstance(item, dict)]
+    return _dedupe_kipris_citing_documents(normalized)
+
+
+def build_citing_stats(citing_documents: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total_count": len(citing_documents),
+        "standardized_count": sum(1 for item in citing_documents if item.get("is_standardized")),
+        "non_standardized_count": sum(1 for item in citing_documents if not item.get("is_standardized")),
+    }
+
+
+def resolve_citation_evidence(
+    client: Any,
+    *,
+    citation_documents: list[dict[str, Any]],
+    citing_documents: list[dict[str, Any]],
+    foreign_claims_fetcher: Any | None = None,
+    max_kr_citations: int = 3,
+    max_kr_citing: int = 3,
+    max_foreign_citations: int = 3,
+) -> dict[str, Any]:
+    """권리성 평가용 인용/피인용 근거를 조회 가능한 형태로 보강합니다."""
+    warnings: list[str] = []
+    kr_citation_documents = []
+    kr_citing_documents = []
+    foreign_claim_lookup_candidates = []
+    foreign_citation_documents = []
+
+    for citation in _rank_citation_documents(citation_documents):
+        country_code = citation.get("country_code")
+        if country_code != "KR":
+            candidate = _foreign_claim_lookup_candidate(citation)
+            if candidate:
+                foreign_claim_lookup_candidates.append(candidate)
+            continue
+        if len(kr_citation_documents) >= max_kr_citations:
+            continue
+
+        application_number = _resolve_kr_citation_application_number(client, citation)
+        if not application_number:
+            warnings.append(f"kr_citation_application_number_not_found:{citation.get('display_number')}")
+            continue
+        enriched = _enrich_kr_reference_document(
+            client,
+            application_number,
+            direction="cited_by_target",
+            source_document=citation,
+        )
+        if enriched:
+            kr_citation_documents.append(enriched)
+
+    for citing in _rank_citing_documents(citing_documents)[:max_kr_citing]:
+        application_number = citing.get("citing_application_number")
+        if not application_number:
+            continue
+        enriched = _enrich_kr_reference_document(
+            client,
+            application_number,
+            direction="citing_target",
+            source_document=citing,
+        )
+        if enriched:
+            kr_citing_documents.append(enriched)
+
+    deduped_foreign_candidates = _dedupe_foreign_claim_lookup_candidates(foreign_claim_lookup_candidates)
+    if deduped_foreign_candidates:
+        try:
+            fetcher = foreign_claims_fetcher or (
+                lambda candidates, **kwargs: _fetch_foreign_claims(client, candidates, **kwargs)
+            )
+            foreign_citation_documents = fetcher(
+                deduped_foreign_candidates,
+                max_candidates=max_foreign_citations,
+            )
+        except Exception as exc:
+            warnings.append(f"foreign_claims_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}")
+
+    return {
+        "kr_citation_documents": kr_citation_documents,
+        "kr_citing_documents": kr_citing_documents,
+        "foreign_claim_lookup_candidates": deduped_foreign_candidates,
+        "foreign_citation_documents": foreign_citation_documents,
+        "warnings": warnings,
+    }
+
+
 def _normalize_kipris_citation(item: dict[str, Any]) -> dict[str, Any]:
     country_code = _clean(item.get("StandardCitationLiteratureCountryCode"))
     standard_number = _clean(item.get("StandardCitationLiteraturenumber"))
@@ -346,11 +462,55 @@ def _normalize_kipris_citation(item: dict[str, Any]) -> dict[str, Any]:
         "standard_status_name": standard_status_name,
         "citation_type_code": _clean(item.get("CitationLiteratureTypeCode")),
         "citation_type_name": citation_type_name,
+        "citation_type_codes": [_clean(item.get("CitationLiteratureTypeCode"))]
+        if _clean(item.get("CitationLiteratureTypeCode"))
+        else [],
         "citation_type_names": [citation_type_name] if citation_type_name else [],
         "display_number": display_number,
         "is_standardized": is_standardized,
         "raw": item,
     }
+
+
+def _normalize_kipris_citing_document(item: dict[str, Any]) -> dict[str, Any]:
+    standard_status_name = _clean(item.get("StandardStatusCodeName"))
+    citation_type_name = _clean(item.get("CitationLiteratureTypeCodeName"))
+    return {
+        "standard_citation_application_number": _clean(item.get("StandardCitationApplicationNumber")),
+        "citing_application_number": _clean(item.get("ApplicationNumber")),
+        "standard_status_code": _clean(item.get("StandardStatusCode")),
+        "standard_status_name": standard_status_name,
+        "citation_type_code": _clean(item.get("CitationLiteratureTypeCode")),
+        "citation_type_name": citation_type_name,
+        "citation_type_codes": [_clean(item.get("CitationLiteratureTypeCode"))]
+        if _clean(item.get("CitationLiteratureTypeCode"))
+        else [],
+        "citation_type_names": [citation_type_name] if citation_type_name else [],
+        "is_standardized": standard_status_name == "표준화",
+        "raw": item,
+    }
+
+
+def _dedupe_kipris_citing_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    index_by_application_number: dict[str, int] = {}
+    for item in items:
+        application_number = item.get("citing_application_number")
+        if not application_number:
+            continue
+        if application_number in index_by_application_number:
+            existing = selected[index_by_application_number[application_number]]
+            existing["citation_type_codes"] = _unique_texts(
+                [*existing.get("citation_type_codes", []), *item.get("citation_type_codes", [])]
+            )
+            existing["citation_type_names"] = _unique_texts(
+                [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
+            )
+            existing["is_standardized"] = bool(existing.get("is_standardized") or item.get("is_standardized"))
+            continue
+        index_by_application_number[application_number] = len(selected)
+        selected.append(item)
+    return selected
 
 
 def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -370,6 +530,9 @@ def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]
             original_key = _citation_original_key(item)
             if original_key in index_by_original_key:
                 existing = selected[index_by_original_key[original_key]]
+                existing["citation_type_codes"] = _unique_texts(
+                    [*existing.get("citation_type_codes", []), *item.get("citation_type_codes", [])]
+                )
                 existing["citation_type_names"] = _unique_texts(
                     [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
                 )
@@ -377,6 +540,9 @@ def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]
         key = _citation_dedupe_key(item)
         if key in index_by_key:
             existing = selected[index_by_key[key]]
+            existing["citation_type_codes"] = _unique_texts(
+                [*existing.get("citation_type_codes", []), *item.get("citation_type_codes", [])]
+            )
             existing["citation_type_names"] = _unique_texts(
                 [*existing.get("citation_type_names", []), *item.get("citation_type_names", [])]
             )
@@ -387,6 +553,296 @@ def _dedupe_kipris_citations(items: list[dict[str, Any]]) -> list[dict[str, Any]
             index_by_original_key[original_key] = len(selected)
         selected.append(item)
     return selected
+
+
+def _rank_citation_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _key(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        kind = str(item.get("kind_code") or "").upper()
+        return (
+            0 if item.get("is_standardized") else 1,
+            0 if kind.startswith("B") else 1,
+            _citation_type_priority(item),
+            0 if item.get("country_code") == "KR" else 1,
+            str(item.get("display_number") or ""),
+        )
+
+    return sorted(items, key=_key)
+
+
+def _rank_citing_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
+        items,
+        key=lambda item: (
+            0 if item.get("is_standardized") else 1,
+            _citation_type_priority(item),
+            str(item.get("citing_application_number") or ""),
+        ),
+    )
+
+
+def _citation_type_priority(item: dict[str, Any]) -> int:
+    codes = set(item.get("citation_type_codes") or [])
+    names = set(item.get("citation_type_names") or [])
+    if codes & {"E0802", "E0805"} or names & {"선행기술조사보고서", "선행기술조사문헌"}:
+        return 0
+    if "E0801" in codes or "발송문서" in names:
+        return 1
+    if "E0806" in codes or "출원서인용문헌이력정보" in names:
+        return 2
+    return 3
+
+
+def _resolve_kr_citation_application_number(client: Any, citation: dict[str, Any]) -> str | None:
+    standard_number = _clean(citation.get("standard_number"))
+    kind_code = str(citation.get("kind_code") or "").upper()
+    if not standard_number:
+        return None
+
+    search_params: dict[str, Any]
+    if kind_code.startswith("B"):
+        search_params = {"registerNumber": standard_number}
+    else:
+        search_params = {"openNumber": standard_number}
+
+    raw = client.advanced_search(
+        **search_params,
+        patent=True,
+        utility=False,
+        pageNo=1,
+        numOfRows=1,
+    )
+    item = _first_item(
+        _get_path(raw, ["response", "body", "items", "item"])
+        or _get_path(raw, ["response", "body", "items", "PatentUtilityInfo"])
+        or _get_path(raw, ["response", "body", "item"])
+    )
+    if not isinstance(item, dict):
+        return None
+    return _clean(
+        item.get("applicationNumber")
+        or item.get("ApplicationNumber")
+        or item.get("application_number")
+    )
+
+
+def _enrich_kr_reference_document(
+    client: Any,
+    application_number: str,
+    *,
+    direction: str,
+    source_document: dict[str, Any],
+    max_independent_claims: int = 6,
+) -> dict[str, Any] | None:
+    try:
+        normalized = normalize_kipris_bibliography(
+            client.bibliography_detail(application_number),
+            application_number=application_number,
+        )
+    except Exception as exc:
+        return {
+            "direction": direction,
+            "country_code": "KR",
+            "application_number": application_number,
+            "lookup_status": "failed",
+            "failure_reason": f"{exc.__class__.__name__}:{str(exc)[:300]}",
+            "source_document": source_document,
+        }
+
+    metadata = normalized.get("metadata") or {}
+    claims = normalized.get("claims") or []
+    representative_claims = [claim for claim in claims if claim.get("is_independent") and claim.get("text")]
+    if not representative_claims and claims:
+        representative_claims = [claims[0]]
+    return {
+        "direction": direction,
+        "country_code": "KR",
+        "application_number": metadata.get("application_number") or application_number,
+        "registration_number": metadata.get("registration_number"),
+        "publication_number": metadata.get("publication_number"),
+        "title": metadata.get("title"),
+        "abstract": (normalized.get("sections") or {}).get("abstract"),
+        "register_status": metadata.get("register_status"),
+        "claim_stats": normalized.get("claim_stats") or {},
+        "representative_claims": [
+            {
+                "claim_no": claim.get("claim_no"),
+                "text": claim.get("text"),
+                "is_independent": claim.get("is_independent"),
+                "dependency": claim.get("dependency"),
+            }
+            for claim in representative_claims[:max_independent_claims]
+        ],
+        "lookup_status": "resolved",
+        "lookup_source": "kipris_bibliography_detail",
+        "source_document": source_document,
+    }
+
+
+def _foreign_claim_lookup_candidate(citation: dict[str, Any]) -> dict[str, Any] | None:
+    country_code = citation.get("country_code")
+    document_number = citation.get("standard_number")
+    if not country_code or not document_number:
+        return None
+    return {
+        "direction": "cited_by_target",
+        "country_code": country_code,
+        "document_number": document_number,
+        "kind_code": citation.get("kind_code"),
+        "original_number": citation.get("original_number"),
+        "display_number": citation.get("display_number"),
+        "lookup_source": "bigquery_claims",
+    }
+
+
+def _fetch_foreign_claims(
+    client: Any,
+    candidates: list[dict[str, Any]],
+    *,
+    max_candidates: int = 3,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    kipris_documents = _fetch_foreign_claims_from_kipris(
+        client,
+        candidates,
+        max_candidates=max_candidates,
+    )
+    resolved_keys = {
+        (
+            document.get("country_code"),
+            document.get("document_number"),
+            document.get("kind_code"),
+        )
+        for document in kipris_documents
+    }
+    remaining_candidates = [
+        candidate
+        for candidate in candidates[:max_candidates]
+        if (candidate.get("country_code"), candidate.get("document_number"), candidate.get("kind_code"))
+        not in resolved_keys
+    ]
+    if not remaining_candidates:
+        return kipris_documents
+    try:
+        return [
+            *kipris_documents,
+            *_fetch_foreign_claims_from_bigquery(remaining_candidates, max_candidates=max_candidates, **kwargs),
+        ]
+    except Exception:
+        return kipris_documents
+
+
+def _fetch_foreign_claims_from_kipris(
+    client: Any,
+    candidates: list[dict[str, Any]],
+    *,
+    max_candidates: int = 3,
+    max_claims_per_document: int = 5,
+) -> list[dict[str, Any]]:
+    documents = []
+    for candidate in candidates[:max_candidates]:
+        country_code = candidate.get("country_code")
+        if not country_code:
+            continue
+        for literature_number in _foreign_literature_number_candidates(candidate):
+            raw = client.overseas_demand_paragraph(literature_number, country_code)
+            claims = _normalize_foreign_kipris_claims(raw)
+            if not claims:
+                continue
+            documents.append(
+                {
+                    "direction": candidate.get("direction"),
+                    "country_code": country_code,
+                    "literature_number": literature_number,
+                    "document_number": candidate.get("document_number"),
+                    "kind_code": candidate.get("kind_code"),
+                    "display_number": candidate.get("display_number"),
+                    "representative_claims": claims[:max_claims_per_document],
+                    "lookup_status": "resolved",
+                    "lookup_source": "kipris_foreign_bibliographic_claims",
+                    "source_document": candidate,
+                }
+            )
+            break
+    return documents
+
+
+def _normalize_foreign_kipris_claims(raw: dict[str, Any]) -> list[dict[str, Any]]:
+    items = _ensure_list(
+        _get_path(raw, ["response", "body", "items", "demandParagraphInfo"])
+        or _get_path(raw, ["response", "body", "demandParagraphInfo"])
+    )
+    claims = []
+    for index, item in enumerate(items, 1):
+        if isinstance(item, dict):
+            text = _clean(item.get("claimText"))
+        else:
+            text = _clean(item)
+        if not text:
+            continue
+        claims.append(
+            {
+                "claim_no": index,
+                "text": text,
+                "is_independent": index == 1,
+                "dependency": None,
+                "source": "kipris_foreign_bibliographic_claims",
+            }
+        )
+    return claims
+
+
+def _foreign_literature_number_candidates(candidate: dict[str, Any]) -> list[str]:
+    document_number = re.sub(r"\D+", "", str(candidate.get("document_number") or ""))
+    kind_code = str(candidate.get("kind_code") or "").strip().upper()
+    original_number = _clean(candidate.get("original_number"))
+    display_number = _clean(candidate.get("display_number"))
+    candidates = []
+    for value in (original_number, display_number):
+        parsed = _foreign_literature_number_from_text(value)
+        if parsed:
+            candidates.append(parsed)
+    if document_number and kind_code:
+        candidates.append(f"{document_number.zfill(12)}{kind_code}")
+        candidates.append(f"{document_number}{kind_code}")
+    if document_number:
+        candidates.append(document_number.zfill(12))
+        candidates.append(document_number)
+    return _unique_texts(candidates)
+
+
+def _foreign_literature_number_from_text(value: str | None) -> str | None:
+    if not value:
+        return None
+    match = re.search(r"\b[A-Z]{2}\s*-?\s*([0-9][0-9A-Z./-]*)\s*-?\s*([A-Z][0-9]?)?\b", value.upper())
+    if not match:
+        return None
+    document_number = re.sub(r"\D+", "", match.group(1))
+    kind_code = match.group(2) or ""
+    if not document_number:
+        return None
+    return f"{document_number.zfill(12)}{kind_code}"
+
+
+def _fetch_foreign_claims_from_bigquery(candidates: list[dict[str, Any]], **kwargs: Any) -> list[dict[str, Any]]:
+    from services.patent.bigquery_patent_service import fetch_foreign_claims_from_bigquery
+
+    return fetch_foreign_claims_from_bigquery(candidates, **kwargs)
+
+
+def _dedupe_foreign_claim_lookup_candidates(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    seen = set()
+    for item in items:
+        key = (
+            item.get("country_code"),
+            item.get("document_number"),
+            item.get("kind_code"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
 
 
 def _citation_display_number(

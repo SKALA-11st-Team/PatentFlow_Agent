@@ -20,7 +20,6 @@ AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
 
 @dataclass(frozen=True)
 class AxisRuntime:
-    build_input_payload: Callable[..., dict[str, Any]]
     build_prompt: Callable[..., str]
     run_llm_required: Callable[..., dict[str, Any]]
 
@@ -79,7 +78,7 @@ def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
         raise RuntimeError(f"Valuation axes are incomplete: {', '.join(missing_axes)}.")
 
     ordered_axes = {axis: axes[axis] for axis in VALUATION_AXES}
-    state.valuation_result = build_final_valuation_result(ordered_axes, state=state)
+    state.valuation_result = build_final_valuation_result(ordered_axes)
     state.current_stage = "valuation_check"
     return state
 
@@ -105,113 +104,10 @@ def build_axis_prompt(
     return f"{common_template}\n\n{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
 
 
-def build_axis_input_payload(
-    *,
-    state: PatentWorkflowState,
-    evidence: list[dict[str, Any]],
-    axis: str | None = None,
-) -> dict[str, Any]:
-    representative_claims = valuation_representative_claims(state)
-    full_claims = valuation_claims(state) if axis == "legal" else []
-    claim_stats = ((state.kipris_api_data or {}).get("claim_stats") or {})
-    prior_art_candidates = valuation_prior_art_candidates(state) if axis == "legal" else []
-    return {
-        "patent": {
-            "metadata": state.patent_structured or {},
-            "kipris_metadata": ((state.kipris_api_data or {}).get("metadata") or {}),
-            "claim_stats": claim_stats,
-            "representative_claims": representative_claims,
-            "claims": full_claims,
-            "prior_art_candidates": prior_art_candidates,
-            "claim_availability": {
-                "claim_stats_provided": bool(claim_stats),
-                "representative_claims_provided": bool(representative_claims),
-                "full_claims_provided": bool(full_claims),
-                "prior_art_candidates_provided": bool(prior_art_candidates),
-            },
-        },
-        "summary_result": state.summary_result,
-        "evidence": [valuation_evidence_payload(item) for item in evidence],
-    }
-
-
 AXIS_RUNTIME = AxisRuntime(
-    build_input_payload=build_axis_input_payload,
     build_prompt=build_axis_prompt,
     run_llm_required=run_axis_llm_required,
 )
-
-
-def valuation_claims(state: PatentWorkflowState) -> list[dict[str, Any]]:
-    claims = []
-    preprocessed = state.preprocessed_patent or {}
-    if isinstance(preprocessed.get("claims"), list):
-        claims = preprocessed["claims"]
-    elif isinstance((state.kipris_api_data or {}).get("claims"), list):
-        claims = (state.kipris_api_data or {})["claims"]
-
-    return [
-        {
-            "claim_no": claim.get("claim_no"),
-            "is_independent": claim.get("is_independent"),
-            "dependency": claim.get("dependency"),
-            "text": normalize_text(claim.get("text")),
-        }
-        for claim in claims
-        if claim.get("text")
-    ]
-
-
-def valuation_representative_claims(state: PatentWorkflowState, *, limit: int = 3, text_limit: int = 1500) -> list[dict[str, Any]]:
-    claims = valuation_claims(state)
-
-    selected = [claim for claim in claims if claim.get("is_independent") and claim.get("text")]
-    if not selected:
-        selected = [claim for claim in claims if claim.get("text")]
-
-    result = []
-    for claim in selected[:limit]:
-        result.append(
-            {
-                "claim_no": claim.get("claim_no"),
-                "is_independent": claim.get("is_independent"),
-                "dependency": claim.get("dependency"),
-                "text": normalize_text(claim.get("text"))[:text_limit],
-            }
-        )
-    return result
-
-
-def valuation_prior_art_candidates(state: PatentWorkflowState) -> list[str]:
-    candidates = []
-    for source in (
-        (state.preprocessed_patent or {}).get("metadata") or {},
-        (state.kipris_api_data or {}).get("metadata") or {},
-        state.patent_structured or {},
-    ):
-        values = source.get("prior_art") or source.get("citation_documents") or []
-        if isinstance(values, str):
-            values = [values]
-        candidates.extend(normalize_text(value) for value in values if normalize_text(value))
-    return unique_texts(candidates)
-
-
-def valuation_evidence_payload(item: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "evidence_id": item.get("evidence_id"),
-        "source_type": item.get("source_type"),
-        "source": item.get("source"),
-        "title": item.get("title"),
-        "url": item.get("url"),
-        "published_at": item.get("published_at"),
-        "collected_at": item.get("collected_at"),
-        "related_axes": item.get("related_axes") or item.get("related_axis") or [],
-        "compressed_summary": item.get("compressed_summary"),
-        "key_facts": item.get("key_facts") or [],
-        "sibling_patents": item.get("sibling_patents") or [],
-        "group_size": item.get("group_size"),
-        "metadata": item.get("metadata") or {},
-    }
 
 
 def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: list[dict[str, Any]]) -> dict[str, Any]:
@@ -226,7 +122,7 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
     if missing_fields:
         raise RuntimeError(f"LLM valuation response for {axis} is missing: {', '.join(missing_fields)}.")
     score = max(0, min(100, int(parsed["score"])))
-    return {
+    result = {
         "axis": axis,
         "label": AXIS_LABELS[axis],
         "score": score,
@@ -237,21 +133,46 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         "missing_information": normalize_list(parsed.get("missing_information")),
         "confidence": max(0.0, min(1.0, float(parsed["confidence"]))),
     }
+    for optional_field in (
+        "industry_marketability_score",
+        "technical_differentiation_score",
+        "implementation_specificity_score",
+        "sub_scores",
+        "marketability_metrics",
+        "technology_metrics",
+        "technical_differentiation_breakdown",
+        "implementation_specificity_breakdown",
+    ):
+        if optional_field in parsed:
+            result[optional_field] = parsed[optional_field]
+    subscores = normalize_subscores(parsed.get("subscores"))
+    if subscores:
+        result["subscores"] = subscores
+    return result
 
 
-def select_axis_evidence(axis: str, state: PatentWorkflowState) -> list[dict[str, Any]]:
-    module = AXIS_MODULES.get(axis)
-    if not module:
-        return []
-    return module.select_evidence(state.evidence_bundle or [], state)
+def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for key, item in value.items():
+        if not isinstance(item, dict):
+            continue
+        try:
+            score = int(item.get("score"))
+            max_score = int(item.get("max_score"))
+        except (TypeError, ValueError):
+            continue
+        normalized[str(key)] = {
+            "label": normalize_text(item.get("label")),
+            "score": max(0, min(max_score, score)),
+            "max_score": max_score,
+            "rationale": normalize_text(item.get("rationale")),
+        }
+    return normalized
 
 
-def build_final_valuation_result(
-    axes: dict[str, dict[str, Any]],
-    *,
-    state: PatentWorkflowState | None = None,
-) -> dict[str, Any]:
-    del state
+def build_final_valuation_result(axes: dict[str, dict[str, Any]]) -> dict[str, Any]:
     total_score = sum(int(axis.get("score") or 0) for axis in axes.values())
     average_score = round(total_score / len(axes), 1) if axes else 0
     final_indicator = total_score_to_indicator(total_score)

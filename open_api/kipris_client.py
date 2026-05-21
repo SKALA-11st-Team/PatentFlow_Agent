@@ -25,10 +25,12 @@ import requests
 
 DEFAULT_BASE_URL = "http://plus.kipris.or.kr"
 PAT_UTI_SERVICE_PATH = "/kipo-api/kipi/patUtiModInfoSearchSevice"
+PAT_UTI_REST_SERVICE_PATH = "/openapi/rest/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
-OVERSEAS_PATENT_SERVICE_PATH = "/kipo-api/kipi/overseasPatentSearchSevice"
+OVERSEAS_PATENT_SERVICE_PATH = "/openapi/rest/ForeignPatentBibliographicService"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
 CITATION_SERVICE_PATH = "/openapi/rest/CitationService"
+CITING_SERVICE_PATH = "/openapi/rest/CitingService"
 
 
 class KiprisError(RuntimeError):
@@ -203,6 +205,18 @@ class KiprisClient:
             auth_param="accessKey",
         )
 
+    def citing_info(self, standard_citation_application_number: str) -> dict[str, Any]:
+        """피인용문헌 - citingInfo.
+
+        CitingService는 대상 특허를 선행기술로 인용한 후행 출원번호를 반환합니다.
+        """
+        return self.request(
+            "citingInfo",
+            {"standardCitationApplicationNumber": standard_citation_application_number},
+            service_path=CITING_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
     def family_patents(self, application_number: str) -> list[KiprisFamilyPatent]:
         """패밀리정보에서 국가코드와 등록번호만 정규화합니다."""
         raw = self.family_info(application_number)
@@ -240,7 +254,12 @@ class KiprisClient:
     def search_by_cpc(self, cpc_number: str, **params: Any) -> dict[str, Any]:
         """CPC 검색 - cpcSearchInfo"""
         params.update({"cpcNumber": cpc_number})
-        return self.request("cpcSearchInfo", params)
+        return self.request(
+            "cpcSearchInfo",
+            params,
+            service_path=PAT_UTI_REST_SERVICE_PATH,
+            auth_param="accessKey",
+        )
 
     def search_by_applicant(self, applicant: str, **params: Any) -> dict[str, Any]:
         """출원인정보 검색 - applicantNameSearchInfo"""
@@ -309,6 +328,7 @@ class KiprisClient:
                 "countryCode": country_code,
             },
             service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
         )
 
     def overseas_us_patent_documents(
@@ -324,6 +344,7 @@ class KiprisClient:
                 "countryCode": country_code,
             },
             service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
         )
 
     def overseas_foreign_patent_documents(
@@ -339,6 +360,7 @@ class KiprisClient:
                 "countryCode": country_code,
             },
             service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
         )
 
     def download_publication_fulltext_pdf(

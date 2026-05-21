@@ -1,7 +1,11 @@
 import json
 import sqlite3
 
-from services.patent.portfolio_service import analyze_portfolio_siblings, find_sibling_patents
+from services.patent.portfolio_service import (
+    analyze_portfolio_siblings,
+    find_sibling_patents,
+    management_family_key,
+)
 
 
 def create_patent_db(path):
@@ -129,7 +133,16 @@ def test_find_sibling_patents_excludes_target_and_misc_products(tmp_path):
     assert misc_siblings == []
 
 
-def test_find_sibling_patents_includes_same_management_batch(tmp_path):
+def test_management_family_key_uses_full_rights_number_base():
+    assert management_family_key("P202405001-KR0") == "P202405001"
+    assert management_family_key("P202405001-KR1") == "P202405001"
+    assert management_family_key("P202405001-US0") == "P202405001"
+    assert management_family_key("P202405001-CN0") == "P202405001"
+    assert management_family_key("P202405001") == "P202405001"
+    assert management_family_key("P201210") is None
+
+
+def test_find_sibling_patents_excludes_same_management_batch_only(tmp_path):
     db_path = tmp_path / "patents.sqlite3"
     create_patent_db(db_path)
     with sqlite3.connect(db_path) as conn:
@@ -262,12 +275,126 @@ def test_find_sibling_patents_includes_same_management_batch(tmp_path):
         database_path=db_path,
     )
 
-    assert [sibling["id"] for sibling in siblings] == [108, 107, 109, 110]
-    assert siblings[0]["sibling_match_reasons"] == [
-        "same_related_product",
-        "same_management_batch",
-    ]
-    assert siblings[-1]["sibling_match_reasons"] == ["same_management_batch"]
+    assert [sibling["id"] for sibling in siblings] == [108, 107]
+    assert siblings[0]["sibling_match_reasons"] == ["same_related_product"]
+    assert siblings[1]["sibling_match_reasons"] == ["same_product_family"]
+
+
+def test_find_sibling_patents_includes_same_management_family(tmp_path):
+    db_path = tmp_path / "patents.sqlite3"
+    create_patent_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO patents (
+                id, management_number, application_number, registration_number, title_final,
+                business_area, technology_area, related_product, country, joint_application,
+                joint_applicant_name, status, application_date, registration_date,
+                expected_expiration_date, source_file_id, title_draft, evaluation_status,
+                data_source_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    201,
+                    "P202405001-KR0",
+                    "10-2024-0000101",
+                    "10-4000101",
+                    "원천 한국 특허",
+                    "AI",
+                    "제어",
+                    "기타",
+                    "KR",
+                    "N",
+                    None,
+                    "등록",
+                    "2024-01-01",
+                    "2025-01-01",
+                    None,
+                    1,
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    202,
+                    "P202405001-KR1",
+                    "10-2024-0000102",
+                    "10-4000102",
+                    "분할 한국 특허",
+                    "AI",
+                    "제어",
+                    "다른제품",
+                    "KR",
+                    "N",
+                    None,
+                    "등록",
+                    "2024-02-01",
+                    "2025-02-01",
+                    None,
+                    1,
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    203,
+                    "P202405001-US0",
+                    "US-2024-0000103",
+                    "US-4000103",
+                    "해외 패밀리 특허",
+                    "AI",
+                    "제어",
+                    "기타",
+                    "US",
+                    "N",
+                    None,
+                    "등록",
+                    "2024-03-01",
+                    "2025-03-01",
+                    None,
+                    1,
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    204,
+                    "P202405002-KR0",
+                    "10-2024-0000104",
+                    "10-4000104",
+                    "다른 권리 특허",
+                    "AI",
+                    "제어",
+                    "다른제품",
+                    "KR",
+                    "N",
+                    None,
+                    "등록",
+                    "2024-04-01",
+                    "2025-04-01",
+                    None,
+                    1,
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+
+    siblings = find_sibling_patents(
+        {
+            "id": 201,
+            "management_number": "P202405001-KR0",
+            "related_product": "기타",
+            "application_date": "2024-01-01",
+        },
+        database_path=db_path,
+    )
+
+    assert [sibling["id"] for sibling in siblings] == [202, 203]
+    assert siblings[0]["sibling_match_reasons"] == ["same_management_family"]
+    assert siblings[1]["sibling_match_reasons"] == ["same_management_family"]
 
 
 def test_analyze_portfolio_siblings_builds_portfolio_context(tmp_path):

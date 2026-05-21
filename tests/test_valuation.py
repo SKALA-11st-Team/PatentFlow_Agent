@@ -2,20 +2,12 @@ import json
 
 import pytest
 
-from agents.valuation import run_valuation_agent, select_axis_evidence
-from agents.valuation_axes.business_fit import append_skax_official_evidence_to_state, build_patent_context_from_state
+from agents.valuation import run_axis_valuation_agent, run_valuation_agent
+from agents.valuation_axes.business_fit import select_evidence as select_business_fit_evidence
 from agents.writing.final_report import run_final_report_agent
 from app.main import build_parser, build_user_input, save_outputs
 from workflow.supervisor import check_valuation_result
 from workflow.state import PatentWorkflowState
-
-
-@pytest.fixture(autouse=True)
-def disable_skax_site_search(monkeypatch):
-    monkeypatch.setattr(
-        "agents.valuation_axes.business_fit.collect_skax_site_evidence",
-        lambda patent_context: {"items": [], "stats": {}},
-    )
 
 
 def test_valuation_axes_are_split_into_axis_modules():
@@ -79,9 +71,86 @@ def test_run_valuation_agent_sets_result():
     assert "strategy" not in axes
     assert axes["business_fit"]["label"] == "사업 연계성"
     assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
-    assert result.valuation_result["average_score"] == 70
-    assert "평균 점수는 70/100점" in result.valuation_result["decision_rationale"][0]
+    assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 4, 1)
+    assert "평균 점수는" in result.valuation_result["decision_rationale"][0]
+    assert axes["market"]["sub_scores"]["market_growth_score"] is None
     assert "final_report_markdown" not in result.valuation_result
+
+
+def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
+    captured_prompts = []
+
+    def fake_call_llm(prompt):
+        captured_prompts.append(prompt)
+        return json.dumps(
+            {
+                "score": 70,
+                "subscores": {
+                    "right_stability": {
+                        "label": "권리안정성",
+                        "score": 20,
+                        "max_score": 30,
+                        "rationale": "등록상태는 유효하나 유사 인용문헌이 일부 존재한다.",
+                    },
+                    "claim_protection": {
+                        "label": "청구항 보호력",
+                        "score": 20,
+                        "max_score": 30,
+                        "rationale": "핵심 기능은 보호하지만 일부 구현 한정이 있다.",
+                    },
+                    "enforceability_product_fit": {
+                        "label": "권리행사·제품대응성",
+                        "score": 15,
+                        "max_score": 25,
+                        "rationale": "제품 적용 가능성은 있으나 직접 대응 근거가 제한적이다.",
+                    },
+                    "portfolio_defensive_value": {
+                        "label": "포트폴리오·방어가치",
+                        "score": 15,
+                        "max_score": 15,
+                        "rationale": "동일 관리번호 패밀리와 보완 관계가 있다.",
+                    },
+                },
+                "grade": "B",
+                "rationale": "권리성 단독 평가",
+                "evidence_ids": ["portfolio_001"],
+                "risk_factors": ["유사 인용문헌 비교 필요"],
+                "missing_information": [],
+                "confidence": 0.7,
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        patent_structured={"status": "등록", "related_product": "ESS"},
+        kipris_api_data={"claim_stats": {"total_claim_count": 3}},
+        citation_evidence={
+            "kr_citation_documents": [
+                {
+                    "application_number": "1020200012345",
+                    "representative_claims": [{"claim_no": 1, "text": "선행 청구항"}],
+                }
+            ]
+        },
+        evidence_bundle=[
+            {
+                "evidence_id": "portfolio_001",
+                "source_type": "portfolio_context",
+                "compressed_summary": "동일 관리번호 패밀리 특허가 있다.",
+            }
+        ],
+    )
+
+    result = run_axis_valuation_agent("legal", state)
+
+    axes = result.valuation_result["axes"]
+    assert list(axes) == ["legal"]
+    assert axes["legal"]["subscores"]["right_stability"]["score"] == 20
+    assert axes["legal"]["evidence_ids"] == ["portfolio_001"]
+    assert "Valuation Legal Axis Prompt" in captured_prompts[0]
+    assert "citation_evidence" in captured_prompts[0]
 
 
 def test_business_fit_selects_news_with_company_or_product_context():
@@ -110,7 +179,7 @@ def test_business_fit_selects_news_with_company_or_product_context():
         ],
     )
 
-    selected = select_axis_evidence("business_fit", state)
+    selected = select_business_fit_evidence(state.evidence_bundle, state)
 
     assert selected[0]["evidence_id"] == "news_001"
 
@@ -150,7 +219,7 @@ def test_business_fit_prioritizes_sk_ax_official_evidence():
         ],
     )
 
-    selected = select_axis_evidence("business_fit", state)
+    selected = select_business_fit_evidence(state.evidence_bundle, state)
 
     assert [item["evidence_id"] for item in selected[:3]] == ["skax_high", "skax_low", "news_001"]
 
@@ -175,7 +244,7 @@ def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
         ],
     )
 
-    selected = select_axis_evidence("business_fit", state)
+    selected = select_business_fit_evidence(state.evidence_bundle, state)
 
     assert selected[0]["evidence_id"] == "skax_meta"
 
@@ -209,152 +278,168 @@ def test_business_fit_fallback_without_official_evidence_matches_existing_order(
         ],
     )
 
-    selected = select_axis_evidence("business_fit", state)
+    selected = select_business_fit_evidence(state.evidence_bundle, state)
 
     assert [item["evidence_id"] for item in selected] == ["news_direct", "portfolio_001", "news_secondary"]
 
 
-def test_business_fit_builds_patent_context_from_state():
-    state = PatentWorkflowState(
-        user_input={"management_number": "USER-MGMT"},
-        patent_structured={
-            "management_number": "P202405001-KR0",
-            "title_final": "상품 트렌드 예측 자산배분 특허",
-            "business_area": "Data",
-            "technology_area": "데이터분석",
-            "related_product": "로보어드바이저",
+def test_market_score_helpers_apply_40_40_20_structure():
+    from datetime import datetime
+
+    from agents.valuation_axes.market import apply_marketability_scores, recent_three_years, score_cagr, score_recent_trend
+
+    assert recent_three_years(datetime(2026, 5, 19)) == [2023, 2024, 2025]
+    assert score_cagr(0.16) == 25
+    assert score_cagr(0.1) == 20
+    assert score_cagr(0.05) == 15
+    assert score_cagr(0.01) == 10
+    assert score_cagr(-0.01) == 0
+    assert score_recent_trend([10, 12, 15]) == ("continuous_increase", 15)
+    assert score_recent_trend([10, 8, 12]) == ("partial_increase", 8)
+    assert score_recent_trend([15, 12, 10]) == ("continuous_decrease", 0)
+
+    result = apply_marketability_scores(
+        {
+            "score": 70,
+            "industry_marketability_score": 40,
+            "grade": "B",
+            "missing_information": [],
+            "confidence": 0.8,
         },
-        kipris_api_data={"metadata": {"title": "KIPRIS 제목"}},
-        preprocessed_patent={"metadata": {"title": "전처리 제목"}},
-        summary_result={"title": "요약 제목"},
+        {
+            "market_growth_score": 35,
+            "global_business_score": 20,
+        },
     )
 
-    context = build_patent_context_from_state(state)
-
-    assert context == {
-        "management_number": "P202405001-KR0",
-        "title_final": "상품 트렌드 예측 자산배분 특허",
-        "title_draft": "",
-        "business_area": "Data",
-        "technology_area": "데이터분석",
-        "related_product": "로보어드바이저",
+    assert result["score"] == 95
+    assert result["grade"] == "A"
+    assert result["sub_scores"] == {
+        "industry_marketability_score": 40,
+        "market_growth_score": 35,
+        "global_business_score": 20,
     }
 
 
-def test_business_fit_builds_patent_context_from_korean_patent_fields():
-    state = PatentWorkflowState(
-        patent_structured={
-            "관리번호": "P202405001-KR0",
-            "발명의 명칭(가제)": "상품 트렌드 예측을 반영한 강화학습 모델",
-            "발명의 명칭(최종)": "강화학습 모델을 적용한 자산배분 시스템 및 방법",
-            "관련사업 분야": "Data",
-            "관련기술 분야": "데이터분석",
-            "관련제품": "로보어드바이저",
+def test_market_growth_missing_is_not_replaced_with_default_score():
+    from agents.valuation_axes.market import MARKET_GROWTH_MISSING_MESSAGE, apply_marketability_scores
+
+    result = apply_marketability_scores(
+        {
+            "score": 70,
+            "industry_marketability_score": 40,
+            "grade": "B",
+            "missing_information": [],
+            "confidence": 0.8,
         },
-        evidence_bundle=[],
+        {
+            "market_growth_score": None,
+            "global_business_score": 20,
+        },
     )
 
-    context = build_patent_context_from_state(state)
-
-    assert context == {
-        "management_number": "P202405001-KR0",
-        "title_final": "강화학습 모델을 적용한 자산배분 시스템 및 방법",
-        "title_draft": "상품 트렌드 예측을 반영한 강화학습 모델",
-        "business_area": "Data",
-        "technology_area": "데이터분석",
-        "related_product": "로보어드바이저",
-    }
+    assert result["score"] == 60
+    assert result["sub_scores"]["market_growth_score"] is None
+    assert MARKET_GROWTH_MISSING_MESSAGE in result["missing_information"]
+    assert result["confidence"] == 0.49
 
 
-def test_business_fit_builds_patent_context_from_spaced_korean_patent_fields():
-    state = PatentWorkflowState(
-        patent_structured={
-            "관리번호": "P202405001-KR0",
-            "발명의 명칭(최종)": "상품 트렌드 예측을 반영한 강화학습 모델을 적용한 자산배분 시스템 및 방법",
-            "관련 사업 분야": "Data",
-            "관련 기술 분야": "데이터분석",
-            "관련제품": "로보어드바이저",
-        },
-        evidence_bundle=[],
-    )
+def test_technology_metrics_are_added_to_payload(monkeypatch):
+    captured_payloads = []
 
-    context = build_patent_context_from_state(state)
+    def fake_build_prompt(**kwargs):
+        captured_payloads.append(kwargs["payload"])
+        return "prompt"
 
-    assert context["business_area"] == "Data"
-    assert context["technology_area"] == "데이터분석"
-    assert context["related_product"] == "로보어드바이저"
-
-
-def test_business_fit_appends_skax_official_evidence_to_state(monkeypatch):
-    def fake_collect(patent_context):
-        assert patent_context["related_product"] == "로보어드바이저"
+    def fake_run_llm_required(**kwargs):
         return {
-            "items": [
-                {
-                    "evidence_id": "skax_001",
-                    "source": "sk_ax_official",
-                    "source_type": "company_disclosure",
-                    "title": "SK AX 로보어드바이저",
-                    "url": "https://www.skax.co.kr/financial/robo-advisor",
-                    "content": "로보어드바이저 사업 근거",
-                    "related_axes": ["business_fit"],
-                    "relevance_score": 0.9,
-                }
-            ],
-            "stats": {"collected_evidence_count": 1},
+            "axis": "technology",
+            "label": "기술성",
+            "score": 70,
+            "grade": "B",
+            "rationale": "r",
+            "evidence_ids": [],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.7,
         }
 
-    monkeypatch.setattr("agents.valuation_axes.business_fit.collect_skax_site_evidence", fake_collect)
-    state = PatentWorkflowState(
-        patent_structured={
-            "title_final": "강화학습 자산배분 특허",
-            "related_product": "로보어드바이저",
-        },
-        evidence_bundle=[
-            {
-                "evidence_id": "news_001",
-                "source": "naver_news",
-                "source_type": "news",
-                "title": "로보어드바이저 시장 확대",
-            }
-        ],
-    )
-
-    result = append_skax_official_evidence_to_state(state)
-    selected = select_axis_evidence("business_fit", result)
-
-    assert [item["evidence_id"] for item in result.evidence_bundle] == ["news_001", "skax_001"]
-    assert selected[0]["evidence_id"] == "skax_001"
-
-
-def test_business_fit_keeps_evidence_bundle_when_skax_result_is_empty(monkeypatch):
     monkeypatch.setattr(
-        "agents.valuation_axes.business_fit.collect_skax_site_evidence",
-        lambda patent_context: {"items": [], "stats": {"collected_evidence_count": 0}},
+        "agents.valuation_axes.technology.build_similar_patent_context",
+        lambda **kwargs: {
+            "representative_cpc": "G05B 19/4065",
+            "candidate_count": 3,
+            "similar_patents": [{"application_number": "1020200000001"}],
+            "warnings": [],
+        },
     )
+
+    from agents.valuation import AxisRuntime
+    from agents.valuation_axes import technology
+
     state = PatentWorkflowState(
-        patent_structured={"title_final": "문서변환 특허", "related_product": "문서변환 SW"},
-        evidence_bundle=[{"evidence_id": "news_001", "source_type": "news"}],
+        preprocessed_patent={"metadata": {"cpc": ["G05B 19/4065"], "filing_date": "2024-01-01"}},
+    )
+    technology.run(
+        state,
+        AxisRuntime(
+            build_prompt=fake_build_prompt,
+            run_llm_required=fake_run_llm_required,
+        ),
     )
 
-    result = append_skax_official_evidence_to_state(state)
+    assert captured_payloads[0]["technology_metrics"]["representative_cpc"] == "G05B 19/4065"
+    assert captured_payloads[0]["technology_metrics"]["similar_patents"][0]["application_number"] == "1020200000001"
+    assert captured_payloads[1]["technology_metrics"]["comparison_mode"] == "implementation-only"
 
-    assert result.evidence_bundle == [{"evidence_id": "news_001", "source_type": "news"}]
 
+def test_technology_breakdown_scores_are_binary():
+    from agents.valuation_axes.technology import apply_technology_scores
 
-def test_business_fit_keeps_evidence_bundle_when_skax_service_fails(monkeypatch):
-    def failing_collect(patent_context):
-        raise RuntimeError("search failed")
-
-    monkeypatch.setattr("agents.valuation_axes.business_fit.collect_skax_site_evidence", failing_collect)
-    state = PatentWorkflowState(
-        patent_structured={"title_final": "문서변환 특허", "related_product": "문서변환 SW"},
-        evidence_bundle=[{"evidence_id": "news_001", "source_type": "news"}],
+    result = apply_technology_scores(
+        {
+            "score": 80,
+            "grade": "A",
+            "rationale": "r",
+            "evidence_ids": [],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.8,
+            "technical_differentiation_breakdown": {
+                "new_component_score": 15,
+                "combination_difference_score": 13,
+                "processing_structure_difference_score": 12,
+                "solution_approach_difference_score": 8,
+                "evidence_clarity_score": 4,
+            },
+            "implementation_specificity_breakdown": {
+                "input_data_score": 4,
+                "processing_target_score": 2,
+                "core_variable_score": 3,
+                "output_structure_score": 3,
+                "component_linkage_score": 1,
+                "procedure_score": 6,
+                "logic_score": 5,
+                "condition_parameter_score": 5,
+                "calculation_decision_score": 4,
+                "exception_iteration_update_score": 3,
+            },
+        },
+        {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
     )
 
-    result = append_skax_official_evidence_to_state(state)
-
-    assert result.evidence_bundle == [{"evidence_id": "news_001", "source_type": "news"}]
+    assert result["technical_differentiation_breakdown"] == {
+        "new_component_score": 15,
+        "combination_difference_score": 8,
+        "processing_structure_difference_score": 8,
+        "solution_approach_difference_score": 5,
+        "evidence_clarity_score": 2,
+    }
+    assert result["implementation_specificity_breakdown"]["processing_target_score"] == 0
+    assert result["implementation_specificity_breakdown"]["logic_score"] == 0
+    assert result["sub_scores"]["technical_differentiation_score"] == 38
+    assert result["sub_scores"]["implementation_specificity_score"] == 24
+    assert result["score"] == 62
 
 
 def test_valuation_fails_when_llm_valuation_is_disabled():
@@ -448,7 +533,7 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     run_final_report_agent(state)
 
     axis_prompts = [prompt for prompt in captured_prompts if "Return ONLY one JSON object" in prompt]
-    assert len(axis_prompts) == 4
+    assert len(axis_prompts) == 5
     assert all(prompt.index("# Common Valuation Axis Rules") < prompt.index("# Valuation") for prompt in axis_prompts)
 
 
@@ -498,7 +583,8 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
 
     input_dir = tmp_path / "valuation_inputs"
     assert (input_dir / "legal_input.json").exists()
-    assert (input_dir / "technology_input.json").exists()
+    assert (input_dir / "technology_differentiation_input.json").exists()
+    assert (input_dir / "technology_implementation_input.json").exists()
     assert (input_dir / "market_input.json").exists()
     assert not (input_dir / "economic_input.json").exists()
     assert (input_dir / "business_fit_input.json").exists()
@@ -533,9 +619,9 @@ def test_axis_input_includes_representative_claims(tmp_path):
         },
     )
 
-    from agents.valuation import build_axis_input_payload
+    from agents.valuation_axes.payload_common import build_base_input_payload
 
-    payload = build_axis_input_payload(state=state, evidence=[])
+    payload = build_base_input_payload(state=state, evidence=[])
 
     assert payload["patent"]["claim_availability"]["representative_claims_provided"] is True
     assert payload["patent"]["representative_claims"][0]["claim_no"] == 1
@@ -558,10 +644,11 @@ def test_legal_axis_input_includes_full_claims(tmp_path):
         },
     )
 
-    from agents.valuation import build_axis_input_payload
+    from agents.valuation_axes.legal import build_input_payload as build_legal_input_payload
+    from agents.valuation_axes.market import build_input_payload as build_market_input_payload
 
-    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
-    market_payload = build_axis_input_payload(axis="market", state=state, evidence=[])
+    legal_payload = build_legal_input_payload(state=state, evidence=[])
+    market_payload = build_market_input_payload(state=state, evidence=[])
 
     assert [claim["claim_no"] for claim in legal_payload["patent"]["claims"]] == [1, 2]
     assert legal_payload["patent"]["claims"][1]["text"] == "종속항 전체 내용"
@@ -580,13 +667,129 @@ def test_legal_axis_input_includes_prior_art_candidates(tmp_path):
         },
     )
 
-    from agents.valuation import build_axis_input_payload
+    from agents.valuation_axes.legal import build_input_payload as build_legal_input_payload
+    from agents.valuation_axes.market import build_input_payload as build_market_input_payload
 
-    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
-    market_payload = build_axis_input_payload(axis="market", state=state, evidence=[])
+    legal_payload = build_legal_input_payload(state=state, evidence=[])
+    market_payload = build_market_input_payload(state=state, evidence=[])
 
     assert legal_payload["patent"]["prior_art_candidates"] == ["KR10-1111111", "US2024-0000001A"]
     assert market_payload["patent"]["prior_art_candidates"] == []
+
+
+def test_legal_axis_input_includes_citation_evidence(tmp_path):
+    citation_evidence = {
+        "kr_citation_documents": [
+            {
+                "direction": "cited_by_target",
+                "country_code": "KR",
+                "application_number": "1020200012345",
+                "title": "선행 KR 특허",
+                "abstract": "선행 KR 초록",
+                "representative_claims": [
+                    {"claim_no": index, "text": f"선행 독립항 {index}", "is_independent": True, "dependency": None}
+                    for index in range(1, 8)
+                ],
+                "lookup_status": "resolved",
+                "lookup_source": "kipris_bibliography_detail",
+            }
+        ],
+        "kr_citing_documents": [
+            {
+                "direction": "citing_target",
+                "country_code": "KR",
+                "application_number": "1020117007865",
+                "title": "후행 KR 특허",
+                "abstract": "후행 KR 초록",
+                "representative_claims": [{"claim_no": 1, "text": "후행 독립항", "is_independent": True, "dependency": None}],
+                "lookup_status": "resolved",
+                "lookup_source": "kipris_bibliography_detail",
+            }
+        ],
+        "foreign_claim_lookup_candidates": [
+            {
+                "direction": "cited_by_target",
+                "country_code": "JP",
+                "document_number": "29047511",
+                "kind_code": "A",
+                "original_number": "JP2017047511 A",
+                "display_number": "JP29047511 A",
+                "lookup_source": "kipris_foreign_demand_paragraph",
+            }
+        ],
+        "foreign_citation_documents": [
+            {
+                "direction": "cited_by_target",
+                "country_code": "JP",
+                "publication_number": "JP-2017047511-A",
+                "title": "해외 선행 특허",
+                "abstract": "해외 선행 초록",
+                "representative_claims": [
+                    {"claim_no": index, "text": f"foreign claim {index}", "is_independent": None, "dependency": None}
+                    for index in range(1, 7)
+                ],
+                "lookup_status": "resolved",
+                "lookup_source": "kipris_foreign_demand_paragraph",
+            }
+        ],
+    }
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        citation_evidence=citation_evidence,
+    )
+
+    from agents.valuation_axes.legal import build_input_payload as build_legal_input_payload
+    from agents.valuation_axes.technology import build_input_payload as build_technology_input_payload
+
+    legal_payload = build_legal_input_payload(state=state, evidence=[])
+    technology_payload = build_technology_input_payload(state=state, evidence=[])
+
+    citation_evidence = legal_payload["patent"]["citation_evidence"]
+    assert citation_evidence["kr_citation_documents"][0]["application_number"] == "1020200012345"
+    assert [claim["text"] for claim in citation_evidence["kr_citation_documents"][0]["representative_claims"]] == [
+        "선행 독립항 1",
+        "선행 독립항 2",
+        "선행 독립항 3",
+        "선행 독립항 4",
+        "선행 독립항 5",
+        "선행 독립항 6",
+    ]
+    assert citation_evidence["kr_citing_documents"][0]["representative_claims"][0]["text"] == "후행 독립항"
+    assert citation_evidence["foreign_citation_documents"][0]["publication_number"] == "JP-2017047511-A"
+    assert [claim["text"] for claim in citation_evidence["foreign_citation_documents"][0]["representative_claims"]] == [
+        "foreign claim 1",
+        "foreign claim 2",
+        "foreign claim 3",
+        "foreign claim 4",
+        "foreign claim 5",
+    ]
+    assert citation_evidence["foreign_claim_lookup_candidates"][0]["lookup_source"] == "kipris_foreign_demand_paragraph"
+    assert legal_payload["patent"]["claim_availability"]["citation_evidence_provided"] is True
+    assert technology_payload["patent"]["citation_evidence"] == {}
+
+
+def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        kipris_api_data={
+            "citation_evidence": {
+                "kr_citation_documents": [
+                    {
+                        "direction": "cited_by_target",
+                        "country_code": "KR",
+                        "application_number": "1020200012345",
+                        "representative_claims": [{"claim_no": 1, "text": "선행 독립항"}],
+                    }
+                ],
+            }
+        },
+    )
+
+    from agents.valuation_axes.legal import build_input_payload
+
+    legal_payload = build_input_payload(state=state, evidence=[])
+
+    assert legal_payload["patent"]["citation_evidence"]["kr_citation_documents"][0]["application_number"] == "1020200012345"
 
 
 def test_valuation_llm_inputs_respect_no_save(monkeypatch, tmp_path):

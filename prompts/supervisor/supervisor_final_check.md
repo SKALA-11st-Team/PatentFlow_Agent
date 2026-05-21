@@ -15,19 +15,20 @@
 
 1. summary_result가 존재하고 특허 핵심 내용을 설명하는가?
 2. valuation_result가 존재하고 4개 평가축 결과를 포함하는가?
-3. validation_result가 통과 상태인가?
+3. 요약문 검증과 가치평가 리포트 검증이 각각 통과 상태인가?
 4. final_report에 들어갈 핵심 근거가 evidence_id로 추적 가능한가?
 5. 유지/보류/폐기 검토 추천이 요약 및 평가 내용과 충돌하지 않는가?
 
 ## 판정 원칙
 - 입력은 최종 병합 전 상태 점검표입니다. 보고서 본문 전체가 아니라 heading/길이/preview만 보고 판단하세요.
-- summary_markdown과 final_report_markdown이 존재하고 validation.passed=true면 기본적으로 final_merge가 가능합니다.
+- summary_markdown과 final_report_markdown이 존재하고 summary/report validation이 모두 passed=true면 기본적으로 final_merge가 가능합니다.
+- 요약문만 문제가 있으면 `summary`, 가치평가 리포트만 문제가 있으면 `final_report`, 둘 다 문제가 있으면 `writing_team`을 선택하세요.
 - 문장 품질, 목차 보완, 표현 개선은 issues에 기록하되 치명적인 누락이 아니면 통과시키세요.
 
 ## 출력 형식
 {
   "passed": true | false,
-  "next_action": "final_merge" | "supervisor",
+  "next_action": "final_merge" | "summary" | "final_report" | "writing_team",
   "issues": [],
   "reason": ""
 }

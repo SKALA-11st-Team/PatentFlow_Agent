@@ -2,6 +2,10 @@ from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
     fetch_kipris_bibliography,
     normalize_kipris_citations,
+    normalize_kipris_citing_documents,
+    resolve_citation_evidence,
+    _fetch_foreign_claims_from_kipris,
+    _foreign_literature_number_candidates,
     _select_fulltext_pdf,
     fulltext_application_number_candidates,
 )
@@ -56,6 +60,33 @@ def test_citation_info_v3_uses_access_key_auth_param():
     assert call["params"]["accessKey"] == "test-key"
     assert "ServiceKey" not in call["params"]
     assert call["params"]["applicationNumber"] == "1020220150081"
+
+
+def test_citing_info_uses_access_key_auth_param():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.citing_info("1020060089973")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/CitingService/citingInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["standardCitationApplicationNumber"] == "1020060089973"
+
+
+def test_overseas_demand_paragraph_uses_foreign_bibliographic_access_key():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.overseas_demand_paragraph("000004002589B2", "JP")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/ForeignPatentBibliographicService/demandParagraphInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["literatureNumber"] == "000004002589B2"
+    assert call["params"]["countryCode"] == "JP"
 
 
 def test_fulltext_application_number_candidates_include_normalized_and_original():
@@ -165,6 +196,44 @@ def test_normalize_kipris_citations_prefers_standardized_duplicate():
     assert result[1]["is_standardized"] is False
 
 
+def test_normalize_kipris_citing_documents_merges_duplicate_application_numbers():
+    raw = {
+        "response": {
+            "body": {
+                "items": {
+                    "citingInfo": [
+                        {
+                            "StandardCitationApplicationNumber": "1020060089973",
+                            "ApplicationNumber": "1020117007865",
+                            "StandardStatusCode": "20001",
+                            "StandardStatusCodeName": "표준화",
+                            "CitationLiteratureTypeCode": "E0801",
+                            "CitationLiteratureTypeCodeName": "발송문서",
+                        },
+                        {
+                            "StandardCitationApplicationNumber": "1020060089973",
+                            "ApplicationNumber": "1020117007865",
+                            "StandardStatusCode": "20001",
+                            "StandardStatusCodeName": "표준화",
+                            "CitationLiteratureTypeCode": "E0805",
+                            "CitationLiteratureTypeCodeName": "선행기술조사문헌",
+                        },
+                    ]
+                }
+            }
+        }
+    }
+
+    result = normalize_kipris_citing_documents(raw)
+
+    assert len(result) == 1
+    assert result[0]["standard_citation_application_number"] == "1020060089973"
+    assert result[0]["citing_application_number"] == "1020117007865"
+    assert result[0]["is_standardized"] is True
+    assert result[0]["citation_type_codes"] == ["E0801", "E0805"]
+    assert result[0]["citation_type_names"] == ["발송문서", "선행기술조사문헌"]
+
+
 def test_fetch_kipris_bibliography_adds_citation_documents(monkeypatch):
     class Client:
         def bibliography_detail(self, application_number):
@@ -210,10 +279,416 @@ def test_fetch_kipris_bibliography_adds_citation_documents(monkeypatch):
                 }
             }
 
+        def citing_info(self, standard_citation_application_number):
+            return {
+                "response": {
+                    "body": {
+                        "items": {
+                            "citingInfo": {
+                                "StandardCitationApplicationNumber": standard_citation_application_number,
+                                "ApplicationNumber": "1020117007865",
+                                "StandardStatusCode": "20001",
+                                "StandardStatusCodeName": "표준화",
+                                "CitationLiteratureTypeCode": "E0805",
+                                "CitationLiteratureTypeCodeName": "선행기술조사문헌",
+                            }
+                        }
+                    }
+                }
+            }
+
     monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: Client())
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_bigquery",
+        lambda candidates, **kwargs: [],
+    )
 
     result = fetch_kipris_bibliography("10-2022-0150081")
 
     assert result["citation_documents"][0]["display_number"] == "JP29047511 A"
     assert result["metadata"]["prior_art"] == ["JP29047511 A"]
     assert result["citation_stats"]["standardized_count"] == 1
+    assert result["citing_documents"][0]["citing_application_number"] == "1020117007865"
+    assert result["citing_stats"]["standardized_count"] == 1
+
+
+def test_resolve_citation_evidence_enriches_kr_citation_and_citing_documents():
+    class Client:
+        def __init__(self):
+            self.advanced_calls = []
+            self.detail_calls = []
+
+        def advanced_search(self, **params):
+            self.advanced_calls.append(params)
+            if params.get("openNumber") == "1020220029099":
+                return {
+                    "response": {
+                        "body": {
+                            "items": {
+                                "item": {
+                                    "applicationNumber": "1020200012345",
+                                    "inventionTitle": "인용 공개 특허",
+                                    "astrtCont": "인용 공개 초록",
+                                    "registerStatus": "공개",
+                                }
+                            }
+                        }
+                    }
+                }
+            if params.get("registerNumber") == "1003093140000":
+                return {
+                    "response": {
+                        "body": {
+                            "items": {
+                                "item": {
+                                    "applicationNumber": "1019990001111",
+                                    "inventionTitle": "인용 등록 특허",
+                                    "astrtCont": "인용 등록 초록",
+                                    "registerStatus": "등록",
+                                }
+                            }
+                        }
+                    }
+                }
+            return {"response": {"body": {"items": {}}}}
+
+        def bibliography_detail(self, application_number):
+            self.detail_calls.append(application_number)
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "biblioSummaryInfoArray": {
+                                "biblioSummaryInfo": {
+                                    "applicationNumber": application_number,
+                                    "inventionTitle": f"{application_number} 상세 제목",
+                                    "registerStatus": "등록",
+                                    "claimCount": "2",
+                                }
+                            },
+                            "abstractInfoArray": {
+                                "abstractInfo": {"astrtCont": f"{application_number} 상세 초록"}
+                            },
+                            "claimInfoArray": {
+                                "claimInfo": [
+                                    {"claim": "1. 독립항 내용"},
+                                    {"claim": "2. 청구항 1에 있어서 종속항 내용"},
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+
+    client = Client()
+    citation_documents = [
+        {
+            "country_code": "KR",
+            "standard_number": "1020220029099",
+            "kind_code": "A",
+            "display_number": "KR1020220029099 A",
+            "is_standardized": True,
+        },
+        {
+            "country_code": "KR",
+            "standard_number": "1003093140000",
+            "kind_code": "B1",
+            "display_number": "KR100309314 B1",
+            "is_standardized": True,
+        },
+        {
+            "country_code": "JP",
+            "standard_number": "29047511",
+            "kind_code": "A",
+            "display_number": "JP29047511 A",
+            "is_standardized": True,
+        },
+    ]
+    citing_documents = [
+        {
+            "citing_application_number": "1020117007865",
+            "standard_status_name": "표준화",
+            "is_standardized": True,
+        }
+    ]
+
+    result = resolve_citation_evidence(
+        client,
+        citation_documents=citation_documents,
+        citing_documents=citing_documents,
+        foreign_claims_fetcher=lambda candidates, **kwargs: [],
+    )
+
+    assert client.advanced_calls == [
+        {"registerNumber": "1003093140000", "patent": True, "utility": False, "pageNo": 1, "numOfRows": 1},
+        {"openNumber": "1020220029099", "patent": True, "utility": False, "pageNo": 1, "numOfRows": 1},
+    ]
+    assert client.detail_calls == ["1019990001111", "1020200012345", "1020117007865"]
+    assert [item["application_number"] for item in result["kr_citation_documents"]] == [
+        "1019990001111",
+        "1020200012345",
+    ]
+    assert result["kr_citation_documents"][0]["representative_claims"][0]["text"] == "독립항 내용"
+    assert result["kr_citing_documents"][0]["application_number"] == "1020117007865"
+    assert result["foreign_claim_lookup_candidates"] == [
+        {
+            "direction": "cited_by_target",
+            "country_code": "JP",
+            "document_number": "29047511",
+            "kind_code": "A",
+            "original_number": None,
+            "display_number": "JP29047511 A",
+            "lookup_source": "bigquery_claims",
+        }
+    ]
+
+
+def test_resolve_citation_evidence_keeps_up_to_six_kr_independent_claims():
+    class Client:
+        def advanced_search(self, **params):
+            return {
+                "response": {
+                    "body": {
+                        "items": {
+                            "item": {
+                                "applicationNumber": "1020200012345",
+                                "registerStatus": "등록",
+                            }
+                        }
+                    }
+                }
+            }
+
+        def bibliography_detail(self, application_number):
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "biblioSummaryInfoArray": {
+                                "biblioSummaryInfo": {
+                                    "applicationNumber": application_number,
+                                    "inventionTitle": "독립항 다수 특허",
+                                    "registerStatus": "등록",
+                                    "claimCount": "7",
+                                }
+                            },
+                            "claimInfoArray": {
+                                "claimInfo": [
+                                    {"claim": f"{index}. 독립항 {index} 내용"}
+                                    for index in range(1, 8)
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+
+    result = resolve_citation_evidence(
+        Client(),
+        citation_documents=[
+            {
+                "country_code": "KR",
+                "standard_number": "1020220029099",
+                "kind_code": "A",
+                "is_standardized": True,
+            }
+        ],
+        citing_documents=[],
+        foreign_claims_fetcher=lambda candidates, **kwargs: [],
+    )
+
+    claims = result["kr_citation_documents"][0]["representative_claims"]
+    assert [claim["claim_no"] for claim in claims] == [1, 2, 3, 4, 5, 6]
+
+
+def test_resolve_citation_evidence_prioritizes_search_report_citing_documents():
+    class Client:
+        def __init__(self):
+            self.detail_calls = []
+
+        def bibliography_detail(self, application_number):
+            self.detail_calls.append(application_number)
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "biblioSummaryInfoArray": {
+                                "biblioSummaryInfo": {
+                                    "applicationNumber": application_number,
+                                    "inventionTitle": f"{application_number} 제목",
+                                    "registerStatus": "등록",
+                                    "claimCount": "1",
+                                }
+                            },
+                            "claimInfoArray": {"claimInfo": [{"claim": "1. 대표 청구항"}]},
+                        }
+                    }
+                }
+            }
+
+    client = Client()
+    citing_documents = [
+        {
+            "citing_application_number": "1020210152256",
+            "citation_type_codes": ["E0806"],
+            "citation_type_names": ["출원서인용문헌이력정보"],
+            "is_standardized": True,
+        },
+        {
+            "citing_application_number": "1020210140457",
+            "citation_type_codes": ["E0801"],
+            "citation_type_names": ["발송문서"],
+            "is_standardized": True,
+        },
+        {
+            "citing_application_number": "1020210146956",
+            "citation_type_codes": ["E0805"],
+            "citation_type_names": ["선행기술조사문헌"],
+            "is_standardized": True,
+        },
+        {
+            "citing_application_number": "1020210152036",
+            "citation_type_codes": ["E0802"],
+            "citation_type_names": ["선행기술조사보고서"],
+            "is_standardized": True,
+        },
+    ]
+
+    result = resolve_citation_evidence(
+        client,
+        citation_documents=[],
+        citing_documents=citing_documents,
+        max_kr_citing=3,
+    )
+
+    assert client.detail_calls == ["1020210146956", "1020210152036", "1020210140457"]
+    assert [item["application_number"] for item in result["kr_citing_documents"]] == [
+        "1020210146956",
+        "1020210152036",
+        "1020210140457",
+    ]
+
+
+def test_resolve_citation_evidence_attaches_bigquery_foreign_claims():
+    citation_documents = [
+        {
+            "country_code": "CN",
+            "standard_number": "113039310",
+            "kind_code": "A",
+            "original_number": "CN113039310 A",
+            "display_number": "CN113039310 A",
+            "is_standardized": True,
+        }
+    ]
+
+    def foreign_claims_fetcher(candidates, **kwargs):
+        assert kwargs["max_candidates"] == 3
+        return [
+            {
+                "direction": "cited_by_target",
+                "country_code": "CN",
+                "publication_number": "CN-113039310-A",
+                "title": "CN 특허",
+                "representative_claims": [{"claim_no": 1, "text": "CN claim"}],
+                "lookup_status": "resolved",
+                "lookup_source": "bigquery_patents_publications",
+            }
+        ]
+
+    result = resolve_citation_evidence(
+        object(),
+        citation_documents=citation_documents,
+        citing_documents=[],
+        foreign_claims_fetcher=foreign_claims_fetcher,
+    )
+
+    assert result["foreign_claim_lookup_candidates"][0]["original_number"] == "CN113039310 A"
+    assert result["foreign_citation_documents"][0]["publication_number"] == "CN-113039310-A"
+    assert result["foreign_citation_documents"][0]["representative_claims"][0]["text"] == "CN claim"
+
+
+def test_fetch_foreign_claims_from_kipris_uses_literature_number_candidates():
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        def overseas_demand_paragraph(self, literature_number, country_code):
+            self.calls.append((literature_number, country_code))
+            if literature_number == "000004002589B2":
+                return {
+                    "response": {
+                        "body": {
+                            "items": {
+                                "demandParagraphInfo": {
+                                    "claimText": "搬送コンベヤにより搬送中のガス容器を洗浄する装置。"
+                                }
+                            }
+                        }
+                    }
+                }
+            return {"response": {"body": {"items": {}}}}
+
+    candidate = {
+        "direction": "cited_by_target",
+        "country_code": "JP",
+        "document_number": "04002589",
+        "kind_code": "B2",
+        "original_number": "JP4002589 B2",
+        "display_number": "JP04002589 B2",
+    }
+
+    result = _fetch_foreign_claims_from_kipris(Client(), [candidate])
+
+    assert result[0]["literature_number"] == "000004002589B2"
+    assert result[0]["lookup_source"] == "kipris_foreign_bibliographic_claims"
+    assert result[0]["representative_claims"][0]["text"].startswith("搬送コンベヤ")
+
+
+def test_fetch_foreign_claims_from_kipris_keeps_up_to_five_claims():
+    class Client:
+        def overseas_demand_paragraph(self, literature_number, country_code):
+            return {
+                "response": {
+                    "body": {
+                        "items": {
+                            "demandParagraphInfo": [
+                                {"claimText": f"foreign claim {index}"}
+                                for index in range(1, 7)
+                            ]
+                        }
+                    }
+                }
+            }
+
+    candidate = {
+        "direction": "cited_by_target",
+        "country_code": "JP",
+        "document_number": "04002589",
+        "kind_code": "B2",
+        "display_number": "JP04002589 B2",
+    }
+
+    result = _fetch_foreign_claims_from_kipris(Client(), [candidate])
+
+    assert [claim["text"] for claim in result[0]["representative_claims"]] == [
+        "foreign claim 1",
+        "foreign claim 2",
+        "foreign claim 3",
+        "foreign claim 4",
+        "foreign claim 5",
+    ]
+
+
+def test_foreign_literature_number_candidates_try_twelve_digit_kind_first():
+    candidate = {
+        "country_code": "JP",
+        "document_number": "7401073",
+        "kind_code": "B2",
+        "original_number": "JP7401073 B2",
+        "display_number": "JP7401073 B2",
+    }
+
+    assert _foreign_literature_number_candidates(candidate)[:2] == [
+        "000007401073B2",
+        "7401073B2",
+    ]

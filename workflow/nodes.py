@@ -42,6 +42,7 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
     if patent and (state.user_input.get("collect_kipris_api") or state.user_input.get("collect_pdf")):
         state.kipris_api_data = fetch_kipris_bibliography(patent["application_number"])
         state.kipris_family_patents = state.kipris_api_data.get("family_patents", [])
+        state.citation_evidence = state.kipris_api_data.get("citation_evidence", {})
         state.patent_structured = {
             **patent,
             "kipris_api": {
@@ -49,6 +50,8 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 "metadata": state.kipris_api_data["metadata"],
                 "claim_stats": state.kipris_api_data["claim_stats"],
                 "family_patents": state.kipris_family_patents,
+                "citation_stats": state.kipris_api_data.get("citation_stats", {}),
+                "citing_stats": state.kipris_api_data.get("citing_stats", {}),
             },
         }
     if patent and state.user_input.get("collect_pdf"):
@@ -181,6 +184,11 @@ def final_merge_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.final_report = {
         "summary": state.summary_result,
         "valuation": state.valuation_result,
+        "validation": {
+            "summary": state.summary_validation_result,
+            "report": state.report_validation_result,
+            "aggregate": state.validation_result,
+        },
         "evidence": state.evidence_bundle,
     }
     return state
@@ -517,15 +525,39 @@ def final_report_node(state: PatentWorkflowState) -> PatentWorkflowState:
 
 
 @trace(run_type="tool")
-def validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    valuation = state.valuation_result or {}
-    axes = valuation.get("axes") or {}
-    required_axes = ["legal", "technology", "market", "business_fit"]
-    passed = all(axes.get(axis) for axis in required_axes) and "strategy" not in axes
-    state.validation_result = {
+def summary_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    summary = state.summary_result or {}
+    passed = bool(summary.get("summary_markdown"))
+    state.summary_validation_result = {
         "passed": passed,
-        "needs_more_evidence": not passed,
-        "issues": [] if passed else ["valuation_result is incomplete"],
+        "issues": [] if passed else ["Missing summary_markdown"],
     }
     state.current_stage = "final_check"
     return state
+
+
+@trace(run_type="tool")
+def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    valuation = state.valuation_result or {}
+    axes = valuation.get("axes") or {}
+    required_axes = ["legal", "technology", "market", "business_fit"]
+    issues = []
+    if not valuation.get("final_report_markdown"):
+        issues.append("Missing final_report_markdown")
+    missing_axes = [axis for axis in required_axes if not axes.get(axis)]
+    issues.extend(f"Missing valuation axis: {axis}" for axis in missing_axes)
+    if "strategy" in axes:
+        issues.append("Deprecated valuation axis present: strategy")
+    passed = not issues
+    state.report_validation_result = {
+        "passed": passed,
+        "needs_more_evidence": not passed,
+        "issues": issues,
+    }
+    state.current_stage = "final_check"
+    return state
+
+
+@trace(run_type="tool")
+def validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    return report_validation_node(state)

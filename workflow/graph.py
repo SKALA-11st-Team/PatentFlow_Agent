@@ -14,8 +14,9 @@ from workflow.nodes import (
     patent_fetch_node,
     portfolio_sibling_node,
     query_rewriting_node,
+    report_validation_node,
     summary_node,
-    validation_node,
+    summary_validation_node,
 )
 from workflow.supervisor import (
     research_supervisor_node,
@@ -35,6 +36,7 @@ class WorkflowGraphState(TypedDict, total=False):
     patent_structured: dict[str, Any] | None
     kipris_api_data: dict[str, Any] | None
     kipris_family_patents: list[dict[str, Any]]
+    citation_evidence: dict[str, Any]
     pdf_paths: list[str]
     parsed_pdf: dict[str, Any] | None
     preprocessed_patent: dict[str, Any] | None
@@ -47,6 +49,8 @@ class WorkflowGraphState(TypedDict, total=False):
     valuation_result: dict[str, Any] | None
     final_report: dict[str, Any] | None
     validation_result: dict[str, Any] | None
+    summary_validation_result: dict[str, Any] | None
+    report_validation_result: dict[str, Any] | None
     supervisor_decision: dict[str, Any] | None
     missing_evidence: list[str]
     valuation_axis_legal: dict[str, Any]
@@ -65,6 +69,12 @@ def _run_node(payload: dict[str, Any], fn: Any) -> dict[str, Any]:
     return next_state.model_dump()
 
 
+def _run_node_partial(payload: dict[str, Any], fn: Any, keys: list[str]) -> dict[str, Any]:
+    state = _as_state(payload)
+    next_state = fn(state).model_dump()
+    return {key: next_state.get(key) for key in keys}
+
+
 def _start_valuation_axes_analysis(payload: dict[str, Any]) -> dict[str, Any]:
     del payload
     return {
@@ -75,6 +85,27 @@ def _start_valuation_axes_analysis(payload: dict[str, Any]) -> dict[str, Any]:
         "valuation_axis_market": None,
         "valuation_axis_business_fit": None,
     }
+
+
+def _start_writing_reports(payload: dict[str, Any]) -> dict[str, Any]:
+    del payload
+    return {
+        "summary_validation_result": None,
+        "report_validation_result": None,
+        "validation_result": None,
+    }
+
+
+def _join_writing_validations(payload: dict[str, Any]) -> dict[str, Any]:
+    del payload
+    return {}
+
+
+def _route_after_writing_join(payload: dict[str, Any]) -> str:
+    state = _as_state(payload)
+    if state.summary_validation_result is not None and state.report_validation_result is not None:
+        return "writing_supervisor"
+    return "end"
 
 
 def _run_valuation_axis_result_node(payload: dict[str, Any], axis: str) -> dict[str, Any]:
@@ -90,7 +121,7 @@ def _run_valuation_axes_merge(payload: dict[str, Any]) -> dict[str, Any]:
         if isinstance(payload.get(f"valuation_axis_{axis}"), dict)
     }
     next_state = finalize_valuation_axis_results(state, axis_results)
-    return next_state.model_dump()
+    return {"valuation_result": next_state.valuation_result}
 
 
 def _route_after_top_supervisor(payload: dict[str, Any]) -> str:
@@ -104,11 +135,7 @@ def _route_after_top_supervisor(payload: dict[str, Any]) -> str:
 def _route_after_research_supervisor(payload: dict[str, Any]) -> str:
     state = _as_state(payload)
     action = (state.supervisor_decision or {}).get("next_action")
-    if action == "common_preprocess" and not state.parsed_pdf and not state.kipris_api_data:
-        return "end"
-    if action == "patent_fetch":
-        return "patent_context_collect"
-    if action in {"common_preprocess", "query_rewriting"}:
+    if action == "query_rewriting":
         if action == "query_rewriting" and state.retry_count >= settings.max_evidence_search_rounds:
             return "valuation_team"
         return action
@@ -120,7 +147,7 @@ def _route_after_research_supervisor(payload: dict[str, Any]) -> str:
 def _route_after_valuation_supervisor(payload: dict[str, Any]) -> str:
     state = _as_state(payload)
     action = (state.supervisor_decision or {}).get("next_action")
-    if action in {"research_team", "valuation_team", "writing_team"}:
+    if action in {"query_rewriting", "valuation_team", "writing_team"}:
         return action
     return "end"
 
@@ -128,7 +155,7 @@ def _route_after_valuation_supervisor(payload: dict[str, Any]) -> str:
 def _route_after_writing_supervisor(payload: dict[str, Any]) -> str:
     state = _as_state(payload)
     action = (state.supervisor_decision or {}).get("next_action")
-    if action in {"writing_team", "final_merge"}:
+    if action in {"writing_team", "summary", "final_report", "final_merge"}:
         return action
     return "end"
 
@@ -140,7 +167,7 @@ def _build_graph() -> Any:
     graph.add_node("portfolio_sibling", lambda payload: _run_node(payload, portfolio_sibling_node))
     graph.add_node("common_preprocess", lambda payload: _run_node(payload, common_preprocess_node))
     graph.add_node("research_supervisor", lambda payload: _run_node(payload, research_supervisor_node))
-    graph.add_node("summary", lambda payload: _run_node(payload, summary_node))
+    graph.add_node("summary", lambda payload: _run_node_partial(payload, summary_node, ["summary_result"]))
     graph.add_node("query_rewriting", lambda payload: _run_node(payload, query_rewriting_node))
     graph.add_node("evidence_search", lambda payload: _run_node(payload, evidence_search_node))
     graph.add_node("evidence_compression", lambda payload: _run_node(payload, evidence_compression_node))
@@ -151,20 +178,30 @@ def _build_graph() -> Any:
     graph.add_node("valuation_business_fit", lambda payload: _run_valuation_axis_result_node(payload, "business_fit"))
     graph.add_node("valuation_axes_merge", lambda payload: _run_valuation_axes_merge(payload))
     graph.add_node("valuation_supervisor", lambda payload: _run_node(payload, valuation_supervisor_node))
-    graph.add_node("final_report", lambda payload: _run_node(payload, final_report_node))
-    graph.add_node("validation", lambda payload: _run_node(payload, validation_node))
+    graph.add_node("writing_start", _start_writing_reports)
+    graph.add_node("final_report", lambda payload: _run_node_partial(payload, final_report_node, ["valuation_result"]))
+    graph.add_node(
+        "report_validation",
+        lambda payload: _run_node_partial(payload, report_validation_node, ["report_validation_result"]),
+    )
+    graph.add_node(
+        "summary_validation",
+        lambda payload: _run_node_partial(payload, summary_validation_node, ["summary_validation_result"]),
+    )
+    graph.add_node("writing_join", _join_writing_validations)
     graph.add_node("writing_supervisor", lambda payload: _run_node(payload, writing_supervisor_node))
     graph.add_node("final_merge", lambda payload: _run_node(payload, final_merge_node))
 
+    # Entry and research flow
     graph.add_edge(START, "top_supervisor")
     graph.add_edge("patent_context_collect", "portfolio_sibling")
     graph.add_edge("portfolio_sibling", "common_preprocess")
     graph.add_edge("common_preprocess", "research_supervisor")
-    graph.add_edge("summary", "final_report")
-    graph.add_edge("final_report", "validation")
     graph.add_edge("query_rewriting", "evidence_search")
     graph.add_edge("evidence_search", "evidence_compression")
     graph.add_edge("evidence_compression", "research_supervisor")
+
+    # Valuation flow
     graph.add_edge("valuation_axes_analyze", "valuation_legal")
     graph.add_edge("valuation_axes_analyze", "valuation_technology")
     graph.add_edge("valuation_axes_analyze", "valuation_market")
@@ -174,39 +211,61 @@ def _build_graph() -> Any:
         "valuation_axes_merge",
     )
     graph.add_edge("valuation_axes_merge", "valuation_supervisor")
-    graph.add_edge("validation", "writing_supervisor")
+
+    # Writing flow
+    graph.add_edge("writing_start", "summary")
+    graph.add_edge("writing_start", "final_report")
+    graph.add_edge("summary", "summary_validation")
+    graph.add_edge("final_report", "report_validation")
+    graph.add_edge("summary_validation", "writing_join")
+    graph.add_edge("report_validation", "writing_join")
+
+    # Final output assembly
     graph.add_edge("final_merge", END)
 
+    # Team-level routing
     graph.add_conditional_edges(
         "top_supervisor",
         _route_after_top_supervisor,
         {
             "research_team": "patent_context_collect",
             "valuation_team": "valuation_axes_analyze",
-            "writing_team": "summary",
+            "writing_team": "writing_start",
             "final_merge": "final_merge",
             "end": END,
         },
     )
+
+    # Research reroute
     graph.add_conditional_edges(
         "research_supervisor",
         _route_after_research_supervisor,
         {
-            "patent_context_collect": "patent_context_collect",
-            "common_preprocess": "common_preprocess",
             "query_rewriting": "query_rewriting",
             "valuation_team": "valuation_axes_analyze",
             "top_supervisor": "top_supervisor",
             "end": END,
         },
     )
+
+    # Valuation reroute
     graph.add_conditional_edges(
         "valuation_supervisor",
         _route_after_valuation_supervisor,
         {
-            "research_team": "patent_context_collect",
+            "query_rewriting": "query_rewriting",
             "valuation_team": "valuation_axes_analyze",
-            "writing_team": "summary",
+            "writing_team": "writing_start",
+            "end": END,
+        },
+    )
+
+    # Writing reroute
+    graph.add_conditional_edges(
+        "writing_join",
+        _route_after_writing_join,
+        {
+            "writing_supervisor": "writing_supervisor",
             "end": END,
         },
     )
@@ -214,7 +273,9 @@ def _build_graph() -> Any:
         "writing_supervisor",
         _route_after_writing_supervisor,
         {
-            "writing_team": "summary",
+            "writing_team": "writing_start",
+            "summary": "summary",
+            "final_report": "final_report",
             "final_merge": "final_merge",
             "end": END,
         },
