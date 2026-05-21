@@ -56,6 +56,15 @@ def test_patent_fetch_continues_when_kipris_pdf_is_missing(monkeypatch):
             "metadata": {"application_number": application_number},
             "claim_stats": {},
             "family_patents": [{"country_code": "US", "registration_number": "1234567"}],
+            "citation_evidence": {
+                "kr_citation_documents": [{"application_number": "1020200012345"}],
+                "kr_citing_documents": [],
+                "foreign_citation_documents": [],
+                "foreign_claim_lookup_candidates": [],
+                "warnings": [],
+            },
+            "citation_stats": {"total_count": 1},
+            "citing_stats": {"total_count": 0},
         },
     )
 
@@ -70,6 +79,8 @@ def test_patent_fetch_continues_when_kipris_pdf_is_missing(monkeypatch):
 
     assert result.kipris_api_data is not None
     assert result.kipris_family_patents == [{"country_code": "US", "registration_number": "1234567"}]
+    assert result.citation_evidence["kr_citation_documents"][0]["application_number"] == "1020200012345"
+    assert result.patent_structured["kipris_api"]["citation_stats"] == {"total_count": 1}
     assert result.parsed_pdf is None
     assert result.patent_structured["pdf"]["warning"].startswith("pdf_fetch_failed:RuntimeError")
 

@@ -443,6 +443,64 @@ def test_resolve_citation_evidence_enriches_kr_citation_and_citing_documents():
     ]
 
 
+def test_resolve_citation_evidence_keeps_up_to_six_kr_independent_claims():
+    class Client:
+        def advanced_search(self, **params):
+            return {
+                "response": {
+                    "body": {
+                        "items": {
+                            "item": {
+                                "applicationNumber": "1020200012345",
+                                "registerStatus": "등록",
+                            }
+                        }
+                    }
+                }
+            }
+
+        def bibliography_detail(self, application_number):
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "biblioSummaryInfoArray": {
+                                "biblioSummaryInfo": {
+                                    "applicationNumber": application_number,
+                                    "inventionTitle": "독립항 다수 특허",
+                                    "registerStatus": "등록",
+                                    "claimCount": "7",
+                                }
+                            },
+                            "claimInfoArray": {
+                                "claimInfo": [
+                                    {"claim": f"{index}. 독립항 {index} 내용"}
+                                    for index in range(1, 8)
+                                ]
+                            },
+                        }
+                    }
+                }
+            }
+
+    result = resolve_citation_evidence(
+        Client(),
+        citation_documents=[
+            {
+                "country_code": "KR",
+                "standard_number": "1020220029099",
+                "kind_code": "A",
+                "is_standardized": True,
+            }
+        ],
+        citing_documents=[],
+        foreign_claims_fetcher=lambda candidates, **kwargs: [],
+    )
+
+    claims = result["kr_citation_documents"][0]["representative_claims"]
+    assert [claim["claim_no"] for claim in claims] == [1, 2, 3, 4, 5, 6]
+
+
 def test_resolve_citation_evidence_prioritizes_search_report_citing_documents():
     class Client:
         def __init__(self):
@@ -584,6 +642,41 @@ def test_fetch_foreign_claims_from_kipris_uses_literature_number_candidates():
     assert result[0]["literature_number"] == "000004002589B2"
     assert result[0]["lookup_source"] == "kipris_foreign_bibliographic_claims"
     assert result[0]["representative_claims"][0]["text"].startswith("搬送コンベヤ")
+
+
+def test_fetch_foreign_claims_from_kipris_keeps_up_to_five_claims():
+    class Client:
+        def overseas_demand_paragraph(self, literature_number, country_code):
+            return {
+                "response": {
+                    "body": {
+                        "items": {
+                            "demandParagraphInfo": [
+                                {"claimText": f"foreign claim {index}"}
+                                for index in range(1, 7)
+                            ]
+                        }
+                    }
+                }
+            }
+
+    candidate = {
+        "direction": "cited_by_target",
+        "country_code": "JP",
+        "document_number": "04002589",
+        "kind_code": "B2",
+        "display_number": "JP04002589 B2",
+    }
+
+    result = _fetch_foreign_claims_from_kipris(Client(), [candidate])
+
+    assert [claim["text"] for claim in result[0]["representative_claims"]] == [
+        "foreign claim 1",
+        "foreign claim 2",
+        "foreign claim 3",
+        "foreign claim 4",
+        "foreign claim 5",
+    ]
 
 
 def test_foreign_literature_number_candidates_try_twelve_digit_kind_first():

@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from agents.valuation import run_valuation_agent, select_axis_evidence
+from agents.valuation import run_legal_valuation_agent, run_valuation_agent, select_axis_evidence
 from agents.writing.final_report import run_final_report_agent
 from app.main import build_parser, build_user_input, save_outputs
 from workflow.supervisor import check_valuation_result
@@ -73,6 +73,82 @@ def test_run_valuation_agent_sets_result():
     assert result.valuation_result["average_score"] == 70
     assert "평균 점수는 70/100점" in result.valuation_result["decision_rationale"][0]
     assert "final_report_markdown" not in result.valuation_result
+
+
+def test_run_legal_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
+    captured_prompts = []
+
+    def fake_call_llm(prompt):
+        captured_prompts.append(prompt)
+        return json.dumps(
+            {
+                "score": 70,
+                "subscores": {
+                    "right_stability": {
+                        "label": "권리안정성",
+                        "score": 20,
+                        "max_score": 30,
+                        "rationale": "등록상태는 유효하나 유사 인용문헌이 일부 존재한다.",
+                    },
+                    "claim_protection": {
+                        "label": "청구항 보호력",
+                        "score": 20,
+                        "max_score": 30,
+                        "rationale": "핵심 기능은 보호하지만 일부 구현 한정이 있다.",
+                    },
+                    "enforceability_product_fit": {
+                        "label": "권리행사·제품대응성",
+                        "score": 15,
+                        "max_score": 25,
+                        "rationale": "제품 적용 가능성은 있으나 직접 대응 근거가 제한적이다.",
+                    },
+                    "portfolio_defensive_value": {
+                        "label": "포트폴리오·방어가치",
+                        "score": 15,
+                        "max_score": 15,
+                        "rationale": "동일 관리번호 패밀리와 보완 관계가 있다.",
+                    },
+                },
+                "grade": "B",
+                "rationale": "권리성 단독 평가",
+                "evidence_ids": ["portfolio_001"],
+                "risk_factors": ["유사 인용문헌 비교 필요"],
+                "missing_information": [],
+                "confidence": 0.7,
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        patent_structured={"status": "등록", "related_product": "ESS"},
+        kipris_api_data={"claim_stats": {"total_claim_count": 3}},
+        citation_evidence={
+            "kr_citation_documents": [
+                {
+                    "application_number": "1020200012345",
+                    "representative_claims": [{"claim_no": 1, "text": "선행 청구항"}],
+                }
+            ]
+        },
+        evidence_bundle=[
+            {
+                "evidence_id": "portfolio_001",
+                "source_type": "portfolio_context",
+                "compressed_summary": "동일 관리번호 패밀리 특허가 있다.",
+            }
+        ],
+    )
+
+    result = run_legal_valuation_agent(state)
+
+    axes = result.valuation_result["axes"]
+    assert list(axes) == ["legal"]
+    assert axes["legal"]["subscores"]["right_stability"]["score"] == 20
+    assert axes["legal"]["evidence_ids"] == ["portfolio_001"]
+    assert "Valuation Legal Axis Prompt" in captured_prompts[0]
+    assert "citation_evidence" in captured_prompts[0]
 
 
 def test_business_fit_selects_news_with_company_or_product_context():
@@ -339,65 +415,64 @@ def test_legal_axis_input_includes_prior_art_candidates(tmp_path):
 
 
 def test_legal_axis_input_includes_citation_evidence(tmp_path):
+    citation_evidence = {
+        "kr_citation_documents": [
+            {
+                "direction": "cited_by_target",
+                "country_code": "KR",
+                "application_number": "1020200012345",
+                "title": "선행 KR 특허",
+                "abstract": "선행 KR 초록",
+                "representative_claims": [
+                    {"claim_no": index, "text": f"선행 독립항 {index}", "is_independent": True, "dependency": None}
+                    for index in range(1, 8)
+                ],
+                "lookup_status": "resolved",
+                "lookup_source": "kipris_bibliography_detail",
+            }
+        ],
+        "kr_citing_documents": [
+            {
+                "direction": "citing_target",
+                "country_code": "KR",
+                "application_number": "1020117007865",
+                "title": "후행 KR 특허",
+                "abstract": "후행 KR 초록",
+                "representative_claims": [{"claim_no": 1, "text": "후행 독립항", "is_independent": True, "dependency": None}],
+                "lookup_status": "resolved",
+                "lookup_source": "kipris_bibliography_detail",
+            }
+        ],
+        "foreign_claim_lookup_candidates": [
+            {
+                "direction": "cited_by_target",
+                "country_code": "JP",
+                "document_number": "29047511",
+                "kind_code": "A",
+                "original_number": "JP2017047511 A",
+                "display_number": "JP29047511 A",
+                "lookup_source": "kipris_foreign_demand_paragraph",
+            }
+        ],
+        "foreign_citation_documents": [
+            {
+                "direction": "cited_by_target",
+                "country_code": "JP",
+                "publication_number": "JP-2017047511-A",
+                "title": "해외 선행 특허",
+                "abstract": "해외 선행 초록",
+                "representative_claims": [
+                    {"claim_no": index, "text": f"foreign claim {index}", "is_independent": None, "dependency": None}
+                    for index in range(1, 7)
+                ],
+                "lookup_status": "resolved",
+                "lookup_source": "kipris_foreign_demand_paragraph",
+            }
+        ],
+    }
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
-        kipris_api_data={
-            "citation_evidence": {
-                "kr_citation_documents": [
-                    {
-                        "direction": "cited_by_target",
-                        "country_code": "KR",
-                        "application_number": "1020200012345",
-                        "title": "선행 KR 특허",
-                        "abstract": "선행 KR 초록",
-                        "representative_claims": [
-                            {"claim_no": 1, "text": "선행 독립항", "is_independent": True, "dependency": None}
-                        ],
-                        "lookup_status": "resolved",
-                        "lookup_source": "kipris_bibliography_detail",
-                    }
-                ],
-                "kr_citing_documents": [
-                    {
-                        "direction": "citing_target",
-                        "country_code": "KR",
-                        "application_number": "1020117007865",
-                        "title": "후행 KR 특허",
-                        "abstract": "후행 KR 초록",
-                        "representative_claims": [
-                            {"claim_no": 1, "text": "후행 독립항", "is_independent": True, "dependency": None}
-                        ],
-                        "lookup_status": "resolved",
-                        "lookup_source": "kipris_bibliography_detail",
-                    }
-                ],
-                "foreign_claim_lookup_candidates": [
-                    {
-                        "direction": "cited_by_target",
-                        "country_code": "JP",
-                        "document_number": "29047511",
-                        "kind_code": "A",
-                        "original_number": "JP2017047511 A",
-                        "display_number": "JP29047511 A",
-                        "lookup_source": "bigquery_claims",
-                    }
-                ],
-                "foreign_citation_documents": [
-                    {
-                        "direction": "cited_by_target",
-                        "country_code": "JP",
-                        "publication_number": "JP-2017047511-A",
-                        "title": "해외 선행 특허",
-                        "abstract": "해외 선행 초록",
-                        "representative_claims": [
-                            {"claim_no": 1, "text": "foreign claim", "is_independent": True, "dependency": None}
-                        ],
-                        "lookup_status": "resolved",
-                        "lookup_source": "bigquery_patents_publications",
-                    }
-                ],
-            }
-        },
+        citation_evidence=citation_evidence,
     )
 
     from agents.valuation import build_axis_input_payload
@@ -407,11 +482,50 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
 
     citation_evidence = legal_payload["patent"]["citation_evidence"]
     assert citation_evidence["kr_citation_documents"][0]["application_number"] == "1020200012345"
+    assert [claim["text"] for claim in citation_evidence["kr_citation_documents"][0]["representative_claims"]] == [
+        "선행 독립항 1",
+        "선행 독립항 2",
+        "선행 독립항 3",
+        "선행 독립항 4",
+        "선행 독립항 5",
+        "선행 독립항 6",
+    ]
     assert citation_evidence["kr_citing_documents"][0]["representative_claims"][0]["text"] == "후행 독립항"
     assert citation_evidence["foreign_citation_documents"][0]["publication_number"] == "JP-2017047511-A"
-    assert citation_evidence["foreign_claim_lookup_candidates"][0]["lookup_source"] == "bigquery_claims"
+    assert [claim["text"] for claim in citation_evidence["foreign_citation_documents"][0]["representative_claims"]] == [
+        "foreign claim 1",
+        "foreign claim 2",
+        "foreign claim 3",
+        "foreign claim 4",
+        "foreign claim 5",
+    ]
+    assert citation_evidence["foreign_claim_lookup_candidates"][0]["lookup_source"] == "kipris_foreign_demand_paragraph"
     assert legal_payload["patent"]["claim_availability"]["citation_evidence_provided"] is True
     assert technology_payload["patent"]["citation_evidence"] == {}
+
+
+def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        kipris_api_data={
+            "citation_evidence": {
+                "kr_citation_documents": [
+                    {
+                        "direction": "cited_by_target",
+                        "country_code": "KR",
+                        "application_number": "1020200012345",
+                        "representative_claims": [{"claim_no": 1, "text": "선행 독립항"}],
+                    }
+                ],
+            }
+        },
+    )
+
+    from agents.valuation import build_axis_input_payload
+
+    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
+
+    assert legal_payload["patent"]["citation_evidence"]["kr_citation_documents"][0]["application_number"] == "1020200012345"
 
 
 def test_valuation_llm_inputs_respect_no_save(monkeypatch, tmp_path):

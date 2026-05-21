@@ -74,12 +74,34 @@ def find_sibling_patents(
     limit: int = DEFAULT_SIBLING_LIMIT,
 ) -> list[dict[str, Any]]:
     related_product = normalize_text(target_patent.get("related_product"))
-    if related_product in EXCLUDED_RELATED_PRODUCTS:
+    management_family = management_family_key(target_patent.get("management_number"))
+    if related_product in EXCLUDED_RELATED_PRODUCTS and not management_family:
         return []
 
-    management_batch = management_batch_key(target_patent.get("management_number"))
-    product_family = normalize_product_family(related_product)
-    query = """
+    product_family = ""
+    conditions: list[str] = []
+    params: list[Any] = [target_patent.get("id")]
+
+    if related_product not in EXCLUDED_RELATED_PRODUCTS:
+        product_family = normalize_product_family(related_product)
+        conditions.append(
+            """
+            (
+                COALESCE(related_product, '') NOT IN ('', '기타', 'etc', 'ETC', '기타/미정')
+                AND (related_product = ? OR related_product LIKE ?)
+            )
+            """
+        )
+        params.extend([related_product, f"{product_family}%" if product_family else ""])
+
+    if management_family:
+        conditions.append("(management_number = ? OR management_number LIKE ?)")
+        params.extend([management_family, f"{management_family}-%"])
+
+    if not conditions:
+        return []
+
+    query = f"""
         SELECT
             id,
             management_number,
@@ -98,19 +120,8 @@ def find_sibling_patents(
             expected_expiration_date
         FROM patents
         WHERE id != ?
-          AND COALESCE(related_product, '') NOT IN ('', '기타', 'etc', 'ETC', '기타/미정')
-          AND (
-            related_product = ?
-            OR related_product LIKE ?
-            OR management_number LIKE ?
-          )
+          AND ({" OR ".join(conditions)})
     """
-    params = (
-        target_patent.get("id"),
-        related_product,
-        f"{product_family}%" if product_family else "",
-        f"{management_batch}%" if management_batch else "",
-    )
     with sqlite3.connect(database_path) as conn:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(query, params).fetchall()
@@ -121,7 +132,7 @@ def find_sibling_patents(
             target_patent,
             sibling,
             target_product_family=product_family,
-            target_management_batch=management_batch,
+            target_management_family=management_family,
         )
         if not reasons:
             continue
@@ -142,29 +153,34 @@ def sibling_match_reasons(
     sibling: dict[str, Any],
     *,
     target_product_family: str,
-    target_management_batch: str | None,
+    target_management_family: str | None,
 ) -> list[str]:
     reasons: list[str] = []
+    target_related_product = normalize_text(target_patent.get("related_product"))
+    sibling_related_product = normalize_text(sibling.get("related_product"))
     sibling_product_family = normalize_product_family(sibling.get("related_product"))
 
-    if sibling.get("related_product") == target_patent.get("related_product"):
-        reasons.append("same_related_product")
-    elif target_product_family and sibling_product_family == target_product_family:
-        reasons.append("same_product_family")
+    if target_related_product not in EXCLUDED_RELATED_PRODUCTS:
+        if sibling_related_product == target_related_product:
+            reasons.append("same_related_product")
+        elif target_product_family and sibling_product_family == target_product_family:
+            reasons.append("same_product_family")
 
-    sibling_batch = management_batch_key(sibling.get("management_number"))
-    if target_management_batch and sibling_batch == target_management_batch:
-        reasons.append("same_management_batch")
+    sibling_family = management_family_key(sibling.get("management_number"))
+    if target_management_family and sibling_family == target_management_family:
+        reasons.append("same_management_family")
 
     return reasons
 
 
 def sibling_match_priority(reasons: list[str]) -> int:
-    if "same_related_product" in reasons:
+    if "same_management_family" in reasons:
         return 0
-    if "same_product_family" in reasons:
+    if "same_related_product" in reasons:
         return 1
-    return 2
+    if "same_product_family" in reasons:
+        return 2
+    return 3
 
 
 def enrich_target_patent(
@@ -386,6 +402,6 @@ def normalize_product_family(value: Any) -> str:
     return re.sub(r"\s+", "", text).upper()
 
 
-def management_batch_key(value: Any) -> str | None:
-    match = re.match(r"([A-Za-z]\d{6})", normalize_text(value))
-    return match.group(1) if match else None
+def management_family_key(value: Any) -> str | None:
+    match = re.match(r"([A-Za-z]\d{9})(?:-[A-Za-z]{2}\d+)?$", normalize_text(value))
+    return match.group(1).upper() if match else None

@@ -36,6 +36,7 @@ class WorkflowGraphState(TypedDict, total=False):
     patent_structured: dict[str, Any] | None
     kipris_api_data: dict[str, Any] | None
     kipris_family_patents: list[dict[str, Any]]
+    citation_evidence: dict[str, Any]
     pdf_paths: list[str]
     parsed_pdf: dict[str, Any] | None
     preprocessed_patent: dict[str, Any] | None

@@ -631,6 +631,7 @@ def _enrich_kr_reference_document(
     *,
     direction: str,
     source_document: dict[str, Any],
+    max_independent_claims: int = 6,
 ) -> dict[str, Any] | None:
     try:
         normalized = normalize_kipris_bibliography(
@@ -669,7 +670,7 @@ def _enrich_kr_reference_document(
                 "is_independent": claim.get("is_independent"),
                 "dependency": claim.get("dependency"),
             }
-            for claim in representative_claims[:3]
+            for claim in representative_claims[:max_independent_claims]
         ],
         "lookup_status": "resolved",
         "lookup_source": "kipris_bibliography_detail",
@@ -735,6 +736,7 @@ def _fetch_foreign_claims_from_kipris(
     candidates: list[dict[str, Any]],
     *,
     max_candidates: int = 3,
+    max_claims_per_document: int = 5,
 ) -> list[dict[str, Any]]:
     documents = []
     for candidate in candidates[:max_candidates]:
@@ -754,7 +756,7 @@ def _fetch_foreign_claims_from_kipris(
                     "document_number": candidate.get("document_number"),
                     "kind_code": candidate.get("kind_code"),
                     "display_number": candidate.get("display_number"),
-                    "representative_claims": claims[:3],
+                    "representative_claims": claims[:max_claims_per_document],
                     "lookup_status": "resolved",
                     "lookup_source": "kipris_foreign_bibliographic_claims",
                     "source_document": candidate,

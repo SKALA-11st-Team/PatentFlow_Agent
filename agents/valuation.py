@@ -54,6 +54,11 @@ def run_axis_valuation_agent(axis: str, state: PatentWorkflowState) -> PatentWor
     return state
 
 
+@trace(name="legal_valuation_agent", run_type="chain")
+def run_legal_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
+    return run_axis_valuation_agent("legal", state)
+
+
 @trace(name="valuation_axis_result_agent", run_type="chain")
 def run_axis_valuation_result(axis: str, state: PatentWorkflowState) -> dict[str, Any]:
     if state.user_input.get("use_llm_valuation", True) is False:
@@ -200,22 +205,22 @@ def valuation_prior_art_candidates(state: PatentWorkflowState) -> list[str]:
 
 
 def valuation_citation_evidence(state: PatentWorkflowState, *, claim_text_limit: int = 1200) -> dict[str, Any]:
-    evidence = (state.kipris_api_data or {}).get("citation_evidence") or {}
+    evidence = state.citation_evidence or (state.kipris_api_data or {}).get("citation_evidence") or {}
     if not isinstance(evidence, dict):
         return {}
     return {
         "kr_citation_documents": [
-            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit)
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit, max_claims=6)
             for item in (evidence.get("kr_citation_documents") or [])
             if isinstance(item, dict)
         ],
         "kr_citing_documents": [
-            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit)
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit, max_claims=6)
             for item in (evidence.get("kr_citing_documents") or [])
             if isinstance(item, dict)
         ],
         "foreign_citation_documents": [
-            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit)
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit, max_claims=5)
             for item in (evidence.get("foreign_citation_documents") or [])
             if isinstance(item, dict)
         ],
@@ -236,7 +241,12 @@ def valuation_citation_evidence(state: PatentWorkflowState, *, claim_text_limit:
     }
 
 
-def _valuation_reference_document_payload(item: dict[str, Any], *, claim_text_limit: int) -> dict[str, Any]:
+def _valuation_reference_document_payload(
+    item: dict[str, Any],
+    *,
+    claim_text_limit: int,
+    max_claims: int = 3,
+) -> dict[str, Any]:
     return {
         "direction": item.get("direction"),
         "country_code": item.get("country_code"),
@@ -254,7 +264,7 @@ def _valuation_reference_document_payload(item: dict[str, Any], *, claim_text_li
                 "dependency": claim.get("dependency"),
                 "text": normalize_text(claim.get("text"))[:claim_text_limit],
             }
-            for claim in (item.get("representative_claims") or [])[:3]
+            for claim in (item.get("representative_claims") or [])[:max_claims]
             if isinstance(claim, dict) and claim.get("text")
         ],
         "lookup_status": item.get("lookup_status"),
@@ -292,7 +302,7 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
     if missing_fields:
         raise RuntimeError(f"LLM valuation response for {axis} is missing: {', '.join(missing_fields)}.")
     score = max(0, min(100, int(parsed["score"])))
-    return {
+    result = {
         "axis": axis,
         "label": AXIS_LABELS[axis],
         "score": score,
@@ -303,6 +313,31 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         "missing_information": normalize_list(parsed.get("missing_information")),
         "confidence": max(0.0, min(1.0, float(parsed["confidence"]))),
     }
+    subscores = normalize_subscores(parsed.get("subscores"))
+    if subscores:
+        result["subscores"] = subscores
+    return result
+
+
+def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    normalized: dict[str, dict[str, Any]] = {}
+    for key, item in value.items():
+        if not isinstance(item, dict):
+            continue
+        try:
+            score = int(item.get("score"))
+            max_score = int(item.get("max_score"))
+        except (TypeError, ValueError):
+            continue
+        normalized[str(key)] = {
+            "label": normalize_text(item.get("label")),
+            "score": max(0, min(max_score, score)),
+            "max_score": max_score,
+            "rationale": normalize_text(item.get("rationale")),
+        }
+    return normalized
 
 
 def select_axis_evidence(axis: str, state: PatentWorkflowState) -> list[dict[str, Any]]:
