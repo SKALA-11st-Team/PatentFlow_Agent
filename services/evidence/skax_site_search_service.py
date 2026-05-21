@@ -15,7 +15,7 @@ from services.evidence.store_service import ensure_evidence_ids, now_iso
 
 SK_AX_DOMAIN = "skax.co.kr"
 SK_AX_SOURCE = "sk_ax_official"
-DEFAULT_MAX_QUERIES = 3
+DEFAULT_MAX_QUERIES = 5
 DEFAULT_MAX_RESULTS_PER_QUERY = 5
 DEFAULT_MAX_FETCH_PAGES = 5
 DEFAULT_MAX_CONTENT_CHARS = 5000
@@ -24,6 +24,7 @@ DEFAULT_SEARCH_HTML_PREVIEW_CHARS = 800
 DEFAULT_API_ERROR_BODY_PREVIEW_CHARS = 1000
 GOOGLE_SEARCH_URL = "https://www.google.com/search"
 GOOGLE_CUSTOM_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 SEARCH_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -50,7 +51,6 @@ TITLE_STOPWORDS = {
     "적용한",
     "상품",
     "트렌드",
-    "예측",
     "반영한",
     "모델",
     "시스템",
@@ -137,6 +137,82 @@ class GoogleCustomSearchClient(SearchClient):
 
         results = parse_custom_search_json(payload, max_results=max_results)
         diagnostics["parsed_link_count"] = len(payload.get("items", [])) if isinstance(payload, dict) else 0
+        diagnostics["parsed_result_count"] = len(results)
+        if not results:
+            diagnostics["search_failure_reason"] = "no_skax_results"
+        return {"results": results, "diagnostics": diagnostics}
+
+
+class TavilySearchClient(SearchClient):
+    provider = "tavily_search"
+    default_max_results = 3
+
+    def __init__(
+        self,
+        *,
+        api_key: str | None = None,
+        timeout: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
+        max_content_chars: int = DEFAULT_MAX_CONTENT_CHARS,
+    ) -> None:
+        self.api_key = api_key if api_key is not None else os.getenv("TAVILY_API_KEY")
+        self.timeout = timeout
+        self.max_content_chars = max_content_chars
+
+    @classmethod
+    def has_config(cls) -> bool:
+        return bool(os.getenv("TAVILY_API_KEY"))
+
+    def search(self, query: str, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> dict[str, Any]:
+        max_results = min(self.default_max_results, max(1, int(max_results)))
+        diagnostics = build_empty_search_diagnostics(query)
+        diagnostics.update(
+            {
+                "search_provider": self.provider,
+                "search_request_url": TAVILY_SEARCH_URL,
+                "missing_config": False,
+                "raw_content_included": False,
+                "max_results": max_results,
+                "max_content_chars": self.max_content_chars,
+            }
+        )
+        if not self.api_key:
+            diagnostics["missing_config"] = True
+            diagnostics["search_failure_reason"] = "missing_config"
+            return {"results": [], "diagnostics": diagnostics}
+
+        try:
+            response = requests.post(
+                TAVILY_SEARCH_URL,
+                json={
+                    "api_key": self.api_key,
+                    "query": query,
+                    "search_depth": "basic",
+                    "include_domains": [SK_AX_DOMAIN],
+                    "include_raw_content": False,
+                    "max_results": max_results,
+                },
+                timeout=self.timeout,
+            )
+            diagnostics["search_status_code"] = response.status_code
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            diagnostics["search_failure_reason"] = f"fetch_error:{exc.__class__.__name__}"
+            response = getattr(exc, "response", None)
+            if response is not None:
+                diagnostics["api_error_body_preview"] = sanitize_sensitive_text(
+                    normalize_text(getattr(response, "text", "")),
+                    [self.api_key],
+                )[:DEFAULT_API_ERROR_BODY_PREVIEW_CHARS]
+            return {"results": [], "diagnostics": diagnostics}
+
+        results, candidate_results = parse_tavily_search_json_with_candidates(
+            payload,
+            max_results=max_results,
+            max_content_chars=self.max_content_chars,
+        )
+        diagnostics["candidate_results"] = candidate_results
+        diagnostics["parsed_link_count"] = len(candidate_results)
         diagnostics["parsed_result_count"] = len(results)
         if not results:
             diagnostics["search_failure_reason"] = "no_skax_results"
@@ -246,13 +322,22 @@ def build_search_queries(
     title = patent_field(patent_context, "title_final") or patent_field(patent_context, "title_draft") or patent_field(patent_context, "title")
     business_area = patent_field(patent_context, "business_area")
     technology_area = patent_field(patent_context, "technology_area")
-    title_keywords = extract_title_keywords(title, limit=3)
+    title_keywords = extract_title_keywords(title, limit=4)
+    domain_hints = business_domain_hints(patent_context)
 
     candidates = [
+        compact_query([related_product, business_area, technology_area]),
         compact_query([related_product, *title_keywords[:2], technology_area]),
         compact_query([related_product, *title_keywords[:3]]),
         compact_query([business_area, technology_area, related_product]),
     ]
+    if domain_hints:
+        candidates.extend(
+            [
+                compact_query([*domain_hints[:2], "AI", "예측"]),
+                compact_query([related_product, *domain_hints[:2], technology_area]),
+            ]
+        )
     if not related_product:
         candidates.extend(
             [
@@ -273,6 +358,27 @@ def build_search_queries(
     if not queries:
         queries.append(f"site:{SK_AX_DOMAIN}")
     return queries
+
+
+def business_domain_hints(patent_context: dict[str, Any]) -> list[str]:
+    text = normalize_text(
+        " ".join(
+            [
+                patent_field(patent_context, "related_product"),
+                patent_field(patent_context, "title_final"),
+                patent_field(patent_context, "title_draft"),
+                patent_field(patent_context, "business_area"),
+                patent_field(patent_context, "technology_area"),
+            ]
+        )
+    ).lower()
+    finance_markers = ("로보어드바이저", "자산배분", "투자", "금융", "포트폴리오")
+    blockchain_markers = ("블록체인", "chainz", "합의", "서명")
+    if any(marker in text for marker in finance_markers):
+        return ["금융", "투자", "자산관리", "금융 서비스"]
+    if any(marker in text for marker in blockchain_markers):
+        return ["블록체인", "인증", "보안", "디지털 자산"]
+    return []
 
 
 def extract_title_keywords(title: Any, *, limit: int = 4) -> list[str]:
@@ -356,26 +462,30 @@ def collect_skax_site_evidence(
 
     for result in selected:
         url = result["url"]
-        try:
-            active_fetcher = fetcher or fetch_skax_page_html
-            html = active_fetcher(url)
-            fetched_url_count += 1
-        except Exception:
-            failed_urls.append(url)
-            continue
-        if not normalize_text(html):
-            skipped_url_count += 1
-            continue
+        content = normalize_text(result.get("content"))
+        page_title = None
+        if not content:
+            try:
+                active_fetcher = fetcher or fetch_skax_page_html
+                html = active_fetcher(url)
+                fetched_url_count += 1
+            except Exception:
+                failed_urls.append(url)
+                continue
+            if not normalize_text(html):
+                skipped_url_count += 1
+                continue
 
-        page = parse_page_html(html)
-        content = page["content"]
+            page = parse_page_html(html)
+            content = page["content"]
+            page_title = page["title"]
         if not content:
             skipped_url_count += 1
             continue
         if len(content) > max_content_chars:
             truncated_content_count += 1
             content = content[:max_content_chars]
-        items.append(normalize_page_evidence(patent_context, result, page["title"], content))
+        items.append(normalize_page_evidence(patent_context, result, page_title, content))
 
     evidence_items = ensure_evidence_ids(items, prefix="skax_site")
     return {
@@ -397,6 +507,8 @@ def collect_skax_site_evidence(
 
 
 def default_search_client() -> SearchClient:
+    if TavilySearchClient.has_config():
+        return TavilySearchClient()
     if GoogleCustomSearchClient.has_config():
         return GoogleCustomSearchClient()
     return GoogleHtmlSearchClient()
@@ -571,6 +683,82 @@ def parse_custom_search_json(payload: Any, *, max_results: int = DEFAULT_MAX_RES
         if len(results) >= max(1, int(max_results)):
             break
     return results
+
+
+def parse_tavily_search_json(
+    payload: Any,
+    *,
+    max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
+    max_content_chars: int = DEFAULT_MAX_CONTENT_CHARS,
+) -> list[SearchResult]:
+    results, _ = parse_tavily_search_json_with_candidates(
+        payload,
+        max_results=max_results,
+        max_content_chars=max_content_chars,
+    )
+    return results
+
+
+def parse_tavily_search_json_with_candidates(
+    payload: Any,
+    *,
+    max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
+    max_content_chars: int = DEFAULT_MAX_CONTENT_CHARS,
+) -> tuple[list[SearchResult], list[dict[str, Any]]]:
+    if not isinstance(payload, dict):
+        return [], []
+    results: list[SearchResult] = []
+    candidate_results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in payload.get("results", []) or []:
+        if not isinstance(item, dict):
+            continue
+        original_url = normalize_text(item.get("url"))
+        normalized_url = normalize_url(original_url)
+        candidate = {
+            "title": normalize_text(item.get("title")),
+            "url": original_url,
+            "normalized_url": normalized_url,
+            "accepted": False,
+            "skip_reason": None,
+        }
+        if not original_url:
+            candidate["skip_reason"] = "empty_url"
+            candidate_results.append(candidate)
+            continue
+        if not normalized_url:
+            candidate["skip_reason"] = "invalid_url"
+            candidate_results.append(candidate)
+            continue
+        if not is_skax_url(normalized_url):
+            candidate["skip_reason"] = "external_domain"
+            candidate_results.append(candidate)
+            continue
+        if is_file_url(normalized_url):
+            candidate["skip_reason"] = "file_url"
+            candidate_results.append(candidate)
+            continue
+        if normalized_url in seen:
+            candidate["skip_reason"] = "duplicate_url"
+            candidate_results.append(candidate)
+            continue
+        seen.add(normalized_url)
+        content = normalize_text(item.get("content") or item.get("snippet"))
+        if len(content) > max_content_chars:
+            content = content[:max_content_chars]
+        candidate["accepted"] = True
+        candidate_results.append(candidate)
+        results.append(
+            {
+                "title": normalize_text(item.get("title")) or normalized_url,
+                "url": normalized_url,
+                "snippet": content,
+                "content": content,
+            }
+        )
+        if len(results) >= max(1, int(max_results)):
+            break
+    return results, candidate_results
 
 
 def parse_google_api_error_response(
@@ -776,6 +964,7 @@ def normalize_search_result(result: dict[str, Any], query: str) -> dict[str, Any
         "snippet": normalize_text(result.get("snippet") or result.get("description")),
         "url": url,
         "search_query": query,
+        "content": normalize_text(result.get("content")),
     }
 
 
