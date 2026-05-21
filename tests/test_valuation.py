@@ -182,6 +182,105 @@ def test_business_fit_selects_news_with_company_or_product_context():
     assert selected[0]["evidence_id"] == "news_001"
 
 
+def test_business_fit_prioritizes_sk_ax_official_evidence():
+    state = PatentWorkflowState(
+        patent_structured={
+            "related_product": "로보어드바이저",
+            "title_final": "강화학습 자산배분 특허",
+            "technology_area": "데이터분석",
+            "business_area": "Data",
+        },
+        evidence_bundle=[
+            {
+                "evidence_id": "news_001",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "로보어드바이저 자산배분 시장 확대",
+                "compressed_summary": "데이터분석 서비스 수요 확대",
+            },
+            {
+                "evidence_id": "skax_low",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "SK AX 데이터분석",
+                "content": "데이터분석 사업 소개",
+                "relevance_score": 0.4,
+            },
+            {
+                "evidence_id": "skax_high",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "SK AX 로보어드바이저",
+                "content": "로보어드바이저 자산배분 데이터분석 솔루션",
+                "relevance_score": 0.9,
+            },
+        ],
+    )
+
+    selected = select_axis_evidence("business_fit", state)
+
+    assert [item["evidence_id"] for item in selected[:3]] == ["skax_high", "skax_low", "news_001"]
+
+
+def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
+    state = PatentWorkflowState(
+        patent_structured={"related_product": "로보어드바이저"},
+        evidence_bundle=[
+            {
+                "evidence_id": "news_001",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "로보어드바이저 시장 확대",
+            },
+            {
+                "evidence_id": "skax_meta",
+                "source": "company_page",
+                "source_type": "company_disclosure",
+                "title": "SK AX 로보어드바이저",
+                "metadata": {"source": "sk_ax_official", "relevance_score": 0.8},
+            },
+        ],
+    )
+
+    selected = select_axis_evidence("business_fit", state)
+
+    assert selected[0]["evidence_id"] == "skax_meta"
+
+
+def test_business_fit_fallback_without_official_evidence_matches_existing_order():
+    state = PatentWorkflowState(
+        patent_structured={
+            "related_product": "문서변환 SW",
+            "title_final": "문서변환 특허",
+        },
+        kipris_api_data={"metadata": {"assignee": ["에스케이"]}},
+        evidence_bundle=[
+            {
+                "evidence_id": "news_direct",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "에스케이 문서변환 SW 사업 확대",
+            },
+            {
+                "evidence_id": "portfolio_001",
+                "source": "kipris_api",
+                "source_type": "portfolio_context",
+                "compressed_summary": "문서변환 포트폴리오 맥락",
+            },
+            {
+                "evidence_id": "news_secondary",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "무관한 산업 뉴스",
+            },
+        ],
+    )
+
+    selected = select_axis_evidence("business_fit", state)
+
+    assert [item["evidence_id"] for item in selected] == ["news_direct", "portfolio_001", "news_secondary"]
+
+
 def test_valuation_fails_when_llm_valuation_is_disabled():
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": False, "use_llm_final_report": False},
