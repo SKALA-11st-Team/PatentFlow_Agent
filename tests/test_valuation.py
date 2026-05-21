@@ -346,9 +346,11 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
 
 def test_technology_metrics_are_added_to_payload(monkeypatch):
     captured_payloads = []
+    captured_prompts = []
 
     def fake_build_prompt(**kwargs):
         captured_payloads.append(kwargs["payload"])
+        captured_prompts.append(kwargs)
         return "prompt"
 
     def fake_run_llm_required(**kwargs):
@@ -390,7 +392,9 @@ def test_technology_metrics_are_added_to_payload(monkeypatch):
 
     assert captured_payloads[0]["technology_metrics"]["representative_cpc"] == "G05B 19/4065"
     assert captured_payloads[0]["technology_metrics"]["similar_patents"][0]["application_number"] == "1020200000001"
-    assert captured_payloads[1]["technology_metrics"]["comparison_mode"] == "implementation-only"
+    assert len(captured_payloads) == 1
+    assert captured_prompts[0]["prompt_name"] == "valuation/valuation_technology.md"
+    assert captured_prompts[0]["artifact_name"] == "technology_input"
 
 
 def test_technology_breakdown_scores_are_binary():
@@ -533,7 +537,7 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     run_final_report_agent(state)
 
     axis_prompts = [prompt for prompt in captured_prompts if "Return ONLY one JSON object" in prompt]
-    assert len(axis_prompts) == 5
+    assert len(axis_prompts) == 4
     assert all(prompt.index("# Common Valuation Axis Rules") < prompt.index("# Valuation") for prompt in axis_prompts)
 
 
@@ -583,8 +587,7 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
 
     input_dir = tmp_path / "valuation_inputs"
     assert (input_dir / "legal_input.json").exists()
-    assert (input_dir / "technology_differentiation_input.json").exists()
-    assert (input_dir / "technology_implementation_input.json").exists()
+    assert (input_dir / "technology_input.json").exists()
     assert (input_dir / "market_input.json").exists()
     assert not (input_dir / "economic_input.json").exists()
     assert (input_dir / "business_fit_input.json").exists()

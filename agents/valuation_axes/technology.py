@@ -14,39 +14,23 @@ from workflow.state import PatentWorkflowState
 
 AXIS = "technology"
 LABEL = "기술성"
-DIFFERENTIATION_PROMPT_PATH = "valuation/valuation_technology_differentiation.md"
-IMPLEMENTATION_PROMPT_PATH = "valuation/valuation_technology_implementation.md"
+PROMPT_PATH = "valuation/valuation_technology.md"
 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     metrics = build_technology_metrics(state)
-    differentiation_payload = build_input_payload(state=state, evidence=evidence)
-    differentiation_payload["technology_metrics"] = metrics
-    differentiation_prompt = runtime.build_prompt(
-        prompt_name=DIFFERENTIATION_PROMPT_PATH,
+    payload = build_input_payload(state=state, evidence=evidence)
+    payload["technology_metrics"] = metrics
+    prompt = runtime.build_prompt(
+        prompt_name=PROMPT_PATH,
         state=state,
-        payload=differentiation_payload,
-        artifact_name=f"{AXIS}_differentiation_input",
+        payload=payload,
+        artifact_name=f"{AXIS}_input",
     )
-    differentiation_result = runtime.run_llm_required(axis=AXIS, prompt=differentiation_prompt, evidence=evidence)
-
-    implementation_payload = build_input_payload(state=state, evidence=[])
-    implementation_payload["technology_metrics"] = {"comparison_mode": "implementation-only"}
-    implementation_prompt = runtime.build_prompt(
-        prompt_name=IMPLEMENTATION_PROMPT_PATH,
-        state=state,
-        payload=implementation_payload,
-        artifact_name=f"{AXIS}_implementation_input",
-    )
-    implementation_result = runtime.run_llm_required(axis=AXIS, prompt=implementation_prompt, evidence=[])
-    implementation_result = override_implementation_result_from_state(implementation_result, state)
-    merged = merge_technology_llm_results(
-        differentiation_result=differentiation_result,
-        implementation_result=implementation_result,
-        metrics=metrics,
-    )
-    return apply_technology_scores(merged, metrics)
+    result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
+    result = override_implementation_result_from_state(result, state)
+    return apply_technology_scores(result, metrics)
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
@@ -349,49 +333,6 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
         "implementation_specificity_breakdown": implementation_breakdown,
         "technology_metrics": metrics,
         "missing_information": missing_information,
-    }
-
-
-def merge_technology_llm_results(
-    *,
-    differentiation_result: dict[str, Any],
-    implementation_result: dict[str, Any],
-    metrics: dict[str, Any],
-) -> dict[str, Any]:
-    risk_factors = dedupe_texts(
-        [*list(differentiation_result.get("risk_factors") or []), *list(implementation_result.get("risk_factors") or [])]
-    )
-    missing_information = dedupe_texts(
-        [
-            *list(differentiation_result.get("missing_information") or []),
-            *list(implementation_result.get("missing_information") or []),
-        ]
-    )
-    rationale_parts = [
-        f"기술 차별성 판단: {str(differentiation_result.get('rationale') or '').strip()}",
-        f"구현 구체성 판단: {str(implementation_result.get('rationale') or '').strip()}",
-    ]
-    rationale = "\n\n".join(part for part in rationale_parts if not part.endswith(":"))
-    return {
-        **differentiation_result,
-        "score": 0,
-        "grade": differentiation_result.get("grade") or implementation_result.get("grade") or "D",
-        "rationale": rationale,
-        "risk_factors": risk_factors,
-        "missing_information": missing_information,
-        "confidence": min(
-            float(differentiation_result.get("confidence") or 0.0),
-            float(implementation_result.get("confidence") or 0.0),
-        ),
-        "technical_differentiation_score": differentiation_result.get("technical_differentiation_score"),
-        "technical_differentiation_breakdown": differentiation_result.get("technical_differentiation_breakdown") or {},
-        "implementation_specificity_score": implementation_result.get("implementation_specificity_score"),
-        "implementation_specificity_breakdown": implementation_result.get("implementation_specificity_breakdown") or {},
-        "sub_scores": {
-            **(differentiation_result.get("sub_scores") or {}),
-            **(implementation_result.get("sub_scores") or {}),
-        },
-        "technology_metrics": metrics,
     }
 
 
