@@ -346,9 +346,6 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
 def test_technology_metrics_are_added_to_payload(monkeypatch):
     captured_payloads = []
 
-    def fake_build_input_payload(**kwargs):
-        return {"patent": {"metadata": {}}, "evidence": []}
-
     def fake_build_prompt(**kwargs):
         captured_payloads.append(kwargs["payload"])
         return "prompt"
@@ -385,7 +382,6 @@ def test_technology_metrics_are_added_to_payload(monkeypatch):
     technology.run(
         state,
         AxisRuntime(
-            build_input_payload=fake_build_input_payload,
             build_prompt=fake_build_prompt,
             run_llm_required=fake_run_llm_required,
         ),
@@ -622,9 +618,9 @@ def test_axis_input_includes_representative_claims(tmp_path):
         },
     )
 
-    from agents.valuation import build_axis_input_payload
+    from agents.valuation_axes.payload_common import build_base_input_payload
 
-    payload = build_axis_input_payload(state=state, evidence=[])
+    payload = build_base_input_payload(state=state, evidence=[])
 
     assert payload["patent"]["claim_availability"]["representative_claims_provided"] is True
     assert payload["patent"]["representative_claims"][0]["claim_no"] == 1
@@ -647,10 +643,11 @@ def test_legal_axis_input_includes_full_claims(tmp_path):
         },
     )
 
-    from agents.valuation import build_axis_input_payload
+    from agents.valuation_axes.legal import build_input_payload as build_legal_input_payload
+    from agents.valuation_axes.market import build_input_payload as build_market_input_payload
 
-    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
-    market_payload = build_axis_input_payload(axis="market", state=state, evidence=[])
+    legal_payload = build_legal_input_payload(state=state, evidence=[])
+    market_payload = build_market_input_payload(state=state, evidence=[])
 
     assert [claim["claim_no"] for claim in legal_payload["patent"]["claims"]] == [1, 2]
     assert legal_payload["patent"]["claims"][1]["text"] == "종속항 전체 내용"
@@ -669,10 +666,11 @@ def test_legal_axis_input_includes_prior_art_candidates(tmp_path):
         },
     )
 
-    from agents.valuation import build_axis_input_payload
+    from agents.valuation_axes.legal import build_input_payload as build_legal_input_payload
+    from agents.valuation_axes.market import build_input_payload as build_market_input_payload
 
-    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
-    market_payload = build_axis_input_payload(axis="market", state=state, evidence=[])
+    legal_payload = build_legal_input_payload(state=state, evidence=[])
+    market_payload = build_market_input_payload(state=state, evidence=[])
 
     assert legal_payload["patent"]["prior_art_candidates"] == ["KR10-1111111", "US2024-0000001A"]
     assert market_payload["patent"]["prior_art_candidates"] == []
@@ -739,10 +737,11 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
         citation_evidence=citation_evidence,
     )
 
-    from agents.valuation import build_axis_input_payload
+    from agents.valuation_axes.legal import build_input_payload as build_legal_input_payload
+    from agents.valuation_axes.technology import build_input_payload as build_technology_input_payload
 
-    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
-    technology_payload = build_axis_input_payload(axis="technology", state=state, evidence=[])
+    legal_payload = build_legal_input_payload(state=state, evidence=[])
+    technology_payload = build_technology_input_payload(state=state, evidence=[])
 
     citation_evidence = legal_payload["patent"]["citation_evidence"]
     assert citation_evidence["kr_citation_documents"][0]["application_number"] == "1020200012345"
@@ -785,9 +784,9 @@ def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):
         },
     )
 
-    from agents.valuation import build_axis_input_payload
+    from agents.valuation_axes.legal import build_input_payload
 
-    legal_payload = build_axis_input_payload(axis="legal", state=state, evidence=[])
+    legal_payload = build_input_payload(state=state, evidence=[])
 
     assert legal_payload["patent"]["citation_evidence"]["kr_citation_documents"][0]["application_number"] == "1020200012345"
 

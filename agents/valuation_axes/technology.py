@@ -6,6 +6,7 @@ from typing import Any
 
 from agents.valuation_axes.common import select_by_types_or_axes
 from agents.valuation_axes.market import extract_representative_cpc, grade_for_score
+from agents.valuation_axes.payload_common import build_base_input_payload
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
 from services.patent.similar_patent_service import build_similar_patent_context
 from workflow.state import PatentWorkflowState
@@ -20,7 +21,7 @@ IMPLEMENTATION_PROMPT_PATH = "valuation/valuation_technology_implementation.md"
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     metrics = build_technology_metrics(state)
-    differentiation_payload = runtime.build_input_payload(axis=AXIS, state=state, evidence=evidence)
+    differentiation_payload = build_input_payload(state=state, evidence=evidence)
     differentiation_payload["technology_metrics"] = metrics
     differentiation_prompt = runtime.build_prompt(
         prompt_name=DIFFERENTIATION_PROMPT_PATH,
@@ -30,7 +31,7 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     )
     differentiation_result = runtime.run_llm_required(axis=AXIS, prompt=differentiation_prompt, evidence=evidence)
 
-    implementation_payload = runtime.build_input_payload(axis=AXIS, state=state, evidence=[])
+    implementation_payload = build_input_payload(state=state, evidence=[])
     implementation_payload["technology_metrics"] = {"comparison_mode": "implementation-only"}
     implementation_prompt = runtime.build_prompt(
         prompt_name=IMPLEMENTATION_PROMPT_PATH,
@@ -55,6 +56,10 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
         source_types={"portfolio_context", "industry_report", "patent_api"},
         axes={AXIS},
     )
+
+
+def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    return build_base_input_payload(state=state, evidence=evidence)
 
 
 def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:

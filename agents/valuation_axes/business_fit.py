@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from agents.valuation_axes.common import normalize_text
+from agents.valuation_axes.payload_common import build_base_input_payload
 from workflow.state import PatentWorkflowState
 
 
@@ -13,7 +14,7 @@ PROMPT_PATH = "valuation/valuation_business_fit.md"
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
-    payload = runtime.build_input_payload(axis=AXIS, state=state, evidence=evidence)
+    payload = build_input_payload(state=state, evidence=evidence)
     payload["business_fit_scoring_rubric"] = business_fit_scoring_rubric()
     prompt = runtime.build_prompt(
         prompt_name=PROMPT_PATH,
@@ -22,6 +23,10 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         artifact_name=f"{AXIS}_input",
     )
     return runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
+
+
+def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    return build_base_input_payload(state=state, evidence=evidence)
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:

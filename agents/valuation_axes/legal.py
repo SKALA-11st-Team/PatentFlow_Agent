@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.valuation_axes.common import select_by_types_or_axes
+from agents.valuation_axes.common import normalize_text, select_by_types_or_axes
+from agents.valuation_axes.payload_common import build_base_input_payload, unique_texts, valuation_claims
 from workflow.state import PatentWorkflowState
 
 
@@ -13,7 +14,7 @@ PROMPT_PATH = "valuation/valuation_legal.md"
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
-    payload = runtime.build_input_payload(axis=AXIS, state=state, evidence=evidence)
+    payload = build_input_payload(state=state, evidence=evidence)
     prompt = runtime.build_prompt(
         prompt_name=PROMPT_PATH,
         state=state,
@@ -30,3 +31,95 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
         source_types={"portfolio_context", "patent_api", "prior_art", "citation"},
         axes={AXIS},
     )
+
+
+def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    return build_base_input_payload(
+        state=state,
+        evidence=evidence,
+        claims=valuation_claims(state),
+        prior_art_candidates=valuation_prior_art_candidates(state),
+        citation_evidence=valuation_citation_evidence(state),
+    )
+
+
+def valuation_prior_art_candidates(state: PatentWorkflowState) -> list[str]:
+    candidates = []
+    for source in (
+        (state.preprocessed_patent or {}).get("metadata") or {},
+        (state.kipris_api_data or {}).get("metadata") or {},
+        state.patent_structured or {},
+    ):
+        values = source.get("prior_art") or source.get("citation_documents") or []
+        if isinstance(values, str):
+            values = [values]
+        candidates.extend(normalize_text(value) for value in values if normalize_text(value))
+    return unique_texts(candidates)
+
+
+def valuation_citation_evidence(state: PatentWorkflowState, *, claim_text_limit: int = 1200) -> dict[str, Any]:
+    evidence = state.citation_evidence or (state.kipris_api_data or {}).get("citation_evidence") or {}
+    if not isinstance(evidence, dict):
+        return {}
+    return {
+        "kr_citation_documents": [
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit, max_claims=6)
+            for item in (evidence.get("kr_citation_documents") or [])
+            if isinstance(item, dict)
+        ],
+        "kr_citing_documents": [
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit, max_claims=6)
+            for item in (evidence.get("kr_citing_documents") or [])
+            if isinstance(item, dict)
+        ],
+        "foreign_citation_documents": [
+            _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit, max_claims=5)
+            for item in (evidence.get("foreign_citation_documents") or [])
+            if isinstance(item, dict)
+        ],
+        "foreign_claim_lookup_candidates": [
+            {
+                "direction": item.get("direction"),
+                "country_code": item.get("country_code"),
+                "document_number": item.get("document_number"),
+                "kind_code": item.get("kind_code"),
+                "original_number": item.get("original_number"),
+                "display_number": item.get("display_number"),
+                "lookup_source": item.get("lookup_source"),
+            }
+            for item in (evidence.get("foreign_claim_lookup_candidates") or [])
+            if isinstance(item, dict)
+        ],
+        "warnings": evidence.get("warnings") or [],
+    }
+
+
+def _valuation_reference_document_payload(
+    item: dict[str, Any],
+    *,
+    claim_text_limit: int,
+    max_claims: int = 3,
+) -> dict[str, Any]:
+    return {
+        "direction": item.get("direction"),
+        "country_code": item.get("country_code"),
+        "application_number": item.get("application_number"),
+        "registration_number": item.get("registration_number"),
+        "publication_number": item.get("publication_number"),
+        "title": item.get("title"),
+        "abstract": normalize_text(item.get("abstract"))[:1500],
+        "register_status": item.get("register_status"),
+        "claim_stats": item.get("claim_stats") or {},
+        "representative_claims": [
+            {
+                "claim_no": claim.get("claim_no"),
+                "is_independent": claim.get("is_independent"),
+                "dependency": claim.get("dependency"),
+                "text": normalize_text(claim.get("text"))[:claim_text_limit],
+            }
+            for claim in (item.get("representative_claims") or [])[:max_claims]
+            if isinstance(claim, dict) and claim.get("text")
+        ],
+        "lookup_status": item.get("lookup_status"),
+        "lookup_source": item.get("lookup_source"),
+    }

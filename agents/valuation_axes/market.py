@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 
 from agents.valuation_axes.common import select_by_types_or_axes
+from agents.valuation_axes.payload_common import build_base_input_payload
 from services.evidence.api_normalizers import extract_kipris_items
 from workflow.state import PatentWorkflowState
 
@@ -16,7 +17,7 @@ MARKET_GROWTH_MISSING_MESSAGE = "CPC 기준 최근 3년 연도별 특허 출원 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
-    payload = runtime.build_input_payload(axis=AXIS, state=state, evidence=evidence)
+    payload = build_input_payload(state=state, evidence=evidence)
     metrics = build_marketability_metrics(state)
     payload["marketability_metrics"] = metrics
     prompt = runtime.build_prompt(
@@ -36,6 +37,10 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
         source_types={"industry_report", "company_disclosure", "news"},
         axes={AXIS},
     )
+
+
+def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    return build_base_input_payload(state=state, evidence=evidence)
 
 
 def build_marketability_metrics(state: PatentWorkflowState) -> dict[str, Any]:
