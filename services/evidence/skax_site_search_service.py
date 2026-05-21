@@ -18,6 +18,7 @@ SK_AX_SOURCE = "sk_ax_official"
 DEFAULT_MAX_QUERIES = 5
 DEFAULT_MAX_RESULTS_PER_QUERY = 5
 DEFAULT_MAX_FETCH_PAGES = 5
+DEFAULT_MAX_EVIDENCE_ITEMS = 3
 DEFAULT_MAX_CONTENT_CHARS = 5000
 DEFAULT_SEARCH_TIMEOUT_SECONDS = 5
 DEFAULT_SEARCH_HTML_PREVIEW_CHARS = 800
@@ -58,6 +59,26 @@ TITLE_STOPWORDS = {
     "장치",
     "프로그램",
 }
+DOMAIN_HINT_PROFILES = [
+    {
+        "name": "finance",
+        "triggers": ("로보어드바이저", "자산배분", "투자", "포트폴리오", "금융", "예측"),
+        "hints": ("금융", "투자", "자산관리", "AI", "예측", "데이터 서비스"),
+        "preferred_paths": ("/finance",),
+    },
+    {
+        "name": "blockchain_security",
+        "triggers": ("블록체인", "chainz", "합의", "서명", "인증"),
+        "hints": ("블록체인", "인증", "보안", "디지털 자산"),
+        "preferred_paths": ("/blockchain", "/security", "/trust"),
+    },
+    {
+        "name": "manufacturing_smart_factory",
+        "triggers": ("cmp", "반도체", "제조", "공정", "물류", "설비", "agv", "컨베이어", "스마트팩토리"),
+        "hints": ("제조", "스마트팩토리", "공정", "물류", "자동화", "설비"),
+        "preferred_paths": ("/manufacturing", "/industry", "/smart-factory", "/enterprise"),
+    },
+]
 
 SearchResult = dict[str, Any]
 Searcher = Callable[[str], list[SearchResult]]
@@ -318,11 +339,20 @@ def build_search_queries(
     *,
     max_queries: int = DEFAULT_MAX_QUERIES,
 ) -> list[str]:
+    return build_query_generation_plan(patent_context, max_queries=max_queries)["generated_queries"]
+
+
+def build_query_generation_plan(
+    patent_context: dict[str, Any],
+    *,
+    max_queries: int = DEFAULT_MAX_QUERIES,
+) -> dict[str, Any]:
     related_product = patent_field(patent_context, "related_product")
     title = patent_field(patent_context, "title_final") or patent_field(patent_context, "title_draft") or patent_field(patent_context, "title")
     business_area = patent_field(patent_context, "business_area")
     technology_area = patent_field(patent_context, "technology_area")
     title_keywords = extract_title_keywords(title, limit=4)
+    domain_profiles = business_domain_profiles(patent_context)
     domain_hints = business_domain_hints(patent_context)
 
     candidates = [
@@ -334,7 +364,7 @@ def build_search_queries(
     if domain_hints:
         candidates.extend(
             [
-                compact_query([*domain_hints[:2], "AI", "예측"]),
+                compact_query([*domain_hints[:5]]),
                 compact_query([related_product, *domain_hints[:2], technology_area]),
             ]
         )
@@ -347,20 +377,49 @@ def build_search_queries(
         )
 
     queries: list[str] = []
+    dropped_duplicate_queries: list[str] = []
     for candidate in candidates:
         if not candidate:
             continue
         query = f"site:{SK_AX_DOMAIN} {candidate}"
         if query not in queries:
             queries.append(query)
+        else:
+            dropped_duplicate_queries.append(query)
         if len(queries) >= max(1, int(max_queries)):
             break
     if not queries:
         queries.append(f"site:{SK_AX_DOMAIN}")
-    return queries
+    return {
+        "selected_features": {
+            "related_product": related_product,
+            "business_area": business_area,
+            "technology_area": technology_area,
+            "title_final": patent_field(patent_context, "title_final"),
+            "title_draft": patent_field(patent_context, "title_draft"),
+        },
+        "title_keywords": title_keywords,
+        "domain_hints": [
+            {
+                "name": profile["name"],
+                "hints": list(profile["hints"]),
+                "preferred_paths": list(profile["preferred_paths"]),
+            }
+            for profile in domain_profiles
+        ],
+        "generated_queries": queries,
+        "dropped_duplicate_queries": dropped_duplicate_queries,
+    }
 
 
 def business_domain_hints(patent_context: dict[str, Any]) -> list[str]:
+    hints: list[str] = []
+    for profile in business_domain_profiles(patent_context):
+        hints.extend(profile["hints"])
+    return unique_texts(hints)
+
+
+def business_domain_profiles(patent_context: dict[str, Any]) -> list[dict[str, Any]]:
     text = normalize_text(
         " ".join(
             [
@@ -372,13 +431,11 @@ def business_domain_hints(patent_context: dict[str, Any]) -> list[str]:
             ]
         )
     ).lower()
-    finance_markers = ("로보어드바이저", "자산배분", "투자", "금융", "포트폴리오")
-    blockchain_markers = ("블록체인", "chainz", "합의", "서명")
-    if any(marker in text for marker in finance_markers):
-        return ["금융", "투자", "자산관리", "금융 서비스"]
-    if any(marker in text for marker in blockchain_markers):
-        return ["블록체인", "인증", "보안", "디지털 자산"]
-    return []
+    return [
+        profile
+        for profile in DOMAIN_HINT_PROFILES
+        if any(normalize_text(trigger).lower() in text for trigger in profile["triggers"])
+    ]
 
 
 def extract_title_keywords(title: Any, *, limit: int = 4) -> list[str]:
@@ -408,7 +465,8 @@ def collect_skax_site_evidence(
     max_fetch_pages: int = DEFAULT_MAX_FETCH_PAGES,
     max_content_chars: int = DEFAULT_MAX_CONTENT_CHARS,
 ) -> dict[str, Any]:
-    queries = build_search_queries(patent_context, max_queries=max_queries)
+    query_generation_diagnostics = build_query_generation_plan(patent_context, max_queries=max_queries)
+    queries = query_generation_diagnostics["generated_queries"]
     searched_result_count = 0
     search_results: list[dict[str, Any]] = []
     search_diagnostics: list[dict[str, Any]] = []
@@ -457,7 +515,8 @@ def collect_skax_site_evidence(
 
     filtered = filter_search_results(search_results, patent_context)
     skipped_url_count += max(0, len(search_results) - len(filtered))
-    selected = filtered[: max(1, int(max_fetch_pages))]
+    selected_limit = min(DEFAULT_MAX_EVIDENCE_ITEMS, max(1, int(max_fetch_pages)))
+    selected = filtered[:selected_limit]
     items: list[dict[str, Any]] = []
 
     for result in selected:
@@ -488,6 +547,7 @@ def collect_skax_site_evidence(
         items.append(normalize_page_evidence(patent_context, result, page_title, content))
 
     evidence_items = ensure_evidence_ids(items, prefix="skax_site")
+    annotate_candidate_final_selection(search_diagnostics, filtered, selected, evidence_items)
     return {
         "items": evidence_items,
         "stats": {
@@ -501,6 +561,7 @@ def collect_skax_site_evidence(
             "truncated_content_count": truncated_content_count,
         },
         "queries": queries,
+        "query_generation_diagnostics": query_generation_diagnostics,
         "failed_urls": failed_urls,
         "search_diagnostics": search_diagnostics,
     }
@@ -720,7 +781,12 @@ def parse_tavily_search_json_with_candidates(
             "url": original_url,
             "normalized_url": normalized_url,
             "accepted": False,
+            "domain_accepted": False,
+            "final_selected": False,
             "skip_reason": None,
+            "final_skip_reason": None,
+            "candidate_relevance_score": 0.0,
+            "score_reasons": [],
         }
         if not original_url:
             candidate["skip_reason"] = "empty_url"
@@ -736,6 +802,7 @@ def parse_tavily_search_json_with_candidates(
             continue
         if is_file_url(normalized_url):
             candidate["skip_reason"] = "file_url"
+            candidate["score_reasons"] = ["penalty_file_url"]
             candidate_results.append(candidate)
             continue
         if normalized_url in seen:
@@ -747,6 +814,7 @@ def parse_tavily_search_json_with_candidates(
         if len(content) > max_content_chars:
             content = content[:max_content_chars]
         candidate["accepted"] = True
+        candidate["domain_accepted"] = True
         candidate_results.append(candidate)
         results.append(
             {
@@ -759,6 +827,43 @@ def parse_tavily_search_json_with_candidates(
         if len(results) >= max(1, int(max_results)):
             break
     return results, candidate_results
+
+
+def annotate_candidate_final_selection(
+    diagnostics: list[dict[str, Any]],
+    filtered: list[dict[str, Any]],
+    selected: list[dict[str, Any]],
+    evidence_items: list[dict[str, Any]],
+) -> None:
+    filtered_scores = {item["url"]: item.get("relevance_score", 0.0) for item in filtered}
+    filtered_reasons = {item["url"]: item.get("score_reasons", []) for item in filtered}
+    selected_urls = {item["url"] for item in selected}
+    evidence_urls = {item.get("url") for item in evidence_items}
+    selected_score_floor = min((item.get("relevance_score", 0.0) for item in selected), default=0.0)
+
+    for diagnostic in diagnostics:
+        for candidate in diagnostic.get("candidate_results", []) or []:
+            normalized_url = candidate.get("normalized_url")
+            if candidate.get("skip_reason"):
+                candidate["final_skip_reason"] = candidate["skip_reason"]
+                continue
+
+            score = filtered_scores.get(normalized_url, 0.0)
+            candidate["candidate_relevance_score"] = score
+            candidate["score_reasons"] = filtered_reasons.get(normalized_url, candidate.get("score_reasons", []))
+            if normalized_url in evidence_urls:
+                candidate["final_selected"] = True
+                candidate["final_skip_reason"] = None
+            elif normalized_url not in filtered_scores:
+                candidate["final_skip_reason"] = "lower_relevance_than_selected"
+            elif normalized_url not in selected_urls:
+                candidate["final_skip_reason"] = (
+                    "lower_relevance_than_selected"
+                    if score <= selected_score_floor
+                    else "max_evidence_limit"
+                )
+            else:
+                candidate["final_skip_reason"] = "empty_content"
 
 
 def parse_google_api_error_response(
@@ -931,27 +1036,52 @@ def score_search_result(result: dict[str, Any], patent_context: dict[str, Any]) 
     business_area = patent_field(patent_context, "business_area")
     technology_area = patent_field(patent_context, "technology_area")
     title_keywords = extract_title_keywords(title, limit=4)
-    text = normalize_text(" ".join(str(result.get(field) or "") for field in ("title", "snippet", "url"))).lower()
+    domain_profiles = business_domain_profiles(patent_context)
+    domain_hints = business_domain_hints(patent_context)
+    url = normalize_text(result.get("url"))
+    path = urlparse(url).path.lower()
+    text = normalize_text(" ".join(str(result.get(field) or "") for field in ("title", "snippet", "content", "url"))).lower()
 
     matched_keywords: list[str] = []
+    score_reasons: list[str] = []
     points = 0.0
     if related_product and contains_keyword(text, related_product):
         matched_keywords.append(related_product)
+        score_reasons.append("matched_related_product")
         points += 0.5
     for keyword in title_keywords:
         if contains_keyword(text, keyword):
             matched_keywords.append(keyword)
+            score_reasons.append(f"matched_title_keyword:{keyword}")
             points += 0.12
     if technology_area and contains_keyword(text, technology_area):
         matched_keywords.append(technology_area)
+        score_reasons.append("matched_technology_area")
         points += 0.14
     if business_area and contains_keyword(text, business_area):
         matched_keywords.append(business_area)
+        score_reasons.append("matched_business_area")
         points += 0.12
+    for hint in domain_hints:
+        if contains_keyword(text, hint):
+            matched_keywords.append(hint)
+            score_reasons.append(f"matched_domain_hint:{hint}")
+            points += 0.08
+    for profile in domain_profiles:
+        matched_path = next((path_hint for path_hint in profile["preferred_paths"] if path.startswith(path_hint)), None)
+        if matched_path:
+            score_reasons.append(f"matched_preferred_path:{matched_path}")
+            points += 0.1
+    if any(profile["name"] == "finance" for profile in domain_profiles):
+        patent_text = normalize_text(" ".join([related_product, title, business_area, technology_area])).lower()
+        if "aicc" in path and "aicc" not in patent_text:
+            score_reasons.append("penalty_unrelated_keyword:AICC")
+            points -= 0.5
 
     return {
-        "relevance_score": min(1.0, round(points, 3)),
+        "relevance_score": min(1.0, max(0.0, round(points, 3))),
         "matched_keywords": unique_texts(matched_keywords),
+        "score_reasons": unique_texts(score_reasons),
     }
 
 

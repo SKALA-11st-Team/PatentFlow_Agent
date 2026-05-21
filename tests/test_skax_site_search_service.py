@@ -50,6 +50,21 @@ def test_build_search_queries_adds_finance_hints_only_when_context_supports_them
     assert not any("금융" in query or "투자" in query or "자산관리" in query for query in queries)
 
 
+def test_build_search_queries_adds_manufacturing_hints_without_finance_terms():
+    manufacturing_context = {
+        "관리번호": "P202406001-KR0",
+        "발명의 명칭(최종)": "반도체 CMP 공정 물류 자동화를 위한 설비 제어 시스템",
+        "관련사업 분야": "Manufacturing",
+        "관련기술 분야": "스마트팩토리",
+        "관련제품": "CMP Pad",
+    }
+
+    queries = build_search_queries(manufacturing_context)
+
+    assert any("제조" in query or "스마트팩토리" in query or "물류" in query for query in queries)
+    assert not any("금융" in query or "투자" in query or "자산관리" in query for query in queries)
+
+
 def test_build_search_queries_handles_empty_values():
     queries = build_search_queries({})
 
@@ -1061,21 +1076,36 @@ def test_tavily_search_client_extracts_only_skax_results(monkeypatch):
             "url": "https://www.skax.co.kr/finance/digital-based-financial-service",
             "normalized_url": "https://www.skax.co.kr/finance/digital-based-financial-service",
             "accepted": True,
+            "domain_accepted": True,
+            "final_selected": False,
             "skip_reason": None,
+            "final_skip_reason": None,
+            "candidate_relevance_score": 0.0,
+            "score_reasons": [],
         },
         {
             "title": "외부 뉴스",
             "url": "https://news.example.com/skax/robo-advisor",
             "normalized_url": "https://news.example.com/skax/robo-advisor",
             "accepted": False,
+            "domain_accepted": False,
+            "final_selected": False,
             "skip_reason": "external_domain",
+            "final_skip_reason": None,
+            "candidate_relevance_score": 0.0,
+            "score_reasons": [],
         },
         {
             "title": "중복",
             "url": "https://www.skax.co.kr/finance/digital-based-financial-service#section",
             "normalized_url": "https://www.skax.co.kr/finance/digital-based-financial-service",
             "accepted": False,
+            "domain_accepted": False,
+            "final_selected": False,
             "skip_reason": "duplicate_url",
+            "final_skip_reason": None,
+            "candidate_relevance_score": 0.0,
+            "score_reasons": [],
         },
     ]
     assert "content" not in result["diagnostics"]["candidate_results"][0]
@@ -1109,6 +1139,7 @@ def test_tavily_candidate_results_record_file_urls(monkeypatch):
 
     assert result["results"] == []
     assert result["diagnostics"]["candidate_results"][0]["skip_reason"] == "file_url"
+    assert "penalty_file_url" in result["diagnostics"]["candidate_results"][0]["score_reasons"]
 
 
 def test_tavily_search_client_reports_missing_config():
@@ -1174,6 +1205,17 @@ def test_collect_uses_tavily_content_without_fetching_page(monkeypatch):
     assert evidence["content"] == "로보어드바이저 데이터분석 사업 근거"
     assert result["stats"]["fetched_url_count"] == 0
     assert diagnostics["search_provider"] == "tavily_search"
+    query_diagnostics = result["query_generation_diagnostics"]
+    assert query_diagnostics["selected_features"]["related_product"] == "로보어드바이저"
+    assert query_diagnostics["title_keywords"]
+    assert query_diagnostics["domain_hints"][0]["name"] == "finance"
+    assert query_diagnostics["generated_queries"] == result["queries"]
+    candidate = diagnostics["candidate_results"][0]
+    assert candidate["domain_accepted"] is True
+    assert candidate["final_selected"] is True
+    assert candidate["final_skip_reason"] is None
+    assert candidate["candidate_relevance_score"] > 0
+    assert "matched_related_product" in candidate["score_reasons"]
 
 
 def test_collect_truncates_tavily_content(monkeypatch):
@@ -1239,6 +1281,127 @@ def test_collect_fetches_page_when_tavily_content_is_empty(monkeypatch):
 
     assert result["items"][0]["content"] == "페이지 fetch 본문"
     assert result["stats"]["fetched_url_count"] == 1
+
+
+def test_collect_marks_tavily_candidate_final_skip_reason(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "title": "SK AX 금융 운영 효율화 로보어드바이저 자산배분 데이터분석",
+                        "url": "https://www.skax.co.kr/finance/operational-efficiency-improvement",
+                        "content": "로보어드바이저 자산배분 데이터분석 AI 예측 금융 서비스",
+                    },
+                    {
+                        "title": "SK AX 디지털 금융 서비스",
+                        "url": "https://www.skax.co.kr/finance/digital-based-financial-service",
+                        "content": "금융 데이터 서비스",
+                    },
+                    {
+                        "title": "SK AX AICC",
+                        "url": "https://www.skax.co.kr/finance/aicc",
+                        "content": "AICC 고객센터 서비스",
+                    },
+                ]
+            }
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.post", lambda url, *, json, timeout: FakeResponse())
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=TavilySearchClient(api_key="tavily-key"),
+        max_queries=1,
+        max_fetch_pages=1,
+    )
+
+    assert [item["url"] for item in result["items"]] == [
+        "https://www.skax.co.kr/finance/operational-efficiency-improvement"
+    ]
+    candidates = {
+        candidate["normalized_url"]: candidate
+        for candidate in result["search_diagnostics"][0]["candidate_results"]
+    }
+    digital_candidate = candidates["https://www.skax.co.kr/finance/digital-based-financial-service"]
+    assert digital_candidate["domain_accepted"] is True
+    assert digital_candidate["final_selected"] is False
+    assert digital_candidate["final_skip_reason"] == "lower_relevance_than_selected"
+    assert digital_candidate["candidate_relevance_score"] > 0
+    assert "matched_domain_hint:금융" in digital_candidate["score_reasons"]
+    assert "matched_preferred_path:/finance" in digital_candidate["score_reasons"]
+    assert "content" not in digital_candidate
+    assert "tavily-key" not in str(candidates)
+
+
+def test_collect_can_create_top_three_tavily_evidence(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "title": "SK AX 로보어드바이저 자산배분 데이터분석",
+                        "url": "https://www.skax.co.kr/finance/operational-efficiency-improvement",
+                        "content": "로보어드바이저 자산배분 데이터분석",
+                    },
+                    {
+                        "title": "SK AX 디지털 금융 로보어드바이저",
+                        "url": "https://www.skax.co.kr/finance/digital-based-financial-service",
+                        "content": "로보어드바이저 금융 데이터분석",
+                    },
+                    {
+                        "title": "SK AX Finance",
+                        "url": "https://www.skax.co.kr/finance",
+                        "content": "금융 투자 AI 예측 데이터 서비스",
+                    },
+                ]
+            }
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.post", lambda url, *, json, timeout: FakeResponse())
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=TavilySearchClient(api_key="tavily-key"),
+        max_queries=1,
+    )
+
+    assert len(result["items"]) == 3
+    candidates = result["search_diagnostics"][0]["candidate_results"]
+    assert all(candidate["final_selected"] for candidate in candidates)
+    assert all(candidate["final_skip_reason"] is None for candidate in candidates)
+
+
+def test_aicc_scores_lower_than_finance_ai_candidate():
+    filtered = filter_search_results(
+        [
+            {
+                "title": "SK AX AICC",
+                "snippet": "AICC 고객센터 로보어드바이저 투자 AI 서비스",
+                "url": "https://www.skax.co.kr/finance/aicc",
+            },
+            {
+                "title": "SK AX 금융 AI 예측 데이터 서비스",
+                "snippet": "로보어드바이저 자산배분 데이터분석",
+                "url": "https://www.skax.co.kr/finance/digital-based-financial-service",
+            },
+        ],
+        PATENT_CONTEXT,
+    )
+
+    assert filtered[0]["url"] == "https://www.skax.co.kr/finance/digital-based-financial-service"
+    aicc = next((item for item in filtered if item["url"].endswith("/aicc")), None)
+    assert aicc is None or aicc["relevance_score"] < filtered[0]["relevance_score"]
+    assert aicc is None or "penalty_unrelated_keyword:AICC" in aicc["score_reasons"]
+    assert "matched_preferred_path:/finance" in filtered[0]["score_reasons"]
 
 
 def test_default_search_client_prefers_tavily_when_config_exists(monkeypatch):
