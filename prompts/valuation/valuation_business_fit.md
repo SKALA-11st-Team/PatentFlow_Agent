@@ -68,7 +68,11 @@
 - “공식 evidence에 특정 구현/적용/제품 매핑이 명시되지 않음”은 risk_factors로 작성할 수 있다.
 - 기술성 축처럼 보이는 “기술적 적합성” 표현보다 “사업 맥락 직접성”, “공식 사업 근거와의 연결성”, “적용 시나리오 구체성” 표현을 우선한다.
 
-세부 기준은 내부 판단 기준으로만 사용한다. 출력 JSON에는 subscores 또는 sub_scores를 추가하지 않는다.
+세부 점수 출력:
+- 출력 JSON에는 `subscores`를 포함한다.
+- `score`는 아래 세 하위 점수의 합산으로 산출한다.
+- score = official_business_evidence + business_context_alignment + application_scenario_specificity
+- `sub_scores` 필드는 사용하지 않는다.
 
 grade 기준:
 - 90 이상: A
@@ -82,6 +86,26 @@ Return ONLY JSON:
   "label": "사업연계성",
   "score": 0,
   "grade": "A/B/C/D",
+  "subscores": {
+    "official_business_evidence": {
+      "label": "공식 사업 근거 발견도",
+      "score": 0,
+      "max_score": 30,
+      "rationale": "..."
+    },
+    "business_context_alignment": {
+      "label": "사업 맥락 직접성",
+      "score": 0,
+      "max_score": 45,
+      "rationale": "..."
+    },
+    "application_scenario_specificity": {
+      "label": "적용 시나리오 구체성",
+      "score": 0,
+      "max_score": 25,
+      "rationale": "..."
+    }
+  },
   "rationale": "...",
   "evidence_ids": [],
   "risk_factors": [],

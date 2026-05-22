@@ -35,7 +35,15 @@ def test_business_fit_prompt_matches_official_evidence_criteria():
     assert "포트폴리오 필요성 35" not in text
     assert "실제 활용 가능성 15" not in text
     assert "근거 신뢰도 10" not in text
-    assert "출력 JSON에는 subscores 또는 sub_scores를 추가하지 않는다" in text
+    assert '"subscores": {' in text
+    assert '"official_business_evidence": {' in text
+    assert '"business_context_alignment": {' in text
+    assert '"application_scenario_specificity": {' in text
+    assert '"max_score": 30' in text
+    assert '"max_score": 45' in text
+    assert '"max_score": 25' in text
+    assert "score = official_business_evidence + business_context_alignment + application_scenario_specificity" in text
+    assert "`sub_scores` 필드는 사용하지 않는다" in text
     assert "보수적 점수 부여 원칙" in text
     assert "95~100점대는 아래 조건을 모두 만족할 때만 허용한다" in text
     assert "만점 제한" in text
