@@ -67,34 +67,113 @@ def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_re
             "metadata": final_report_patent_metadata(state),
             "summary_result": state.summary_result,
         },
-        "evidence_references": build_evidence_references(state),
-        "valuation_result": final_report_valuation_result(valuation_result),
+        "evidence_references": build_evidence_references(state, valuation_result),
+        "valuation_result": compact_final_report_valuation_result(valuation_result),
     }
 
 
-def final_report_valuation_result(valuation_result: dict[str, Any]) -> dict[str, Any]:
-    result = {
-        key: value
-        for key, value in valuation_result.items()
-        if key != "final_report_markdown"
-    }
-    axes = result.get("axes")
-    if not isinstance(axes, dict):
-        return result
-    sanitized_axes = {}
-    for axis, axis_result in axes.items():
-        if isinstance(axis_result, dict):
-            sanitized_axes[axis] = {
-                key: value
-                for key, value in axis_result.items()
-                if key != "technology_metrics"
-            }
-        else:
-            sanitized_axes[axis] = axis_result
+def compact_final_report_valuation_result(valuation_result: dict[str, Any]) -> dict[str, Any]:
+    axes = valuation_result.get("axes") or {}
     return {
-        **result,
-        "axes": sanitized_axes,
+        key: valuation_result.get(key)
+        for key in (
+            "total_score",
+            "average_score",
+            "recommendation",
+            "final_indicator",
+            "decision_rationale",
+            "required_actions",
+            "missing_information",
+        )
+        if key in valuation_result
+    } | {
+        "axes": {
+            axis: compact_final_report_axis_result(axis_result)
+            for axis, axis_result in axes.items()
+            if isinstance(axis_result, dict)
+        }
     }
+
+
+def compact_final_report_axis_result(axis_result: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: axis_result.get(key)
+        for key in (
+            "axis",
+            "label",
+            "score",
+            "grade",
+            "rationale",
+            "evidence_ids",
+            "risk_factors",
+            "missing_information",
+            "confidence",
+        )
+        if key in axis_result
+    }
+    for key in ("subscores", "sub_scores"):
+        if isinstance(axis_result.get(key), dict):
+            compact[key] = compact_mapping(axis_result[key])
+    for key in (
+        "technical_differentiation_score",
+        "implementation_specificity_score",
+        "technical_differentiation_breakdown",
+        "implementation_specificity_breakdown",
+        "industry_marketability_score",
+        "industry_marketability_breakdown",
+    ):
+        if key in axis_result:
+            compact[key] = compact_mapping(axis_result[key]) if isinstance(axis_result[key], dict) else axis_result[key]
+    return compact
+
+
+def compact_mapping(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        str(key): compact_scalar_or_list(item)
+        for key, item in value.items()
+        if is_report_safe_key(str(key)) and is_report_safe_value(item)
+    }
+
+
+def compact_scalar_or_list(value: Any) -> Any:
+    if isinstance(value, dict):
+        return compact_mapping(value)
+    if isinstance(value, list):
+        return [compact_scalar_or_list(item) for item in value[:5] if is_report_safe_value(item)]
+    return value
+
+
+def is_report_safe_value(value: Any) -> bool:
+    if isinstance(value, dict):
+        return True
+    if isinstance(value, list):
+        return True
+    return not isinstance(value, str) or not looks_like_local_path(value)
+
+
+def is_report_safe_key(key: str) -> bool:
+    return key not in {
+        "pdf_text",
+        "pdf_text_excerpt",
+        "pdf_text_chars",
+        "pdf_text_truncated",
+        "pdf_drawings_removed",
+        "pdf_collected",
+        "pdf_path",
+        "markdown_paths",
+        "raw",
+        "raw_html",
+        "raw_body",
+        "body",
+        "debug",
+        "candidate_results",
+        "search_request_url",
+    }
+
+
+def looks_like_local_path(value: str) -> bool:
+    text = normalize_text(value)
+    return text.startswith(("/", "./", "../")) or "/artifacts/" in text or "/Users/" in text
 
 
 def build_complete_final_report_markdown(
@@ -165,14 +244,21 @@ def final_report_patent_metadata(state: PatentWorkflowState) -> dict[str, Any]:
     }
 
 
-def build_evidence_references(state: PatentWorkflowState) -> list[dict[str, Any]]:
+def build_evidence_references(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> list[dict[str, Any]]:
+    used_evidence_ids = collect_used_evidence_ids(valuation_result)
+    if not used_evidence_ids:
+        return []
+
     references = []
     for item in state.evidence_bundle or []:
+        evidence_id = item.get("evidence_id")
+        if evidence_id not in used_evidence_ids:
+            continue
         if item.get("source_type") not in {"news", "industry_report", "company_disclosure", "portfolio_context"}:
             continue
         references.append(
             {
-                "evidence_id": item.get("evidence_id"),
+                "evidence_id": evidence_id,
                 "source_type": item.get("source_type"),
                 "source": item.get("source"),
                 "title": item.get("title") or item.get("source"),
@@ -180,11 +266,24 @@ def build_evidence_references(state: PatentWorkflowState) -> list[dict[str, Any]
                 "url": item.get("url"),
                 "published_at": item.get("published_at"),
                 "related_axes": item.get("related_axes") or item.get("related_axis") or [],
-                "compressed_summary": item.get("compressed_summary"),
-                "key_facts": item.get("key_facts") or [],
             }
         )
     return references
+
+
+def collect_used_evidence_ids(valuation_result: dict[str, Any]) -> set[Any]:
+    used: set[Any] = set()
+    axes = valuation_result.get("axes") or {}
+    if not isinstance(axes, dict):
+        return used
+    for axis_result in axes.values():
+        if not isinstance(axis_result, dict):
+            continue
+        evidence_ids = axis_result.get("evidence_ids")
+        if not isinstance(evidence_ids, list):
+            continue
+        used.update(evidence_id for evidence_id in evidence_ids if evidence_id)
+    return used
 
 
 def save_final_report_input_payload(state: PatentWorkflowState, name: str, payload: dict[str, Any]) -> Path | None:
@@ -206,6 +305,12 @@ def final_report_input_output_dir(state: PatentWorkflowState) -> Path:
 
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def limit_text_list(value: Any, *, limit: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [text for text in (normalize_text(item) for item in value) if text][:limit]
 
 
 def normalize_markdown_table_text(value: Any) -> str:

@@ -17,7 +17,6 @@ EVIDENCE_EXCERPT_LIMIT = 1500
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = build_input_payload(state=state, evidence=evidence)
-    payload["business_fit_scoring_rubric"] = business_fit_scoring_rubric()
     prompt = runtime.build_prompt(
         prompt_name=PROMPT_PATH,
         state=state,
@@ -184,67 +183,6 @@ def build_business_fit_key_terms(state: PatentWorkflowState) -> list[str]:
         *(summary.get("key_points") or []),
     ]
     return [term for term in unique_texts(terms) if len(term) <= 80]
-
-
-def business_fit_scoring_rubric() -> dict[str, Any]:
-    return {
-        "total_score": 100,
-        "components": {
-            "official_business_evidence": {
-                "max_score": 30,
-                "description": "SK AX 공식 사이트에서 이 특허와 관련된 사업/서비스 근거가 확인되는지 평가한다.",
-                "score_guide": {
-                    "30": "관련 공식 페이지가 여러 개 있고 유효한 사업 근거로 확인됨",
-                    "24": "관련 공식 페이지가 1~2개 있고 직접 근거로 사용 가능함",
-                    "16": "공식 페이지는 있으나 broad category 수준임",
-                    "8": "공식 페이지 후보는 있으나 관련성이 약함",
-                    "0": "공식 사이트 근거 없음",
-                },
-            },
-            "business_context_alignment": {
-                "max_score": 45,
-                "description": "특허의 핵심 제품/기술/문제 해결 방향과 SK AX 공식 사업 설명의 직접 연결성을 평가한다.",
-                "score_guide": {
-                    "45": "특허 핵심 제품/기술과 공식 사업 페이지가 직접 연결됨",
-                    "36": "직접 제품명 일부 또는 강한 사업 맥락이 확인됨",
-                    "27": "같은 산업/기술군이나 구체적 연결은 약함",
-                    "12": "넓은 사업 분야만 같고 직접성 낮음",
-                    "0": "연결 근거 없음",
-                },
-            },
-            "application_scenario_specificity": {
-                "max_score": 25,
-                "description": "공식 근거가 실제 서비스/오퍼링/유스케이스 수준으로 구체적인지 평가한다.",
-                "score_guide": {
-                    "25": "실제 오퍼링/유스케이스/적용 방식이 구체적임",
-                    "20": "서비스 방향과 적용 시나리오가 비교적 명확함",
-                    "14": "적용 가능성은 있으나 설명이 일반적임",
-                    "6": "추상적 사업 키워드만 있음",
-                    "0": "적용 시나리오 확인 불가",
-                },
-            },
-        },
-        "grade_guide": {"A": "90 이상", "B": "75 이상", "C": "60 이상", "D": "60 미만"},
-        "input_usage": (
-            "Use business_fit_context.patent_description and "
-            "business_fit_context.skax_official_evidence to compare patent content with official SK AX evidence."
-        ),
-        "official_evidence_principles": [
-            "skax.co.kr 공식 evidence 중심으로 평가한다.",
-            "외부 뉴스, 블로그, SK그룹 다른 도메인, 미러링 사이트는 공식 사업 근거로 보지 않는다.",
-            "검색 결과 개수만으로 높은 점수를 주지 않는다.",
-            "유효한 공식 근거의 직접성, 구체성, 사업 맥락 일치도를 본다.",
-            "공식 근거가 없다고 특허 가치가 낮다고 단정하지 않는다.",
-            "정보 부족은 missing_information 또는 confidence 하락 요인으로 처리한다.",
-            "risk_factors에는 실제 약점만 작성한다.",
-            "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다.",
-            "공식 사이트에서 관련 사업 근거가 확인된다/확인되지 않는다 수준으로 표현한다.",
-        ],
-        "rationale_instruction": (
-            "Do not add subscores, sub_scores, or any new output field. "
-            "Use the three internal criteria only to determine final score and explain the reasoning in rationale."
-        ),
-    }
 
 
 def is_sk_ax_official_evidence(item: dict[str, Any]) -> bool:

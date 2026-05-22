@@ -105,7 +105,7 @@
 사업화 가능성 0:
 외부 시장의 사업화 흐름을 확인할 근거가 부족함
 
-`industry_marketability_score`는 위 4개 항목의 합계로 0~40점 범위에서 산정한다.
+`subscores.industry_marketability.score`는 위 4개 항목의 합계로 0~40점 범위에서 산정한다.
 
 
 ----------------------------------------
@@ -117,7 +117,7 @@
 
 평가 규칙:
 - `marketability_metrics.market_growth_score`는 코드 계산값이다.
-- 이 값을 변경하지 말고 `sub_scores.market_growth_score`에 그대로 반영한다.
+- 이 값을 변경하지 말고 `subscores.market_growth.score`에 그대로 반영한다.
 - `marketability_metrics.market_growth_available`이 false이면 시장 성장성은 산정 불가로 처리한다.
 - 시장 성장성이 산정 불가인 경우 `missing_information`에 "CPC 기준 최근 3년 연도별 특허 출원 수 확인 필요"를 포함한다.
 - 산정 불가를 낮은 시장성으로 단정하지 말고 confidence를 낮춘다.
@@ -148,7 +148,7 @@ Patent Family 국가 정보를 바탕으로 해당 기술이 해외 또는 글�
 
 평가 규칙:
 - `marketability_metrics.global_business_score`는 코드 계산값이다.
-- 이 값을 변경하지 말고 `sub_scores.global_business_score`에 그대로 반영한다.
+- 이 값을 변경하지 말고 `subscores.global_business.score`에 그대로 반영한다.
 - 글로벌 사업성은 외부 시장 확장 가능성 판단이며, SK AX 내부 해외 사업 전략과의 적합성 판단이 아니다.
 - Patent Family 정보가 부족하면 해외 확장 가능성을 단정하지 않는다.
 
@@ -169,9 +169,9 @@ Patent Family 국가 정보를 바탕으로 해당 기술이 해외 또는 글�
 
 score = 산업 시장성 + 시장 성장성 + 글로벌 사업성
 
-`score`는 `industry_marketability_score + market_growth_score + global_business_score`로 작성한다.
+`score`는 `subscores.industry_marketability.score + subscores.market_growth.score + subscores.global_business.score`로 작성한다.
 
-단, `market_growth_score`가 null이면 산정 가능한 점수만 합산하고 confidence를 낮춘다.
+단, `subscores.market_growth.score`가 null이면 산정 가능한 점수만 합산하고 confidence를 낮춘다.
 
 grade:
 80 이상 -> A
@@ -207,12 +207,12 @@ confidence:
 - "정보 없음 = 낮은 시장성"으로 해석하지 않는다.
 - 확인되지 않은 시장 규모, 성장률, 수요, 해외 진출 가능성을 단정하지 않는다.
 - SK AX 내부 사업과의 직접 연결성 또는 활용 가능성은 사업연계성 축에서 판단한다고 표현한다.
-- `sub_scores` 필드는 유지한다. `subscores`로 바꾸지 않는다.
-- `industry_marketability_breakdown`의 key 이름은 아래 JSON 형식을 그대로 사용한다.
-- `industry_marketability_breakdown.industry_growth_evidence_score`에는 시장 내 필요성 15점 판단 결과를 작성한다.
-- `industry_marketability_breakdown.corporate_investment_entry_score`에는 적용 산업 범위 10점 판단 결과를 작성한다.
-- `industry_marketability_breakdown.news_market_diffusion_score`에는 기존 문제 해결 가능성 10점 판단 결과를 작성한다.
-- `industry_marketability_breakdown.source_reliability_score`에는 사업화 가능성 5점 판단 결과를 작성한다.
+- `subscores` 필드는 권리성 축과 같은 객체 구조로 작성한다.
+- 각 세부 평가지표는 `label`, `score`, `max_score`, `rationale`을 포함한다.
+- `subscores.industry_marketability.rationale`에는 산업 성장 근거, 기업 투자·진입 근거, 뉴스 기반 시장 확산 근거, 자료 신뢰도 판단을 함께 요약한다.
+- `subscores.market_growth.rationale`에는 대표 CPC 기준 최근 3년 특허 출원 수, CAGR, 최근 3년 추세 점수 판단을 요약한다.
+- `subscores.global_business.rationale`에는 Patent Family 국가 정보와 국내 단독/해외 출원/다국가 출원 판단을 요약한다.
+- `sub_scores`, `industry_marketability_score`, `industry_marketability_breakdown`은 출력하지 않는다.
 
 
 Return ONLY JSON:
@@ -220,19 +220,27 @@ Return ONLY JSON:
   "axis": "market",
   "label": "시장성",
   "score": 0,
+  "subscores": {
+    "industry_marketability": {
+      "label": "산업 시장성",
+      "score": 0,
+      "max_score": 40,
+      "rationale": "..."
+    },
+    "market_growth": {
+      "label": "시장 성장성",
+      "score": 0,
+      "max_score": 40,
+      "rationale": "..."
+    },
+    "global_business": {
+      "label": "글로벌 사업성",
+      "score": 0,
+      "max_score": 20,
+      "rationale": "..."
+    }
+  },
   "grade": "A/B/C/D",
-  "industry_marketability_score": 0,
-  "industry_marketability_breakdown": {
-    "industry_growth_evidence_score": 0,
-    "corporate_investment_entry_score": 0,
-    "news_market_diffusion_score": 0,
-    "source_reliability_score": 0
-  },
-  "sub_scores": {
-    "industry_marketability_score": 0,
-    "market_growth_score": 0,
-    "global_business_score": 0
-  },
   "rationale": "...",
   "evidence_ids": [],
   "risk_factors": [],
