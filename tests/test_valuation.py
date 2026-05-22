@@ -878,6 +878,126 @@ def test_final_report_markdown_sanitizes_meta_note_lines():
     assert "해외 패밀리는 확인되지 않았습니다" in markdown
 
 
+def test_final_report_input_payload_is_compact_without_raw_technology_sources():
+    from agents.writing.final_report import build_final_report_input_payload
+
+    state = PatentWorkflowState(
+        patent_structured={
+            "management_number": "P1",
+            "application_number": "10-2024-0000001",
+            "registration_number": "10-3000001",
+            "title_final": "문서변환 특허",
+            "related_product": "문서변환 SW",
+            "business_area": "AI",
+            "technology_area": "문서처리",
+            "status": "등록",
+        },
+        summary_result={"plain_summary": "특허 요약", "key_points": ["요약 포인트"]},
+        evidence_bundle=[
+            {
+                "evidence_id": "news_001",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "문서변환 SW 시장 확대",
+                "url": "https://example.com/news",
+                "published_at": "2026-01-01",
+                "related_axes": ["market"],
+                "compressed_summary": "시장 수요 확대",
+                "key_facts": ["사실1", "사실2", "사실3", "사실4", "사실5", "사실6"],
+                "content": "원문 본문은 final_report input에 들어가지 않는다.",
+            }
+        ],
+    )
+    valuation_result = {
+        "total_score": 280,
+        "average_score": 70,
+        "recommendation": "유지 권고",
+        "final_indicator": "조건부 유지",
+        "final_report_markdown": "# 기존 보고서",
+        "axes": {
+            "legal": {
+                "axis": "legal",
+                "label": "권리성",
+                "score": 70,
+                "grade": "B",
+                "rationale": "권리성 근거",
+                "risk_factors": [],
+                "missing_information": [],
+                "confidence": 0.7,
+            },
+            "technology": {
+                "axis": "technology",
+                "label": "기술성",
+                "score": 75,
+                "grade": "B",
+                "rationale": "기술성 근거",
+                "risk_factors": ["유사특허 비교 필요"],
+                "missing_information": [],
+                "confidence": 0.7,
+                "sub_scores": {"technical_differentiation_score": 35},
+                "technology_metrics": {
+                    "representative_cpc": "G06F 40/00",
+                    "similar_patents": [
+                        {
+                            "application_number": "10-2020-0000001",
+                            "pdf_text": "SECRET_FULL_SIMILAR_PATENT_TEXT",
+                            "pdf_text_excerpt": "SECRET_EXCERPT",
+                            "pdf_path": "/Users/soojeong/Documents/Team11/artifacts/similar.pdf",
+                            "markdown_paths": ["/Users/soojeong/Documents/Team11/artifacts/similar.md"],
+                        }
+                    ],
+                },
+            },
+            "market": {
+                "axis": "market",
+                "label": "시장성",
+                "score": 65,
+                "grade": "B",
+                "rationale": "시장성 근거",
+                "risk_factors": [],
+                "missing_information": [],
+                "confidence": 0.6,
+                "sub_scores": {"industry_marketability_score": 30},
+                "marketability_metrics": {"cpc_application_counts": [{"year": 2025, "raw": "SECRET_RAW"}]},
+            },
+            "business_fit": {
+                "axis": "business_fit",
+                "label": "사업 연계성",
+                "score": 70,
+                "grade": "B",
+                "rationale": "사업연계성 근거",
+                "risk_factors": [],
+                "missing_information": [],
+                "confidence": 0.7,
+            },
+        },
+    }
+
+    payload = build_final_report_input_payload(state=state, valuation_result=valuation_result)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["patent"]["metadata"]["title"] == "문서변환 특허"
+    assert payload["patent"]["metadata"]["application_number"] == "10-2024-0000001"
+    assert payload["patent"]["metadata"]["registration_number"] == "10-3000001"
+    assert payload["patent"]["summary_result"]["plain_summary"] == "특허 요약"
+    for axis in ["legal", "technology", "market", "business_fit"]:
+        assert payload["valuation_result"]["axes"][axis]["score"] == valuation_result["axes"][axis]["score"]
+        assert payload["valuation_result"]["axes"][axis]["rationale"] == valuation_result["axes"][axis]["rationale"]
+    assert payload["evidence_references"][0]["citation_title"] == "문서변환 SW 시장 확대"
+    assert payload["evidence_references"][0]["url"] == "https://example.com/news"
+    assert payload["evidence_references"][0]["key_facts"] == ["사실1", "사실2", "사실3", "사실4", "사실5"]
+
+    assert "technology_metrics" not in serialized
+    assert "marketability_metrics" not in serialized
+    assert "similar_patents" not in serialized
+    assert "pdf_text" not in serialized
+    assert "pdf_text_excerpt" not in serialized
+    assert "pdf_path" not in serialized
+    assert "markdown_paths" not in serialized
+    assert "SECRET_FULL_SIMILAR_PATENT_TEXT" not in serialized
+    assert "/Users/soojeong/Documents/Team11" not in serialized
+
+
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     captured_prompts = []
 
