@@ -135,6 +135,7 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
     }
     for optional_field in (
         "industry_marketability_score",
+        "industry_marketability_breakdown",
         "technical_differentiation_score",
         "implementation_specificity_score",
         "sub_scores",

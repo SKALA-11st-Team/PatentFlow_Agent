@@ -13,6 +13,12 @@ AXIS = "market"
 LABEL = "시장성"
 PROMPT_PATH = "valuation/valuation_market.md"
 MARKET_GROWTH_MISSING_MESSAGE = "CPC 기준 최근 3년 연도별 특허 출원 수 확인 필요"
+INDUSTRY_MARKETABILITY_BREAKDOWN_LIMITS = {
+    "industry_growth_evidence_score": 15,
+    "corporate_investment_entry_score": 10,
+    "news_market_diffusion_score": 10,
+    "source_reliability_score": 5,
+}
 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
@@ -247,11 +253,17 @@ def extract_country_code(item: dict[str, Any]) -> str | None:
 
 
 def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
-    industry_score = normalize_industry_score(
-        result.get("industry_marketability_score")
-        or (result.get("sub_scores") or {}).get("industry_marketability_score")
-        or result.get("score")
+    industry_breakdown = normalize_industry_marketability_breakdown(
+        result.get("industry_marketability_breakdown")
+        or (result.get("sub_scores") or {}).get("industry_marketability_breakdown")
     )
+    if industry_breakdown:
+        industry_score = sum(industry_breakdown.values())
+    else:
+        industry_score = normalize_industry_score(
+            result.get("industry_marketability_score")
+            or (result.get("sub_scores") or {}).get("industry_marketability_score")
+        )
     market_growth_score = metrics.get("market_growth_score")
     global_business_score = int(metrics.get("global_business_score") or 0)
     score = industry_score + global_business_score
@@ -272,22 +284,40 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
             "market_growth_score": market_growth_score,
             "global_business_score": global_business_score,
         },
+        "industry_marketability_breakdown": industry_breakdown,
         "marketability_metrics": metrics,
         "missing_information": missing_information,
         "confidence": max(0.0, min(1.0, confidence)),
     }
 
 
+def normalize_industry_marketability_breakdown(value: Any) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: binary_full_score(value.get(key), max_score)
+        for key, max_score in INDUSTRY_MARKETABILITY_BREAKDOWN_LIMITS.items()
+    }
+
+
 def normalize_industry_score(value: Any) -> int:
+    return binary_full_score(value, 40)
+
+
+def binary_full_score(value: Any, max_score: int) -> int:
     try:
         score = int(value)
     except (TypeError, ValueError):
-        return 20
-    if score >= 30:
-        return 40
-    if score >= 10:
-        return 20
-    return 0
+        return 0
+    return max_score if score > 0 else 0
+
+
+def clamp_int(value: Any, default: int, max_value: int, min_value: int = 0) -> int:
+    try:
+        score = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(min_value, min(max_value, score))
 
 
 def grade_for_score(score: int) -> str:

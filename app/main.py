@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
@@ -8,6 +9,16 @@ from app.config import settings
 from services.evidence.external_search_service import collect_external_evidence
 from workflow.graph import run_workflow
 from workflow.state import PatentWorkflowState
+
+
+LOCAL_JDK_HOME = settings.project_root / ".jdk" / "jdk-17.0.19+10" / "Contents" / "Home"
+
+
+def configure_local_java() -> None:
+    if not LOCAL_JDK_HOME.exists():
+        return
+    os.environ["JAVA_HOME"] = str(LOCAL_JDK_HOME)
+    os.environ["PATH"] = f"{LOCAL_JDK_HOME / 'bin'}:{os.environ.get('PATH', '')}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -51,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--collect-api-evidence",
         action="store_true",
         help="Call unified APIs, normalize responses, and save evidence JSON files.",
+    )
+    parser.add_argument(
+        "--skip-news-evidence",
+        action="store_true",
+        help="Skip Naver News and GNews collection in the workflow; industry RAG still runs.",
     )
     parser.add_argument(
         "--api-base-url",
@@ -138,6 +154,7 @@ def build_user_input(args: argparse.Namespace) -> dict[str, Any]:
             or args.no_llm_valuation
             or args.no_llm_final_report
         ),
+        "skip_news_evidence": args.skip_news_evidence,
     }
     if args.patent_id is not None:
         user_input["patent_id"] = args.patent_id
@@ -330,6 +347,7 @@ def print_saved_outputs(saved: dict[str, Path]) -> None:
 
 
 def main() -> None:
+    configure_local_java()
     parser = build_parser()
     args = parser.parse_args()
     validate_identifier_args(args, parser)

@@ -635,6 +635,34 @@ def test_market_score_helpers_apply_40_40_20_structure():
         "global_business_score": 20,
     }
 
+    result = apply_marketability_scores(
+        {
+            "score": 70,
+            "industry_marketability_breakdown": {
+                "industry_growth_evidence_score": 12,
+                "corporate_investment_entry_score": 7,
+                "news_market_diffusion_score": 0,
+                "source_reliability_score": 3,
+            },
+            "grade": "B",
+            "missing_information": [],
+            "confidence": 0.8,
+        },
+        {
+            "market_growth_score": 20,
+            "global_business_score": 10,
+        },
+    )
+
+    assert result["sub_scores"]["industry_marketability_score"] == 30
+    assert result["industry_marketability_breakdown"] == {
+        "industry_growth_evidence_score": 15,
+        "corporate_investment_entry_score": 10,
+        "news_market_diffusion_score": 0,
+        "source_reliability_score": 5,
+    }
+    assert result["score"] == 60
+
 
 def test_market_growth_missing_is_not_replaced_with_default_score():
     from agents.valuation_axes.market import MARKET_GROWTH_MISSING_MESSAGE, apply_marketability_scores
@@ -826,6 +854,28 @@ def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
     assert "본문에는 작성하지 마세요" in final_prompt
     assert "citation_title" in final_prompt
     assert "valuation_result" in final_prompt
+
+
+def test_final_report_markdown_sanitizes_meta_note_lines():
+    from agents.writing.final_report import sanitize_final_report_markdown
+
+    markdown = sanitize_final_report_markdown(
+        "\n".join(
+            [
+                "## 3.3 시장성",
+                "",
+                "- 대표 CPC 기준 출원 수가 연속 증가했습니다.",
+                "(세부 점수 반영: 산업시장성 25점, 시장성 성장성 40점, 글로벌 사업성 0점)",
+                "[참고 근거] KPMG 리포트는 산업 성장 근거를 제공합니다.",
+                "- 해외 패밀리는 확인되지 않았습니다.",
+            ]
+        )
+    )
+
+    assert "세부 점수 반영" not in markdown
+    assert "[참고 근거]" not in markdown
+    assert "대표 CPC 기준 출원 수" in markdown
+    assert "해외 패밀리는 확인되지 않았습니다" in markdown
 
 
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
