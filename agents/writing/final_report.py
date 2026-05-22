@@ -67,7 +67,7 @@ def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_re
             "metadata": final_report_patent_metadata(state),
             "summary_result": state.summary_result,
         },
-        "evidence_references": build_evidence_references(state),
+        "evidence_references": build_evidence_references(state, valuation_result),
         "valuation_result": compact_final_report_valuation_result(valuation_result),
     }
 
@@ -104,6 +104,7 @@ def compact_final_report_axis_result(axis_result: dict[str, Any]) -> dict[str, A
             "score",
             "grade",
             "rationale",
+            "evidence_ids",
             "risk_factors",
             "missing_information",
             "confidence",
@@ -243,14 +244,21 @@ def final_report_patent_metadata(state: PatentWorkflowState) -> dict[str, Any]:
     }
 
 
-def build_evidence_references(state: PatentWorkflowState) -> list[dict[str, Any]]:
+def build_evidence_references(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> list[dict[str, Any]]:
+    used_evidence_ids = collect_used_evidence_ids(valuation_result)
+    if not used_evidence_ids:
+        return []
+
     references = []
     for item in state.evidence_bundle or []:
+        evidence_id = item.get("evidence_id")
+        if evidence_id not in used_evidence_ids:
+            continue
         if item.get("source_type") not in {"news", "industry_report", "company_disclosure", "portfolio_context"}:
             continue
         references.append(
             {
-                "evidence_id": item.get("evidence_id"),
+                "evidence_id": evidence_id,
                 "source_type": item.get("source_type"),
                 "source": item.get("source"),
                 "title": item.get("title") or item.get("source"),
@@ -258,11 +266,24 @@ def build_evidence_references(state: PatentWorkflowState) -> list[dict[str, Any]
                 "url": item.get("url"),
                 "published_at": item.get("published_at"),
                 "related_axes": item.get("related_axes") or item.get("related_axis") or [],
-                "compressed_summary": item.get("compressed_summary"),
-                "key_facts": limit_text_list(item.get("key_facts"), limit=5),
             }
         )
     return references
+
+
+def collect_used_evidence_ids(valuation_result: dict[str, Any]) -> set[Any]:
+    used: set[Any] = set()
+    axes = valuation_result.get("axes") or {}
+    if not isinstance(axes, dict):
+        return used
+    for axis_result in axes.values():
+        if not isinstance(axis_result, dict):
+            continue
+        evidence_ids = axis_result.get("evidence_ids")
+        if not isinstance(evidence_ids, list):
+            continue
+        used.update(evidence_id for evidence_id in evidence_ids if evidence_id)
+    return used
 
 
 def save_final_report_input_payload(state: PatentWorkflowState, name: str, payload: dict[str, Any]) -> Path | None:

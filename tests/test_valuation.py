@@ -105,7 +105,7 @@ def test_run_valuation_agent_sets_result():
     assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
     assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 4, 1)
     assert "평균 점수는" in result.valuation_result["decision_rationale"][0]
-    assert axes["market"]["sub_scores"]["market_growth_score"] is None
+    assert axes["market"]["subscores"]["market_growth"]["score"] is None
     assert "final_report_markdown" not in result.valuation_result
 
 
@@ -629,10 +629,25 @@ def test_market_score_helpers_apply_40_40_20_structure():
 
     assert result["score"] == 95
     assert result["grade"] == "A"
-    assert result["sub_scores"] == {
-        "industry_marketability_score": 40,
-        "market_growth_score": 35,
-        "global_business_score": 20,
+    assert result["subscores"] == {
+        "industry_marketability": {
+            "label": "산업 시장성",
+            "score": 40,
+            "max_score": 40,
+            "rationale": "",
+        },
+        "market_growth": {
+            "label": "시장 성장성",
+            "score": 35,
+            "max_score": 40,
+            "rationale": "대표 CPC 기준 최근 3년 특허 출원 증가율 및 추세로 산정된 코드 계산값입니다.",
+        },
+        "global_business": {
+            "label": "글로벌 사업성",
+            "score": 20,
+            "max_score": 20,
+            "rationale": "Patent Family 국가 정보로 산정된 코드 계산값입니다.",
+        },
     }
 
     result = apply_marketability_scores(
@@ -654,13 +669,13 @@ def test_market_score_helpers_apply_40_40_20_structure():
         },
     )
 
-    assert result["sub_scores"]["industry_marketability_score"] == 30
-    assert result["industry_marketability_breakdown"] == {
-        "industry_growth_evidence_score": 15,
-        "corporate_investment_entry_score": 10,
-        "news_market_diffusion_score": 0,
-        "source_reliability_score": 5,
+    assert result["subscores"]["industry_marketability"] == {
+        "label": "산업 시장성",
+        "score": 30,
+        "max_score": 40,
+        "rationale": "",
     }
+    assert "industry_marketability_breakdown" not in result
     assert result["score"] == 60
 
 
@@ -682,7 +697,7 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
     )
 
     assert result["score"] == 60
-    assert result["sub_scores"]["market_growth_score"] is None
+    assert result["subscores"]["market_growth"]["score"] is None
     assert MARKET_GROWTH_MISSING_MESSAGE in result["missing_information"]
     assert result["confidence"] == 0.49
 
@@ -1115,6 +1130,17 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
                 "compressed_summary": "시장 수요 확대",
                 "key_facts": ["사실1", "사실2", "사실3", "사실4", "사실5", "사실6"],
                 "content": "원문 본문은 final_report input에 들어가지 않는다.",
+            },
+            {
+                "evidence_id": "news_unused",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "평가축이 쓰지 않은 뉴스",
+                "url": "https://example.com/unused",
+                "published_at": "2026-01-02",
+                "related_axes": ["market"],
+                "compressed_summary": "쓰지 않은 뉴스 요약",
+                "key_facts": ["쓰지 않은 사실"],
             }
         ],
     )
@@ -1167,6 +1193,7 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
                 "risk_factors": [],
                 "missing_information": [],
                 "confidence": 0.6,
+                "evidence_ids": ["news_001"],
                 "sub_scores": {"industry_marketability_score": 30},
                 "marketability_metrics": {"cpc_application_counts": [{"year": 2025, "raw": "SECRET_RAW"}]},
             },
@@ -1193,12 +1220,20 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
     for axis in ["legal", "technology", "market", "business_fit"]:
         assert payload["valuation_result"]["axes"][axis]["score"] == valuation_result["axes"][axis]["score"]
         assert payload["valuation_result"]["axes"][axis]["rationale"] == valuation_result["axes"][axis]["rationale"]
+    assert payload["valuation_result"]["axes"]["market"]["evidence_ids"] == ["news_001"]
+    assert [item["evidence_id"] for item in payload["evidence_references"]] == ["news_001"]
     assert payload["evidence_references"][0]["citation_title"] == "문서변환 SW 시장 확대"
     assert payload["evidence_references"][0]["url"] == "https://example.com/news"
-    assert payload["evidence_references"][0]["key_facts"] == ["사실1", "사실2", "사실3", "사실4", "사실5"]
+    assert "compressed_summary" not in payload["evidence_references"][0]
+    assert "key_facts" not in payload["evidence_references"][0]
 
     assert "technology_metrics" not in serialized
     assert "marketability_metrics" not in serialized
+    assert "평가축이 쓰지 않은 뉴스" not in serialized
+    assert "https://example.com/unused" not in serialized
+    assert "쓰지 않은 뉴스 요약" not in serialized
+    assert "시장 수요 확대" not in serialized
+    assert "사실1" not in serialized
     assert "similar_patents" not in serialized
     assert "pdf_text" not in serialized
     assert "pdf_text_excerpt" not in serialized

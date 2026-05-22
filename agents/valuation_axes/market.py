@@ -264,6 +264,7 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
         industry_score = normalize_industry_score(
             result.get("industry_marketability_score")
             or (result.get("sub_scores") or {}).get("industry_marketability_score")
+            or ((result.get("subscores") or {}).get("industry_marketability") or {}).get("score")
         )
     market_growth_score = metrics.get("market_growth_score")
     global_business_score = int(metrics.get("global_business_score") or 0)
@@ -276,19 +277,64 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
     confidence = float(result.get("confidence") or 0)
     if market_growth_score is None:
         confidence = min(confidence, 0.49)
+    sanitized_result = {
+        key: value
+        for key, value in result.items()
+        if key
+        not in {
+            "industry_marketability_score",
+            "industry_marketability_breakdown",
+            "sub_scores",
+        }
+    }
     return {
-        **result,
+        **sanitized_result,
         "score": max(0, min(100, score)),
         "grade": grade_for_score(score),
-        "sub_scores": {
-            "industry_marketability_score": industry_score,
-            "market_growth_score": market_growth_score,
-            "global_business_score": global_business_score,
-        },
-        "industry_marketability_breakdown": industry_breakdown,
+        "subscores": build_market_subscores(
+            result,
+            industry_score=industry_score,
+            market_growth_score=market_growth_score,
+            global_business_score=global_business_score,
+        ),
         "marketability_metrics": metrics,
         "missing_information": missing_information,
         "confidence": max(0.0, min(1.0, confidence)),
+    }
+
+
+def build_market_subscores(
+    result: dict[str, Any],
+    *,
+    industry_score: int,
+    market_growth_score: int | None,
+    global_business_score: int,
+) -> dict[str, dict[str, Any]]:
+    subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
+    industry = subscores.get("industry_marketability") if isinstance(subscores.get("industry_marketability"), dict) else {}
+    market_growth = subscores.get("market_growth") if isinstance(subscores.get("market_growth"), dict) else {}
+    global_business = subscores.get("global_business") if isinstance(subscores.get("global_business"), dict) else {}
+    return {
+        "industry_marketability": {
+            "label": "산업 시장성",
+            "score": industry_score,
+            "max_score": 40,
+            "rationale": normalize_text(industry.get("rationale")),
+        },
+        "market_growth": {
+            "label": "시장 성장성",
+            "score": market_growth_score,
+            "max_score": 40,
+            "rationale": normalize_text(market_growth.get("rationale"))
+            or "대표 CPC 기준 최근 3년 특허 출원 증가율 및 추세로 산정된 코드 계산값입니다.",
+        },
+        "global_business": {
+            "label": "글로벌 사업성",
+            "score": global_business_score,
+            "max_score": 20,
+            "rationale": normalize_text(global_business.get("rationale"))
+            or "Patent Family 국가 정보로 산정된 코드 계산값입니다.",
+        },
     }
 
 
