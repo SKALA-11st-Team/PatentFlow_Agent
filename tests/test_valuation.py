@@ -550,30 +550,42 @@ def test_business_fit_context_is_safe_with_minimal_empty_state():
     assert payload["business_fit_context"]["skax_official_evidence"] == []
 
 
-def test_business_fit_rubric_uses_official_evidence_criteria_without_output_subscores():
+def test_business_fit_rubric_is_externalized_to_prompt_md():
     from agents.valuation import normalize_axis_llm_result
-    from agents.valuation_axes.business_fit import business_fit_scoring_rubric
 
-    rubric = business_fit_scoring_rubric()
-    serialized = json.dumps(rubric, ensure_ascii=False)
+    text = __import__("pathlib").Path("prompts/valuation/valuation_business_fit.md").read_text(encoding="utf-8")
 
-    assert rubric["total_score"] == 100
-    assert rubric["components"]["official_business_evidence"]["max_score"] == 30
-    assert rubric["components"]["business_context_alignment"]["max_score"] == 45
-    assert rubric["components"]["application_scenario_specificity"]["max_score"] == 25
-    assert "business_connection" not in serialized
-    assert "portfolio_necessity" not in serialized
-    assert "practical_applicability" not in serialized
-    assert "evidence_reliability" not in serialized
-    assert "검색 결과 개수만으로 높은 점수를 주지 않는다." in rubric["official_evidence_principles"]
-    assert "공식 근거가 없다고 특허 가치가 낮다고 단정하지 않는다." in rubric["official_evidence_principles"]
-    assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다." in rubric["official_evidence_principles"]
+    assert "총점은 100점이며 반드시 아래 3개 하위 항목 점수를 합산한다." in text
+    assert "공식 사업 근거 발견도: 30점" in text
+    assert "사업 맥락 직접성: 45점" in text
+    assert "적용 시나리오 구체성: 25점" in text
+    assert '"official_business_evidence": {' in text
+    assert '"business_context_alignment": {' in text
+    assert '"application_scenario_specificity": {' in text
+    assert '"max_score": 30' in text
+    assert '"max_score": 45' in text
+    assert '"max_score": 25' in text
+    assert "business_connection" not in text
+    assert "portfolio_necessity" not in text
+    assert "practical_applicability" not in text
+    assert "evidence_reliability" not in text
+    assert "검색 결과 개수만으로 높은 점수를 주지 않는다." in text
+    assert "공식 근거가 없다고 특허 가치가 낮다고 단정하지 않는다." in text
+    assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다." in text
 
     result = normalize_axis_llm_result(
         "business_fit",
         {
             "score": 80,
             "grade": "B",
+            "subscores": {
+                "official_business_evidence": {
+                    "label": "공식 사업 근거 발견도",
+                    "score": 24,
+                    "max_score": 30,
+                    "rationale": "공식 근거 확인",
+                }
+            },
             "rationale": "공식 근거 기반 평가",
             "evidence_ids": ["skax_001"],
             "risk_factors": [],
@@ -593,8 +605,9 @@ def test_business_fit_rubric_uses_official_evidence_criteria_without_output_subs
         "risk_factors",
         "missing_information",
         "confidence",
+        "subscores",
     }
-    assert "subscores" not in result
+    assert result["subscores"]["official_business_evidence"]["score"] == 24
     assert "sub_scores" not in result
 
 
@@ -1324,19 +1337,7 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
     assert "business_fit_context" in business_fit_input
     assert business_fit_input["business_fit_context"]["patent_description"]["title_final"] == "문서변환 특허"
     assert business_fit_input["business_fit_context"]["skax_official_evidence"] == []
-    rubric = business_fit_input["business_fit_scoring_rubric"]
-    assert rubric["components"]["official_business_evidence"]["max_score"] == 30
-    assert rubric["components"]["business_context_alignment"]["max_score"] == 45
-    assert rubric["components"]["application_scenario_specificity"]["max_score"] == 25
-    assert "business_connection" not in rubric["components"]
-    assert "portfolio_necessity" not in rubric["components"]
-    assert "practical_applicability" not in rubric["components"]
-    assert "evidence_reliability" not in rubric["components"]
-    assert "검색 결과 개수만으로 높은 점수를 주지 않는다." in rubric["official_evidence_principles"]
-    assert "공식 근거가 없다고 특허 가치가 낮다고 단정하지 않는다." in rubric["official_evidence_principles"]
-    assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다." in rubric["official_evidence_principles"]
-    assert "subscores" in rubric["rationale_instruction"]
-    assert "sub_scores" in rubric["rationale_instruction"]
+    assert "business_fit_scoring_rubric" not in business_fit_input
     final_input = json.loads((input_dir / "final_report_input.json").read_text(encoding="utf-8"))
     assert final_input["patent"]["metadata"]["title"] == "문서변환 특허"
     assert final_input["evidence_references"][0]["title"] == "문서변환 SW 시장 확대"
