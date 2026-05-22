@@ -241,11 +241,14 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         return state
 
     query_plan = state.query_plan or {}
+    skip_news_evidence = bool(state.user_input.get("skip_news_evidence"))
     result = collect_external_evidence(
         preprocessed_patent=preprocessed,
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
         application_number=patent.get("application_number"),
         query_limit_per_axis=MAX_SEARCH_QUERIES,
+        include_naver=not skip_news_evidence,
+        include_gnews=not skip_news_evidence,
         include_kipris=False,
         ko_queries_override=query_plan.get("ko_queries", []),
         en_queries_override=query_plan.get("en_queries", []),
@@ -256,13 +259,21 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         [*state.search_queries, *result.get("queries", []), *result.get("gnews_queries", [])]
     )
     raw_items = result.get("items", [])
-    news_filter_result = filter_news_safely(
-        items=[item for item in raw_items if item.get("source_type") == "news"],
-        preprocessed_patent=preprocessed,
-        patent_id=patent.get("id") or preprocessed.get("patent_id"),
-        output_dir=artifact_subdir(state, "filtered_evidence") / "news",
-        save=not state.user_input.get("no_save", False),
-    )
+    if skip_news_evidence:
+        news_filter_result = {
+            "kept": [],
+            "output_path": None,
+            "stats": {"input_count": 0, "kept_count": 0, "rejected_count": 0},
+            "warning": None,
+        }
+    else:
+        news_filter_result = filter_news_safely(
+            items=[item for item in raw_items if item.get("source_type") == "news"],
+            preprocessed_patent=preprocessed,
+            patent_id=patent.get("id") or preprocessed.get("patent_id"),
+            output_dir=artifact_subdir(state, "filtered_evidence") / "news",
+            save=not state.user_input.get("no_save", False),
+        )
     non_news_items = [item for item in raw_items if item.get("source_type") != "news"]
     evidence_items = [*non_news_items, *news_filter_result.get("kept", [])]
     industry_result = search_industry_rag_safely(

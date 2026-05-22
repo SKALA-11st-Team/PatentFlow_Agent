@@ -230,6 +230,7 @@ def render_market_report(result: dict[str, Any]) -> str:
     market = result.get("market_result") or {}
     metrics = market.get("marketability_metrics") or {}
     sub_scores = market.get("sub_scores") or {}
+    industry_breakdown = market.get("industry_marketability_breakdown") or {}
     evidence_items = (result.get("industry_rag") or {}).get("items") or []
     used_evidence = [
         item
@@ -257,6 +258,13 @@ def render_market_report(result: dict[str, Any]) -> str:
         "## 산업 시장성 근거",
         "",
         f"산업 시장성 점수: {format_score(sub_scores.get('industry_marketability_score'))} / 40",
+        "",
+        "| 세부 항목 | 점수 |",
+        "| --- | ---: |",
+        f"| 산업 성장 근거 | {format_score(industry_breakdown.get('industry_growth_evidence_score'))} / 15 |",
+        f"| 기업 투자·진입 근거 | {format_score(industry_breakdown.get('corporate_investment_entry_score'))} / 10 |",
+        f"| 뉴스 기반 시장 확산 근거 | {format_score(industry_breakdown.get('news_market_diffusion_score'))} / 10 |",
+        f"| 자료 신뢰도 | {format_score(industry_breakdown.get('source_reliability_score'))} / 5 |",
         "",
         market.get("rationale") or "산업 시장성 판단 근거가 없습니다.",
         "",

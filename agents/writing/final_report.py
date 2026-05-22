@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -33,10 +34,24 @@ def run_final_report_llm_required(
 ) -> str:
     if state.user_input.get("use_llm_final_report", True) is False:
         raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
-    markdown = call_llm(build_final_report_prompt(state=state, valuation_result=valuation_result)).strip()
+    markdown = sanitize_final_report_markdown(
+        call_llm(build_final_report_prompt(state=state, valuation_result=valuation_result)).strip()
+    )
     if not markdown:
         raise RuntimeError("LLM final report response was empty.")
     return markdown
+
+
+def sanitize_final_report_markdown(markdown: str) -> str:
+    lines = []
+    for line in (markdown or "").splitlines():
+        stripped = line.strip()
+        if re.fullmatch(r"\(?세부\s*점수\s*반영\s*:.*\)?", stripped):
+            continue
+        if stripped.startswith("[참고 근거]") or stripped.startswith("참고 근거"):
+            continue
+        lines.append(line)
+    return "\n".join(lines).strip()
 
 
 def build_final_report_prompt(*, state: PatentWorkflowState, valuation_result: dict[str, Any]) -> str:
