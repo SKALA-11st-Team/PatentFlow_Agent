@@ -797,17 +797,73 @@ def _foreign_literature_number_candidates(candidate: dict[str, Any]) -> list[str
     original_number = _clean(candidate.get("original_number"))
     display_number = _clean(candidate.get("display_number"))
     candidates = []
+    base_numbers = _foreign_literature_base_numbers(candidate, document_number)
+    for number in base_numbers:
+        candidates.extend(_foreign_literature_candidates_for_number(number, kind_code))
     for value in (original_number, display_number):
         parsed = _foreign_literature_number_from_text(value)
         if parsed:
             candidates.append(parsed)
-    if document_number and kind_code:
-        candidates.append(f"{document_number.zfill(12)}{kind_code}")
-        candidates.append(f"{document_number}{kind_code}")
     if document_number:
         candidates.append(document_number.zfill(12))
         candidates.append(document_number)
     return _unique_texts(candidates)
+
+
+def _foreign_literature_base_numbers(candidate: dict[str, Any], document_number: str) -> list[str]:
+    numbers = []
+    jp_open_number = _jp_era_open_number(candidate, document_number)
+    if jp_open_number:
+        numbers.append(jp_open_number)
+    if document_number:
+        numbers.append(document_number)
+    return _unique_texts(numbers)
+
+
+def _foreign_literature_candidates_for_number(document_number: str, kind_code: str) -> list[str]:
+    if not document_number:
+        return []
+    if kind_code == "A":
+        return [
+            f"{document_number.zfill(12)}A0",
+            f"{document_number}A0",
+            f"{document_number.zfill(12)}A",
+            f"{document_number}A",
+            f"{document_number.zfill(12)}A1",
+            f"{document_number}A1",
+        ]
+    if kind_code:
+        return [
+            f"{document_number.zfill(12)}{kind_code}",
+            f"{document_number}{kind_code}",
+        ]
+    return []
+
+
+def _jp_era_open_number(candidate: dict[str, Any], document_number: str) -> str | None:
+    if str(candidate.get("country_code") or "").upper() != "JP":
+        return None
+    if not re.fullmatch(r"\d{8}", document_number or ""):
+        return None
+    publication_year = _year_from_date(candidate.get("publication_date"))
+    if not publication_year:
+        return None
+    era_year = int(document_number[:2])
+    serial = document_number[2:]
+    if publication_year >= 2019:
+        expected_era_year = publication_year - 2018
+    elif publication_year >= 1989:
+        expected_era_year = publication_year - 1988
+    else:
+        return None
+    if era_year != expected_era_year:
+        return None
+    return f"{publication_year}{serial}"
+
+
+def _year_from_date(value: Any) -> int | None:
+    match = re.search(r"(19|20)\d{2}", str(value or ""))
+    return int(match.group(0)) if match else None
 
 
 def _foreign_literature_number_from_text(value: str | None) -> str | None:

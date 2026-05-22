@@ -28,6 +28,7 @@ PAT_UTI_SERVICE_PATH = "/kipo-api/kipi/patUtiModInfoSearchSevice"
 PAT_UTI_REST_SERVICE_PATH = "/openapi/rest/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
 OVERSEAS_PATENT_SERVICE_PATH = "/openapi/rest/ForeignPatentBibliographicService"
+OVERSEAS_IMAGE_FULLTEXT_SERVICE_PATH = "/openapi/rest/ForeignPatentImageAndFullTextService"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
 CITATION_SERVICE_PATH = "/openapi/rest/CitationService"
 CITING_SERVICE_PATH = "/openapi/rest/CitingService"
@@ -360,6 +361,38 @@ class KiprisClient:
                 "countryCode": country_code,
             },
             service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
+    def overseas_open_fulltext(
+        self,
+        literature_number: str,
+        country_code: str,
+    ) -> dict[str, Any]:
+        """해외특허 / 도면·전문 / 공개전문 - openFullTextInfo"""
+        return self.request(
+            "openFullTextInfo",
+            {
+                "literatureNumber": literature_number,
+                "countryCode": country_code,
+            },
+            service_path=OVERSEAS_IMAGE_FULLTEXT_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
+    def overseas_registration_fulltext(
+        self,
+        literature_number: str,
+        country_code: str,
+    ) -> dict[str, Any]:
+        """해외특허 / 도면·전문 / 공고전문 - registrationFullTextInfo"""
+        return self.request(
+            "registrationFullTextInfo",
+            {
+                "literatureNumber": literature_number,
+                "countryCode": country_code,
+            },
+            service_path=OVERSEAS_IMAGE_FULLTEXT_SERVICE_PATH,
             auth_param="accessKey",
         )
 

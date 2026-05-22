@@ -397,6 +397,147 @@ def test_technology_metrics_are_added_to_payload(monkeypatch):
     assert captured_prompts[0]["artifact_name"] == "technology_input"
 
 
+def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
+    from agents.valuation_axes import technology
+
+    def fake_prior_art_context(**kwargs):
+        return {
+            "comparison_mode": "prior-art",
+            "candidate_count": 2,
+            "similar_patents": [
+                {"display_number": "KR-A", "source_type": "prior_art"},
+                {"display_number": "JP-B", "source_type": "foreign_prior_art"},
+            ],
+            "prior_art_patents": [
+                {"display_number": "KR-A", "source_type": "prior_art"},
+                {"display_number": "JP-B", "source_type": "foreign_prior_art"},
+            ],
+            "warnings": [],
+        }
+
+    def fake_similar_context(**kwargs):
+        return {
+            "comparison_mode": "similar",
+            "representative_cpc": "G05B 19/4065",
+            "candidate_count": 10,
+            "similar_patents": [
+                {"application_number": "1020200000001", "source_type": "similar"},
+                {"application_number": "1020200000002", "source_type": "similar"},
+                {"application_number": "1020200000003", "source_type": "similar"},
+                {"application_number": "1020200000004", "source_type": "similar"},
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(technology, "build_prior_art_context", fake_prior_art_context)
+    monkeypatch.setattr(technology, "build_similar_context", fake_similar_context)
+
+    state = PatentWorkflowState(
+        user_input={"technology_comparison_mode": "similar"},
+        preprocessed_patent={"metadata": {"cpc": ["G05B 19/4065"], "filing_date": "2024-01-01"}},
+    )
+
+    metrics = technology.build_technology_metrics(state)
+
+    assert metrics["comparison_mode"] == "hybrid"
+    assert metrics["selection_policy"] == "prior-art-first-then-similar"
+    assert [item.get("display_number") or item.get("application_number") for item in metrics["similar_patents"]] == [
+        "KR-A",
+        "JP-B",
+        "1020200000001",
+        "1020200000002",
+        "1020200000003",
+    ]
+
+
+def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
+    from agents.valuation_axes import technology
+
+    def fake_prior_art_context(**kwargs):
+        item = {
+            "display_number": "KR-A",
+            "source_type": "prior_art",
+            "pdf_text": "원문 전체",
+            "pdf_text_excerpt": "원문 전체",
+            "similarity_text": "유사도 계산용 텍스트",
+            "resolved_search_matches": [{"title": "검색 결과"}],
+        }
+        return {
+            "comparison_mode": "prior-art",
+            "candidate_count": 1,
+            "similar_patents": [item],
+            "prior_art_patents": [dict(item)],
+            "warnings": [],
+        }
+
+    def fake_similar_context(**kwargs):
+        return {
+            "comparison_mode": "similar",
+            "representative_cpc": "G05B 19/4065",
+            "candidate_count": 1,
+            "similar_patents": [
+                {
+                    "application_number": "1020200000001",
+                    "pdf_text": "유사문헌 원문 전체",
+                    "pdf_text_excerpt": "유사문헌 원문 전체",
+                    "similarity_text": "유사도 계산용 텍스트",
+                    "resolved_search_matches": [],
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(technology, "build_prior_art_context", fake_prior_art_context)
+    monkeypatch.setattr(technology, "build_similar_context", fake_similar_context)
+
+    metrics = technology.build_technology_metrics(
+        PatentWorkflowState(
+            preprocessed_patent={"metadata": {"cpc": ["G05B 19/4065"], "filing_date": "2024-01-01"}},
+        )
+    )
+
+    assert "prior_art_patents" not in metrics
+    assert metrics["similar_patents"][0]["pdf_text"] == "원문 전체"
+    assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
+    assert all("similarity_text" not in item for item in metrics["similar_patents"])
+    assert all("resolved_search_matches" not in item for item in metrics["similar_patents"])
+
+
+def test_technology_metrics_prior_art_only_payload_omits_prior_art_duplicates(monkeypatch):
+    from agents.valuation_axes import technology
+
+    prior_items = [
+        {
+            "display_number": f"KR-{index}",
+            "source_type": "prior_art",
+            "pdf_text": f"원문 전체 {index}",
+            "pdf_text_excerpt": f"원문 전체 {index}",
+            "similarity_text": "유사도 계산용 텍스트",
+            "resolved_search_matches": [{"title": "검색 결과"}],
+        }
+        for index in range(6)
+    ]
+
+    monkeypatch.setattr(
+        technology,
+        "build_prior_art_context",
+        lambda **kwargs: {
+            "comparison_mode": "prior-art",
+            "candidate_count": 6,
+            "similar_patents": prior_items,
+            "prior_art_patents": [dict(item) for item in prior_items],
+            "warnings": ["w"],
+        },
+    )
+
+    metrics = technology.build_technology_metrics(PatentWorkflowState())
+
+    assert metrics["selection_policy"] == "prior-art-only"
+    assert len(metrics["similar_patents"]) == 5
+    assert "prior_art_patents" not in metrics
+    assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
+
+
 def test_technology_breakdown_scores_are_binary():
     from agents.valuation_axes.technology import apply_technology_scores
 
@@ -444,6 +585,51 @@ def test_technology_breakdown_scores_are_binary():
     assert result["sub_scores"]["technical_differentiation_score"] == 38
     assert result["sub_scores"]["implementation_specificity_score"] == 24
     assert result["score"] == 62
+
+
+def test_technology_candidate_subscores_use_new_grade_thresholds():
+    from agents.valuation_axes.technology import apply_technology_scores
+
+    result = apply_technology_scores(
+        {
+            "score": 0,
+            "grade": "D",
+            "rationale": "r",
+            "evidence_ids": [],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.8,
+            "subscores": {
+                "technical_feasibility": {
+                    "label": "기술 완성도·실현 가능성",
+                    "score": 36,
+                    "max_score": 45,
+                    "rationale": "구현 구조는 구체적이나 일부 조건이 추상적임",
+                },
+                "technical_differentiation": {
+                    "label": "기술 차별성",
+                    "score": 28,
+                    "max_score": 35,
+                    "rationale": "차별 요소가 확인됨",
+                },
+                "technical_utility": {
+                    "label": "기술 유용성",
+                    "score": 16,
+                    "max_score": 20,
+                    "rationale": "개선 효과가 확인됨",
+                },
+            },
+        },
+        {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
+    )
+
+    assert result["score"] == 80
+    assert result["grade"] == "B"
+    assert result["sub_scores"] == {
+        "technical_feasibility_score": 36,
+        "technical_differentiation_score": 28,
+        "technical_utility_score": 16,
+    }
 
 
 def test_valuation_fails_when_llm_valuation_is_disabled():
@@ -606,6 +792,7 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
     assert final_input["evidence_references"][0]["title"] == "문서변환 SW 시장 확대"
     assert final_input["evidence_references"][0]["citation_title"] == "문서변환 SW 시장 확대"
     assert final_input["evidence_references"][0]["url"] == "https://example.com/news"
+    assert "technology_metrics" not in final_input["valuation_result"]["axes"]["technology"]
 
 
 def test_axis_input_includes_representative_claims(tmp_path):

@@ -89,6 +89,34 @@ def test_overseas_demand_paragraph_uses_foreign_bibliographic_access_key():
     assert call["params"]["countryCode"] == "JP"
 
 
+def test_overseas_open_fulltext_uses_foreign_image_fulltext_access_key():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.overseas_open_fulltext("000004002589A", "JP")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/ForeignPatentImageAndFullTextService/openFullTextInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["literatureNumber"] == "000004002589A"
+    assert call["params"]["countryCode"] == "JP"
+
+
+def test_overseas_registration_fulltext_uses_foreign_image_fulltext_access_key():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.overseas_registration_fulltext("000004002589B2", "JP")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/ForeignPatentImageAndFullTextService/registrationFullTextInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["literatureNumber"] == "000004002589B2"
+    assert call["params"]["countryCode"] == "JP"
+
+
 def test_fulltext_application_number_candidates_include_normalized_and_original():
     assert fulltext_application_number_candidates("18/020,829") == ["18020829", "18/020,829"]
 
@@ -692,3 +720,41 @@ def test_foreign_literature_number_candidates_try_twelve_digit_kind_first():
         "000007401073B2",
         "7401073B2",
     ]
+
+
+def test_foreign_literature_number_candidates_adds_a0_for_open_publications():
+    candidate = {
+        "country_code": "CN",
+        "document_number": "113039310",
+        "kind_code": "A",
+        "original_number": "CN113039310 A",
+        "display_number": "CN113039310 A",
+    }
+
+    candidates = _foreign_literature_number_candidates(candidate)
+
+    assert candidates[:2] == [
+        "000113039310A0",
+        "113039310A0",
+    ]
+    assert "000113039310A" in candidates
+    assert "113039310A" in candidates
+
+
+def test_foreign_literature_number_candidates_converts_jp_era_open_number():
+    candidate = {
+        "country_code": "JP",
+        "document_number": "29047511",
+        "kind_code": "A",
+        "original_number": "JP29047511 A",
+        "display_number": "JP29047511 A",
+        "publication_date": "2017-03-09",
+    }
+
+    candidates = _foreign_literature_number_candidates(candidate)
+
+    assert candidates[:2] == [
+        "002017047511A0",
+        "2017047511A0",
+    ]
+    assert "000029047511A0" in candidates

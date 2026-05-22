@@ -553,6 +553,60 @@ paths:
       x-evaluation-usage:
         기술성:
         - 인용 기반 기술 영향력 보조
+  /kipris/overseas-patent/documents/open-fulltext:
+    get:
+      tags:
+      - Overseas Documents
+      operationId: overseasOpenFullTextInfo
+      summary: 해외특허 공개전문 경로 조회
+      description: '해외특허 문헌번호와 국가코드 기준으로 공개전문 다운로드 경로를 조회합니다.
+
+        원천 오퍼레이션: 해외특허 / 도면/전문 / 공개전문 - openFullTextInfo
+
+        문헌번호 예시: 002017047511A0, 000113039310A0
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - $ref: '#/components/parameters/LiteratureNumber'
+      - $ref: '#/components/parameters/CountryCode'
+      responses:
+        '200':
+          description: 해외특허 공개전문 경로
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverseasFullTextResponse'
+      x-evaluation-usage:
+        기술성:
+        - 해외 인용/선행기술 문헌 전문 비교
+  /kipris/overseas-patent/documents/registration-fulltext:
+    get:
+      tags:
+      - Overseas Documents
+      operationId: overseasRegistrationFullTextInfo
+      summary: 해외특허 공고전문 경로 조회
+      description: '해외특허 문헌번호와 국가코드 기준으로 공고전문 다운로드 경로를 조회합니다.
+
+        원천 오퍼레이션: 해외특허 / 도면/전문 / 공고전문 - registrationFullTextInfo
+
+        A0 공개문헌도 국가/문헌에 따라 이 오퍼레이션에서 경로가 반환될 수 있습니다.
+
+        '
+      parameters:
+      - $ref: '#/components/parameters/ServiceKey'
+      - $ref: '#/components/parameters/LiteratureNumber'
+      - $ref: '#/components/parameters/CountryCode'
+      responses:
+        '200':
+          description: 해외특허 공고전문 경로
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OverseasFullTextResponse'
+      x-evaluation-usage:
+        기술성:
+        - 해외 인용/선행기술 문헌 전문 비교
   /openapi/rest/CitationService/citationInfoV3:
     get:
       tags:
@@ -1609,6 +1663,32 @@ components:
           properties:
             item:
               $ref: '#/components/schemas/PdfPathItem'
+    OverseasFullTextResponse:
+      type: object
+      description: 해외특허 공개/공고전문 경로 응답
+      properties:
+        response:
+          type: object
+          properties:
+            header:
+              $ref: '#/components/schemas/KiprisResponseHeader'
+            body:
+              type: object
+              properties:
+                items:
+                  type: object
+                  properties:
+                    openFullTextInfo:
+                      $ref: '#/components/schemas/OverseasFullTextItem'
+                    registrationFullTextInfo:
+                      $ref: '#/components/schemas/OverseasFullTextItem'
+    OverseasFullTextItem:
+      type: object
+      properties:
+        path:
+          type: string
+          description: 해외특허 전문 다운로드 경로
+          example: http://www.kipris.or.kr/abpat/remoteFile.do?method=fullText&publ_key=JP002017047511A0&cntry=JP
     PreferredFullTextPdfResponse:
       type: object
       description: 권리성 분석에 사용할 전문PDF를 공고전문 우선, 공개전문 fallback 규칙으로 선택한 내부 wrapper 응답

@@ -558,6 +558,28 @@ def foreign_patent_documents_info(request: Request) -> Any:
     )
 
 
+@app.get("/kipris/overseas-patent/documents/open-fulltext", tags=["KIPRIS Overseas Documents"])
+def overseas_open_fulltext_info(request: Request) -> Any:
+    query = _query_as_single_dict(request)
+    literature_number = query.get("literatureNumber")
+    country_code = query.get("countryCode")
+    if not literature_number or not country_code:
+        raise HTTPException(status_code=400, detail="literatureNumber와 countryCode는 필수입니다.")
+    client = _client(_access_key_from_query(query))
+    return _kipris_http(lambda: client.overseas_open_fulltext(str(literature_number), str(country_code)))
+
+
+@app.get("/kipris/overseas-patent/documents/registration-fulltext", tags=["KIPRIS Overseas Documents"])
+def overseas_registration_fulltext_info(request: Request) -> Any:
+    query = _query_as_single_dict(request)
+    literature_number = query.get("literatureNumber")
+    country_code = query.get("countryCode")
+    if not literature_number or not country_code:
+        raise HTTPException(status_code=400, detail="literatureNumber와 countryCode는 필수입니다.")
+    client = _client(_access_key_from_query(query))
+    return _kipris_http(lambda: client.overseas_registration_fulltext(str(literature_number), str(country_code)))
+
+
 @app.get("/openapi/rest/CitationService/citationInfoV3", tags=["KIPRIS Patent Citation"])
 def citation_info_v3(request: Request) -> Any:
     query = _query_as_single_dict(request)

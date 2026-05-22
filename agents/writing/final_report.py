@@ -53,11 +53,32 @@ def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_re
             "summary_result": state.summary_result,
         },
         "evidence_references": build_evidence_references(state),
-        "valuation_result": {
-            key: value
-            for key, value in valuation_result.items()
-            if key != "final_report_markdown"
-        },
+        "valuation_result": final_report_valuation_result(valuation_result),
+    }
+
+
+def final_report_valuation_result(valuation_result: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        key: value
+        for key, value in valuation_result.items()
+        if key != "final_report_markdown"
+    }
+    axes = result.get("axes")
+    if not isinstance(axes, dict):
+        return result
+    sanitized_axes = {}
+    for axis, axis_result in axes.items():
+        if isinstance(axis_result, dict):
+            sanitized_axes[axis] = {
+                key: value
+                for key, value in axis_result.items()
+                if key != "technology_metrics"
+            }
+        else:
+            sanitized_axes[axis] = axis_result
+    return {
+        **result,
+        "axes": sanitized_axes,
     }
 
 

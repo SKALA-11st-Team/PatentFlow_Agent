@@ -74,3 +74,57 @@ def test_citing_info_route_uses_access_key(monkeypatch):
     assert response.status_code == 200
     assert response.json()["service_key"] == "rest-key"
     assert response.json()["standard_citation_application_number"] == "1020060089973"
+
+
+def test_overseas_open_fulltext_route_uses_access_key(monkeypatch):
+    class Client:
+        def __init__(self):
+            self.service_key = None
+
+        def overseas_open_fulltext(self, literature_number, country_code):
+            return {
+                "service_key": self.service_key,
+                "literature_number": literature_number,
+                "country_code": country_code,
+                "openFullTextInfo": {"path": "http://example.com/open.pdf"},
+            }
+
+    client = Client()
+    monkeypatch.setattr(api_server, "_client", lambda service_key=None: setattr(client, "service_key", service_key) or client)
+
+    response = TestClient(api_server.app).get(
+        "/kipris/overseas-patent/documents/open-fulltext",
+        params={"accessKey": "rest-key", "literatureNumber": "002017047511A0", "countryCode": "JP"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["service_key"] == "rest-key"
+    assert response.json()["literature_number"] == "002017047511A0"
+    assert response.json()["country_code"] == "JP"
+
+
+def test_overseas_registration_fulltext_route_uses_access_key(monkeypatch):
+    class Client:
+        def __init__(self):
+            self.service_key = None
+
+        def overseas_registration_fulltext(self, literature_number, country_code):
+            return {
+                "service_key": self.service_key,
+                "literature_number": literature_number,
+                "country_code": country_code,
+                "registrationFullTextInfo": {"path": "http://example.com/registration.pdf"},
+            }
+
+    client = Client()
+    monkeypatch.setattr(api_server, "_client", lambda service_key=None: setattr(client, "service_key", service_key) or client)
+
+    response = TestClient(api_server.app).get(
+        "/kipris/overseas-patent/documents/registration-fulltext",
+        params={"accessKey": "rest-key", "literatureNumber": "000004002589B2", "countryCode": "JP"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["service_key"] == "rest-key"
+    assert response.json()["literature_number"] == "000004002589B2"
+    assert response.json()["country_code"] == "JP"

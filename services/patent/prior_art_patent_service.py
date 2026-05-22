@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+import re
+from typing import Any, Mapping
 
 from open_api.kipris_client import KiprisClient
 from services.evidence.api_normalizers import extract_kipris_items
-from services.patent.kipris_patent_service import download_and_parse_patent_pdf, fetch_kipris_bibliography
+from services.patent.kipris_patent_service import (
+    _foreign_literature_number_candidates,
+    download_and_parse_patent_pdf,
+    fetch_kipris_bibliography,
+    parse_single_patent_pdf,
+)
 from services.patent.markdown_preprocess_service import extract_sections, preprocess_patent_markdown
 
 
@@ -119,10 +125,31 @@ def resolve_prior_art_candidate(
         "abstract": None,
         "similarity": None,
         "citation_type_names": candidate.get("citation_type_names") or [],
+        "country_code": candidate.get("country_code"),
+        "document_number": candidate.get("standard_number"),
+        "kind_code": candidate.get("kind_code"),
         "pdf_collected": False,
         "resolved_application_numbers": [],
         "_warnings": [],
     }
+
+    if is_foreign_prior_art_candidate(candidate):
+        item.update(
+            {
+                "source_type": "foreign_prior_art",
+                "source_label": "해외 선행기술문헌",
+                "title": candidate.get("display_number"),
+                "publication_date": candidate.get("publication_date"),
+            }
+        )
+        if collect_pdf:
+            attach_foreign_prior_art_fulltext(
+                item,
+                candidate,
+                output_dir=output_dir or Path("artifacts/runs/manual/technology_prior_art"),
+                text_limit=text_limit,
+            )
+        return item
 
     search_matches = candidate_search_matches(candidate)
     application_numbers = unique_texts(
@@ -202,6 +229,144 @@ def resolve_prior_art_candidate(
             )
 
     return item
+
+
+def is_foreign_prior_art_candidate(candidate: dict[str, Any]) -> bool:
+    country_code = normalize_text(candidate.get("country_code"))
+    return bool(country_code and country_code != "KR")
+
+
+def attach_foreign_prior_art_fulltext(
+    item: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    output_dir: Path,
+    text_limit: int | None,
+) -> None:
+    parsed, literature_number, fulltext_type, pdf_path, errors = download_foreign_prior_art_fulltext(
+        candidate,
+        output_dir=output_dir,
+    )
+    if parsed and literature_number and pdf_path:
+        markdown_text = preprocess_patent_markdown(str(parsed.get("markdown_text") or ""))
+        pdf_text = markdown_text if text_limit is None else markdown_text[:text_limit]
+        item.update(
+            {
+                "literature_number": literature_number,
+                "foreign_fulltext_type": fulltext_type,
+                "pdf_path": pdf_path,
+                "markdown_paths": parsed.get("markdown_paths") or [],
+                "pdf_text": pdf_text,
+                "pdf_text_excerpt": pdf_text,
+                "pdf_text_chars": len(pdf_text),
+                "pdf_text_truncated": text_limit is not None and len(markdown_text) > text_limit,
+                "pdf_drawings_removed": True,
+                "pdf_collected": True,
+                "similarity_text": prior_art_similarity_text_from_markdown(markdown_text),
+            }
+        )
+        return
+
+    joined = " | ".join(errors)[:500]
+    item["_warnings"].append(
+        f"foreign_prior_art_fulltext_failed:{item.get('display_number')}:{joined or 'no_fulltext_candidate_succeeded'}"
+    )
+
+
+def download_foreign_prior_art_fulltext(
+    candidate: dict[str, Any],
+    *,
+    output_dir: Path,
+) -> tuple[dict[str, Any] | None, str | None, str | None, str | None, list[str]]:
+    client = KiprisClient()
+    errors: list[str] = []
+    country_code = normalize_text(candidate.get("country_code"))
+    if not country_code:
+        return None, None, None, None, ["country_code_missing"]
+
+    for literature_number in _foreign_literature_number_candidates(candidate):
+        for fulltext_type, method_name in foreign_fulltext_operation_order(candidate):
+            try:
+                raw = getattr(client, method_name)(literature_number, country_code)
+                document = extract_foreign_fulltext_document(raw)
+                path = document.get("path")
+                if not path:
+                    errors.append(f"{literature_number}:{fulltext_type}:path_not_found")
+                    continue
+                pdf_path = download_foreign_fulltext_pdf(
+                    client,
+                    str(path),
+                    output_dir=output_dir,
+                    filename=normalize_text(document.get("doc_name")) or f"{literature_number}_{fulltext_type}.pdf",
+                )
+                parsed = parse_single_patent_pdf(
+                    pdf_path,
+                    output_dir=output_dir / safe_filename(Path(pdf_path).stem),
+                )
+                return parsed, literature_number, fulltext_type, str(pdf_path), errors
+            except Exception as exc:
+                errors.append(f"{literature_number}:{fulltext_type}:{exc.__class__.__name__}:{str(exc)[:180]}")
+    return None, None, None, None, errors
+
+
+def foreign_fulltext_operation_order(candidate: dict[str, Any]) -> list[tuple[str, str]]:
+    kind_code = normalize_text(candidate.get("kind_code")) or ""
+    if kind_code.startswith("A"):
+        return [("open", "overseas_open_fulltext"), ("registration", "overseas_registration_fulltext")]
+    return [("registration", "overseas_registration_fulltext"), ("open", "overseas_open_fulltext")]
+
+
+def extract_foreign_fulltext_document(raw: Any) -> dict[str, str | None]:
+    mapping = find_document_path_mapping(raw) or {}
+    return {
+        "doc_name": first_mapping_value(mapping, ("docName", "documentName", "fileName", "doc_name")),
+        "path": first_mapping_value(mapping, ("path", "fullTextPath", "downloadPath", "filePath", "pdfPath", "url")),
+    }
+
+
+def find_document_path_mapping(value: Any) -> Mapping[str, Any] | None:
+    if isinstance(value, Mapping):
+        if first_mapping_value(value, ("path", "fullTextPath", "downloadPath", "filePath", "pdfPath", "url")):
+            return value
+        for child in value.values():
+            found = find_document_path_mapping(child)
+            if found:
+                return found
+    if isinstance(value, list):
+        for child in value:
+            found = find_document_path_mapping(child)
+            if found:
+                return found
+    return None
+
+
+def first_mapping_value(mapping: Mapping[str, Any], keys: tuple[str, ...]) -> str | None:
+    lower_keys = {str(key).lower(): value for key, value in mapping.items()}
+    for key in keys:
+        value = lower_keys.get(key.lower())
+        text = normalize_text(value)
+        if text:
+            return text
+    return None
+
+
+def download_foreign_fulltext_pdf(
+    client: Any,
+    url: str,
+    *,
+    output_dir: Path,
+    filename: str,
+) -> Path:
+    response = client.session.get(url, timeout=getattr(client, "timeout", None))
+    response.raise_for_status()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / safe_filename(filename)
+    path.write_bytes(response.content)
+    return path
+
+
+def safe_filename(value: str) -> str:
+    return re.sub(r"[^0-9A-Za-z가-힣_.-]+", "_", str(value or "")).strip("._") or "document"
 
 
 def candidate_search_matches(candidate: dict[str, Any]) -> list[dict[str, Any]]:
