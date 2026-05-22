@@ -331,3 +331,34 @@ def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
 
     assert result["gnews_queries"] == ["reinforcement learning finance", "AI asset allocation"]
     assert saved_queries == result["gnews_queries"]
+
+
+def test_collect_external_evidence_uses_configured_news_results_per_query(monkeypatch, tmp_path):
+    observed = []
+
+    def fake_request_json(base_url, path, params, *, timeout=20):
+        del base_url, timeout
+        observed.append((path, dict(params)))
+        if path == "/api/news/search":
+            assert params["display"] == 3
+            return {"items": []}
+        assert path == "/api/v4/search"
+        assert params["max"] == 3
+        return {"articles": []}
+
+    monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
+    monkeypatch.setattr("services.evidence.external_search_service.save_evidence_collection", lambda **kwargs: tmp_path / "x.json")
+    monkeypatch.setattr("services.evidence.external_search_service.settings.news_results_per_query", 3, raising=False)
+
+    collect_external_evidence(
+        preprocessed_patent={"metadata": {"title": "챗봇"}, "sections": {"abstract": "AI 챗봇"}},
+        patent_id=1,
+        include_naver=True,
+        include_gnews=True,
+        ko_queries_override=["대화형 AI 챗봇"],
+        en_queries_override=["conversational AI chatbot"],
+        query_limit_per_axis=1,
+        fetch_news_full_text=False,
+    )
+
+    assert [path for path, _ in observed] == ["/api/news/search", "/api/v4/search"]

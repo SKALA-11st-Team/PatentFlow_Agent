@@ -132,6 +132,7 @@ def collect_external_evidence(
     safe_limit = max(1, int(query_limit_per_axis))
     selected_queries = ko_queries[:safe_limit]
     selected_gnews_queries = en_queries[:safe_limit]
+    news_results_per_query = max(1, int(settings.news_results_per_query))
 
     api_base_url = (api_base_url or settings.unified_api_base_url).rstrip("/")
     sources: list[list[dict[str, Any]]] = []
@@ -144,7 +145,7 @@ def collect_external_evidence(
                 raw = request_json(
                     api_base_url,
                     "/api/news/search",
-                    {"query": query, "display": 5, "start": 1, "sort": "sim"},
+                    {"query": query, "display": news_results_per_query, "start": 1, "sort": "sim"},
                 )
                 items = enrich_news_items_with_full_text(
                     normalize_naver_news_response(raw, query=query),
@@ -170,7 +171,7 @@ def collect_external_evidence(
                 raw = request_json(
                     api_base_url,
                     "/api/v4/search",
-                    {"q": gnews_query, "lang": "en", "max": 5, "page": 1},
+                    {"q": gnews_query, "lang": "en", "max": news_results_per_query, "page": 1},
                 )
                 items = enrich_news_items_with_full_text(
                     normalize_gnews_response(raw, query=gnews_query),

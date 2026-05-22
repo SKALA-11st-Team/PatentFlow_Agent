@@ -687,6 +687,26 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
     assert result["confidence"] == 0.49
 
 
+def test_market_select_evidence_keeps_all_market_evidence():
+    from agents.valuation_axes.market import select_evidence
+
+    evidence = [
+        {
+            "evidence_id": f"news_{index}",
+            "source_type": "news",
+            "source": "naver_news",
+            "title": f"시장 뉴스 {index}",
+            "related_axes": ["market"],
+        }
+        for index in range(1, 9)
+    ]
+    state = PatentWorkflowState(evidence_bundle=evidence)
+
+    selected = select_evidence(evidence, state)
+
+    assert [item["evidence_id"] for item in selected] == [f"news_{index}" for index in range(1, 9)]
+
+
 def test_technology_metrics_are_added_to_payload(monkeypatch):
     captured_payloads = []
     captured_prompts = []

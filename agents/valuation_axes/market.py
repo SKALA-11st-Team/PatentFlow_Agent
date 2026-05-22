@@ -42,6 +42,7 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
         items,
         source_types={"industry_report", "company_disclosure", "news"},
         axes={AXIS},
+        limit=None,
     )
 
 

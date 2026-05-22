@@ -8,13 +8,16 @@ def select_by_types_or_axes(
     *,
     source_types: set[str],
     axes: set[str],
+    limit: int | None = 5,
 ) -> list[dict[str, Any]]:
     selected = []
     for item in items:
         item_axes = set(item.get("related_axes") or item.get("related_axis") or [])
         if item.get("source_type") in source_types or item_axes.intersection(axes):
             selected.append(item)
-    return selected[:5]
+    if limit is None:
+        return selected
+    return selected[: max(0, int(limit))]
 
 
 def normalize_text(value: Any) -> str:
