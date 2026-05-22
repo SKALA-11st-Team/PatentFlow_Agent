@@ -25,6 +25,10 @@ env/
 .env.*
 !.env.example
 
+# API keys / local secrets
+*.key
+*.pem
+
 # Runtime artifacts
 run.json
 artifacts/

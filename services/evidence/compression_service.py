@@ -70,7 +70,7 @@ def select_compression_candidates(
             continue
         if source_type == "industry_report":
             score = to_float(item.get("score"))
-            if score is not None and score >= rag_score_threshold:
+            if score is None or score >= rag_score_threshold:
                 candidates.append(item)
             else:
                 skipped["low_rag_score"] += 1

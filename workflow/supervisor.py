@@ -800,9 +800,10 @@ def check_evidence_bundle(state: PatentWorkflowState) -> SupervisorDecision:
     missing_evidence: list[str] = []
     if len(evidence_bundle) < 3:
         missing_evidence.append("minimum_evidence_count")
-    news_count = sum(1 for evidence in evidence_bundle if evidence.get("source_type") == "news")
-    if news_count < 3:
-        missing_evidence.append("minimum_news_count")
+    if not state.user_input.get("skip_news_evidence"):
+        news_count = sum(1 for evidence in evidence_bundle if evidence.get("source_type") == "news")
+        if news_count < 3:
+            missing_evidence.append("minimum_news_count")
     required_fields = ["evidence_id", "source"]
     for index, evidence in enumerate(evidence_bundle):
         for field in required_fields:

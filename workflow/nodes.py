@@ -15,6 +15,7 @@ from services.evidence.compression_service import (
 )
 from services.evidence.external_search_service import MAX_SEARCH_QUERIES, collect_external_evidence, rewrite_search_queries
 from services.evidence.news_filter_service import filter_news_evidence, save_filtered_news_result
+from services.evidence.skax_site_search_service import collect_skax_site_evidence
 from services.evidence.store_service import save_filtered_evidence_bundle
 from services.rag.industry_rag_service import search_and_save_patent_industry_evidence
 from services.observability.langsmith_service import trace
@@ -241,11 +242,14 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         return state
 
     query_plan = state.query_plan or {}
+    skip_news_evidence = bool(state.user_input.get("skip_news_evidence"))
     result = collect_external_evidence(
         preprocessed_patent=preprocessed,
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
         application_number=patent.get("application_number"),
         query_limit_per_axis=MAX_SEARCH_QUERIES,
+        include_naver=not skip_news_evidence,
+        include_gnews=not skip_news_evidence,
         include_kipris=False,
         ko_queries_override=query_plan.get("ko_queries", []),
         en_queries_override=query_plan.get("en_queries", []),
@@ -256,13 +260,21 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         [*state.search_queries, *result.get("queries", []), *result.get("gnews_queries", [])]
     )
     raw_items = result.get("items", [])
-    news_filter_result = filter_news_safely(
-        items=[item for item in raw_items if item.get("source_type") == "news"],
-        preprocessed_patent=preprocessed,
-        patent_id=patent.get("id") or preprocessed.get("patent_id"),
-        output_dir=artifact_subdir(state, "filtered_evidence") / "news",
-        save=not state.user_input.get("no_save", False),
-    )
+    if skip_news_evidence:
+        news_filter_result = {
+            "kept": [],
+            "output_path": None,
+            "stats": {"input_count": 0, "kept_count": 0, "rejected_count": 0},
+            "warning": None,
+        }
+    else:
+        news_filter_result = filter_news_safely(
+            items=[item for item in raw_items if item.get("source_type") == "news"],
+            preprocessed_patent=preprocessed,
+            patent_id=patent.get("id") or preprocessed.get("patent_id"),
+            output_dir=artifact_subdir(state, "filtered_evidence") / "news",
+            save=not state.user_input.get("no_save", False),
+        )
     non_news_items = [item for item in raw_items if item.get("source_type") != "news"]
     evidence_items = [*non_news_items, *news_filter_result.get("kept", [])]
     industry_result = search_industry_rag_safely(
@@ -274,11 +286,16 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     )
     if industry_result.get("items"):
         evidence_items = [*evidence_items, *industry_result["items"]]
+    skax_context = build_skax_patent_context_from_state(state)
+    skax_result = collect_skax_site_evidence_safely(skax_context)
+    skax_items = skax_result.get("items", [])
+    if skax_items:
+        evidence_items = merge_evidence_items(evidence_items, skax_items)
     filtered_evidence_path = save_filtered_evidence_safely(
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
         news_items=news_filter_result.get("kept", []),
         industry_items=industry_result.get("items", []),
-        other_items=non_news_items,
+        other_items=[*non_news_items, *skax_items],
         output_dir=artifact_subdir(state, "filtered_evidence"),
         save=not state.user_input.get("no_save", False),
     )
@@ -300,11 +317,18 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             "warning": industry_result.get("warning"),
             "item_count": len(industry_result.get("items", [])),
         },
+        "skax_site_search": {
+            "queries": skax_result.get("queries", []),
+            "stats": skax_result.get("stats", {}),
+            "item_count": len(skax_items),
+            "failed_urls": skax_result.get("failed_urls", []),
+            "warning": skax_result.get("warning"),
+        },
         "filtered_evidence": {
             "output_path": filtered_evidence_path,
             "news_count": len(news_filter_result.get("kept", [])),
             "industry_report_count": len(industry_result.get("items", [])),
-            "other_count": len(non_news_items),
+            "other_count": len(non_news_items) + len(skax_items),
         },
     }
     state.retry_count += 1
@@ -322,6 +346,93 @@ def compact_workflow_queries(queries: list[str]) -> list[str]:
         seen.add(value)
         compacted.append(value)
     return compacted
+
+
+def build_skax_patent_context_from_state(state: PatentWorkflowState) -> dict[str, str]:
+    patent = state.patent_structured or {}
+    return {
+        "management_number": first_non_empty_text(patent.get("management_number"), patent.get("관리번호")),
+        "title_final": first_non_empty_text(patent.get("title_final"), patent.get("발명의 명칭(최종)")),
+        "title_draft": first_non_empty_text(patent.get("title_draft"), patent.get("발명의 명칭(가제)")),
+        "business_area": first_non_empty_text(
+            patent.get("business_area"),
+            patent.get("관련 사업 분야"),
+            patent.get("관련사업 분야"),
+        ),
+        "technology_area": first_non_empty_text(
+            patent.get("technology_area"),
+            patent.get("관련 기술 분야"),
+            patent.get("관련기술 분야"),
+        ),
+        "related_product": first_non_empty_text(patent.get("related_product"), patent.get("관련제품")),
+    }
+
+
+def collect_skax_site_evidence_safely(patent_context: dict[str, str]) -> dict:
+    if not has_skax_search_context(patent_context):
+        return {
+            "items": [],
+            "queries": [],
+            "stats": {},
+            "failed_urls": [],
+            "warning": "skax_site_search_skipped:missing_patent_context",
+        }
+    try:
+        return collect_skax_site_evidence(patent_context)
+    except Exception as exc:
+        return {
+            "items": [],
+            "queries": [],
+            "stats": {},
+            "failed_urls": [],
+            "warning": f"skax_site_search_failed:{exc.__class__.__name__}:{str(exc)[:200]}",
+        }
+
+
+def has_skax_search_context(patent_context: dict[str, str]) -> bool:
+    return any(
+        patent_context.get(key)
+        for key in ("title_final", "related_product", "business_area", "technology_area")
+    )
+
+
+def merge_evidence_items(existing: list[dict], extra: list[dict]) -> list[dict]:
+    merged = list(existing)
+    seen = set()
+    for item in merged:
+        seen.update(evidence_identity_values(item))
+    for item in extra:
+        identities = evidence_identity_values(item)
+        if identities and any(identity in seen for identity in identities):
+            continue
+        merged.append(item)
+        seen.update(identities)
+    return merged
+
+
+def evidence_identity_values(item: dict) -> set[tuple[str, str]]:
+    identities: set[tuple[str, str]] = set()
+    evidence_id = first_non_empty_text(item.get("evidence_id"))
+    url = first_non_empty_text(item.get("url"))
+    title = first_non_empty_text(item.get("title"))
+    source = first_non_empty_text(item.get("source"))
+    if evidence_id:
+        identities.add(("evidence_id", evidence_id))
+    if url:
+        identities.add(("url", url.lower()))
+    if title and source:
+        identities.add(("title_source", f"{title.lower()}|{source.lower()}"))
+    return identities
+
+
+def first_non_empty_text(*values: object) -> str:
+    for value in values:
+        if value is None:
+            continue
+        text = " ".join(str(value).split())
+        if text:
+            return text
+    return ""
 
 
 @trace(run_type="tool")
@@ -359,18 +470,23 @@ def compress_evidence_safely(
     output_dir: Path,
     save: bool,
 ) -> dict:
+    skax_items = [item for item in items if is_skax_official_evidence(item)]
+    compressible_items = [item for item in items if not is_skax_official_evidence(item)]
     try:
         result = compress_evidence_items(
-            items,
+            compressible_items,
             preprocessed_patent=preprocessed_patent,
             rag_score_threshold=DEFAULT_RAG_SCORE_THRESHOLD,
         )
+        merged_items = merge_evidence_items(result.get("items", []), skax_items)
+        merged_items = merge_evidence_items(merged_items, portfolio_items)
         result = {
             **result,
-            "items": [*result.get("items", []), *portfolio_items],
+            "items": merged_items,
             "stats": {
                 **(result.get("stats") or {}),
                 "portfolio_evidence_count": len(portfolio_items),
+                "skax_official_evidence_count": len(skax_items),
             },
         }
         output_path = None
@@ -385,17 +501,32 @@ def compress_evidence_safely(
             "output_path": str(output_path) if output_path else None,
         }
     except Exception as exc:
+        fallback_items = merge_evidence_items(skax_items, portfolio_items)
         return {
-            "items": [],
+            "items": fallback_items,
             "stats": {
                 "input_count": len(items),
                 "candidate_count": 0,
                 "compressed_count": 0,
                 "rag_score_threshold": DEFAULT_RAG_SCORE_THRESHOLD,
+                "skax_official_evidence_count": len(skax_items),
+                "portfolio_evidence_count": len(portfolio_items),
             },
             "warnings": [f"evidence_compression_failed:{exc.__class__.__name__}:{str(exc)[:200]}"],
             "output_path": None,
         }
+
+
+def is_skax_official_evidence(item: dict) -> bool:
+    if first_non_empty_text(item.get("source")) == "sk_ax_official":
+        return True
+    evidence_id = first_non_empty_text(item.get("evidence_id"))
+    if evidence_id.startswith("skax_site_"):
+        return True
+    related_axes = item.get("related_axes") or []
+    if isinstance(related_axes, str):
+        related_axes = [related_axes]
+    return item.get("source_type") == "company_disclosure" and "business_fit" in related_axes
 
 
 def save_filtered_evidence_safely(
