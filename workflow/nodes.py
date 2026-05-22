@@ -459,18 +459,23 @@ def compress_evidence_safely(
     output_dir: Path,
     save: bool,
 ) -> dict:
+    skax_items = [item for item in items if is_skax_official_evidence(item)]
+    compressible_items = [item for item in items if not is_skax_official_evidence(item)]
     try:
         result = compress_evidence_items(
-            items,
+            compressible_items,
             preprocessed_patent=preprocessed_patent,
             rag_score_threshold=DEFAULT_RAG_SCORE_THRESHOLD,
         )
+        merged_items = merge_evidence_items(result.get("items", []), skax_items)
+        merged_items = merge_evidence_items(merged_items, portfolio_items)
         result = {
             **result,
-            "items": [*result.get("items", []), *portfolio_items],
+            "items": merged_items,
             "stats": {
                 **(result.get("stats") or {}),
                 "portfolio_evidence_count": len(portfolio_items),
+                "skax_official_evidence_count": len(skax_items),
             },
         }
         output_path = None
@@ -485,17 +490,32 @@ def compress_evidence_safely(
             "output_path": str(output_path) if output_path else None,
         }
     except Exception as exc:
+        fallback_items = merge_evidence_items(skax_items, portfolio_items)
         return {
-            "items": [],
+            "items": fallback_items,
             "stats": {
                 "input_count": len(items),
                 "candidate_count": 0,
                 "compressed_count": 0,
                 "rag_score_threshold": DEFAULT_RAG_SCORE_THRESHOLD,
+                "skax_official_evidence_count": len(skax_items),
+                "portfolio_evidence_count": len(portfolio_items),
             },
             "warnings": [f"evidence_compression_failed:{exc.__class__.__name__}:{str(exc)[:200]}"],
             "output_path": None,
         }
+
+
+def is_skax_official_evidence(item: dict) -> bool:
+    if first_non_empty_text(item.get("source")) == "sk_ax_official":
+        return True
+    evidence_id = first_non_empty_text(item.get("evidence_id"))
+    if evidence_id.startswith("skax_site_"):
+        return True
+    related_axes = item.get("related_axes") or []
+    if isinstance(related_axes, str):
+        related_axes = [related_axes]
+    return item.get("source_type") == "company_disclosure" and "business_fit" in related_axes
 
 
 def save_filtered_evidence_safely(

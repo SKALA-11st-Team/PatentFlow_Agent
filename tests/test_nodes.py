@@ -300,6 +300,179 @@ def test_evidence_compression_merges_portfolio_evidence(monkeypatch):
     assert result.query_plan["compressed_evidence"]["stats"]["portfolio_evidence_count"] == 1
 
 
+def test_evidence_compression_preserves_skax_official_evidence(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.compress_evidence_items",
+        lambda items, **kwargs: {
+            "items": [
+                {
+                    "evidence_id": "news_001",
+                    "source": "naver_news",
+                    "source_type": "news",
+                    "compressed_summary": "뉴스 요약",
+                }
+            ],
+            "warnings": [],
+            "stats": {"compressed_count": 1, "input_count": len(items)},
+        },
+    )
+    skax_content = "SK AX 공식 금융 서비스 근거 본문"
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"id": 1, "related_product": "로보어드바이저"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        evidence_bundle=[
+            {"evidence_id": "raw_news", "source_type": "news", "content": "뉴스"},
+            {
+                "evidence_id": "skax_site_001",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "SK AX 금융 서비스",
+                "url": "https://www.skax.co.kr/finance/service",
+                "content": skax_content,
+                "related_axes": ["business_fit"],
+            },
+        ],
+        portfolio_evidence=[
+            {
+                "evidence_id": "portfolio_001",
+                "source": "kipris_api",
+                "source_type": "portfolio_context",
+                "compressed_summary": "포트폴리오 요약",
+            }
+        ],
+    )
+
+    result = evidence_compression_node(state)
+
+    by_id = {item["evidence_id"]: item for item in result.evidence_bundle}
+    assert list(by_id) == ["news_001", "skax_site_001", "portfolio_001"]
+    assert by_id["skax_site_001"]["content"] == skax_content
+    assert by_id["skax_site_001"]["title"] == "SK AX 금융 서비스"
+    assert by_id["skax_site_001"]["url"] == "https://www.skax.co.kr/finance/service"
+    assert by_id["skax_site_001"]["source"] == "sk_ax_official"
+    assert by_id["skax_site_001"]["source_type"] == "company_disclosure"
+    assert by_id["skax_site_001"]["related_axes"] == ["business_fit"]
+    assert result.query_plan["compressed_evidence"]["stats"]["skax_official_evidence_count"] == 1
+
+
+def test_evidence_compression_deduplicates_preserved_skax_official_evidence(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.compress_evidence_items",
+        lambda items, **kwargs: {
+            "items": [
+                {
+                    "evidence_id": "compressed_skax_duplicate",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "title": "SK AX 금융 서비스",
+                    "url": "https://www.skax.co.kr/finance/service",
+                    "compressed_summary": "압축 중복",
+                }
+            ],
+            "warnings": [],
+            "stats": {"compressed_count": 1},
+        },
+    )
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        evidence_bundle=[
+            {
+                "evidence_id": "skax_site_001",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "SK AX 금융 서비스",
+                "url": "https://www.skax.co.kr/finance/service",
+                "content": "원문 보존",
+                "related_axes": ["business_fit"],
+            }
+        ],
+        portfolio_evidence=[
+            {
+                "evidence_id": "portfolio_dup",
+                "source": "sk_ax_official",
+                "source_type": "portfolio_context",
+                "title": "SK AX 금융 서비스",
+                "url": "https://www.skax.co.kr/finance/service",
+            }
+        ],
+    )
+
+    result = evidence_compression_node(state)
+
+    assert [item["evidence_id"] for item in result.evidence_bundle] == ["compressed_skax_duplicate"]
+
+
+def test_evidence_compression_preserved_skax_reaches_business_fit_input(monkeypatch):
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    monkeypatch.setattr(
+        "workflow.nodes.compress_evidence_items",
+        lambda items, **kwargs: {"items": [], "warnings": [], "stats": {"compressed_count": 0}},
+    )
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"title_final": "자산배분 특허", "related_product": "로보어드바이저"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        evidence_bundle=[
+            {
+                "evidence_id": "skax_site_001",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "SK AX 금융 서비스",
+                "url": "https://www.skax.co.kr/finance/service",
+                "content": "로보어드바이저와 금융 서비스 공식 근거",
+                "related_axes": ["business_fit"],
+            }
+        ],
+    )
+
+    compressed_state = evidence_compression_node(state)
+    payload = build_input_payload(state=compressed_state, evidence=compressed_state.evidence_bundle)
+
+    official = payload["business_fit_context"]["skax_official_evidence"]
+    assert len(official) == 1
+    assert official[0]["evidence_id"] == "skax_site_001"
+    assert official[0]["content_excerpt"] == "로보어드바이저와 금융 서비스 공식 근거"
+
+
+def test_evidence_compression_failure_still_preserves_skax_official_evidence(monkeypatch):
+    def raise_compression_error(items, **kwargs):
+        raise RuntimeError("compression failed")
+
+    monkeypatch.setattr("workflow.nodes.compress_evidence_items", raise_compression_error)
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        evidence_bundle=[
+            {
+                "evidence_id": "skax_site_001",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "SK AX 금융 서비스",
+                "url": "https://www.skax.co.kr/finance/service",
+                "content": "공식 근거",
+                "related_axes": ["business_fit"],
+            },
+            {"evidence_id": "raw_news", "source_type": "news", "content": "뉴스"},
+        ],
+        portfolio_evidence=[
+            {
+                "evidence_id": "portfolio_001",
+                "source": "kipris_api",
+                "source_type": "portfolio_context",
+                "compressed_summary": "포트폴리오 요약",
+            }
+        ],
+    )
+
+    result = evidence_compression_node(state)
+
+    assert [item["evidence_id"] for item in result.evidence_bundle] == ["skax_site_001", "portfolio_001"]
+    assert result.query_plan["compressed_evidence"]["warnings"][0].startswith("evidence_compression_failed:RuntimeError")
+
+
 def configure_evidence_search_mocks(
     monkeypatch,
     *,
