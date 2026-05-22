@@ -1,4 +1,4 @@
-from workflow.nodes import evidence_compression_node, final_merge_node, patent_fetch_node, query_rewriting_node
+from workflow.nodes import evidence_compression_node, evidence_search_node, final_merge_node, patent_fetch_node, query_rewriting_node
 from workflow.supervisor import check_evidence_bundle
 from workflow.state import PatentWorkflowState
 
@@ -104,6 +104,164 @@ def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
     assert "웰스테크 AI 에이전트 디지털 자문" in result.search_queries
 
 
+def test_evidence_search_node_appends_skax_official_evidence(monkeypatch):
+    configure_evidence_search_mocks(
+        monkeypatch,
+        external_items=[{"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스"}],
+        news_kept=[{"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스"}],
+        skax_result={
+            "items": [
+                {
+                    "evidence_id": "skax_001",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "url": "https://www.skax.co.kr/finance/service",
+                    "title": "금융 서비스",
+                }
+            ],
+            "queries": ["site:skax.co.kr 로보어드바이저 금융"],
+            "stats": {"collected_evidence_count": 1},
+            "failed_urls": [],
+        },
+    )
+    captured_context = {}
+
+    def fake_collect_skax(patent_context):
+        captured_context.update(patent_context)
+        return {
+            "items": [
+                {
+                    "evidence_id": "skax_001",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "url": "https://www.skax.co.kr/finance/service",
+                    "title": "금융 서비스",
+                }
+            ],
+            "queries": ["site:skax.co.kr 로보어드바이저 금융"],
+            "stats": {"collected_evidence_count": 1},
+            "failed_urls": [],
+        }
+
+    monkeypatch.setattr("workflow.nodes.collect_skax_site_evidence", fake_collect_skax)
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={
+            "id": 1,
+            "관리번호": "P202405001-KR0",
+            "발명의 명칭(최종)": "상품 트렌드 예측을 반영한 자산배분 시스템",
+            "관련 사업 분야": "Data",
+            "관련 기술 분야": "데이터분석",
+            "관련제품": "로보어드바이저",
+        },
+        preprocessed_patent={"metadata": {}, "sections": {}},
+    )
+
+    result = evidence_search_node(state)
+
+    assert [item["evidence_id"] for item in result.evidence_bundle] == ["news_001", "skax_001"]
+    assert captured_context["management_number"] == "P202405001-KR0"
+    assert captured_context["title_final"] == "상품 트렌드 예측을 반영한 자산배분 시스템"
+    assert captured_context["related_product"] == "로보어드바이저"
+    assert result.query_plan["skax_site_search"]["item_count"] == 1
+    assert result.query_plan["skax_site_search"]["queries"] == ["site:skax.co.kr 로보어드바이저 금융"]
+
+
+def test_evidence_search_node_keeps_existing_evidence_when_skax_empty(monkeypatch):
+    configure_evidence_search_mocks(
+        monkeypatch,
+        external_items=[{"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스"}],
+        news_kept=[{"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스"}],
+        skax_result={"items": [], "queries": [], "stats": {"collected_evidence_count": 0}, "failed_urls": []},
+    )
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"title_final": "자산배분 시스템", "related_product": "로보어드바이저"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+    )
+
+    result = evidence_search_node(state)
+
+    assert [item["evidence_id"] for item in result.evidence_bundle] == ["news_001"]
+    assert result.query_plan["skax_site_search"]["item_count"] == 0
+
+
+def test_evidence_search_node_keeps_existing_evidence_when_skax_fails(monkeypatch):
+    configure_evidence_search_mocks(
+        monkeypatch,
+        external_items=[{"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스"}],
+        news_kept=[{"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스"}],
+    )
+
+    def raise_skax_error(patent_context):
+        raise RuntimeError("network blocked")
+
+    monkeypatch.setattr("workflow.nodes.collect_skax_site_evidence", raise_skax_error)
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"title_final": "자산배분 시스템", "related_product": "로보어드바이저"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+    )
+
+    result = evidence_search_node(state)
+
+    assert [item["evidence_id"] for item in result.evidence_bundle] == ["news_001"]
+    assert result.query_plan["skax_site_search"]["warning"].startswith("skax_site_search_failed:RuntimeError")
+
+
+def test_evidence_search_node_deduplicates_skax_official_evidence(monkeypatch):
+    configure_evidence_search_mocks(
+        monkeypatch,
+        external_items=[
+            {
+                "evidence_id": "existing_001",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "url": "https://www.skax.co.kr/finance/service",
+                "title": "금융 서비스",
+            }
+        ],
+        news_kept=[],
+        skax_result={
+            "items": [
+                {
+                    "evidence_id": "skax_duplicate_url",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "url": "https://www.skax.co.kr/finance/service",
+                    "title": "금융 서비스 상세",
+                },
+                {
+                    "evidence_id": "existing_001",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "url": "https://www.skax.co.kr/finance/other",
+                    "title": "다른 금융 서비스",
+                },
+                {
+                    "evidence_id": "skax_002",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "url": "https://www.skax.co.kr/finance/new",
+                    "title": "신규 금융 서비스",
+                },
+            ],
+            "queries": ["site:skax.co.kr 금융"],
+            "stats": {"collected_evidence_count": 3},
+            "failed_urls": [],
+        },
+    )
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"title_final": "자산배분 시스템", "related_product": "로보어드바이저"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+    )
+
+    result = evidence_search_node(state)
+
+    assert [item["evidence_id"] for item in result.evidence_bundle] == ["existing_001", "skax_002"]
+
+
 def test_evidence_compression_merges_portfolio_evidence(monkeypatch):
     monkeypatch.setattr(
         "workflow.nodes.compress_evidence_items",
@@ -140,3 +298,53 @@ def test_evidence_compression_merges_portfolio_evidence(monkeypatch):
 
     assert [item["evidence_id"] for item in result.evidence_bundle] == ["news_001", "portfolio_001"]
     assert result.query_plan["compressed_evidence"]["stats"]["portfolio_evidence_count"] == 1
+
+
+def configure_evidence_search_mocks(
+    monkeypatch,
+    *,
+    external_items=None,
+    news_kept=None,
+    industry_items=None,
+    skax_result=None,
+):
+    monkeypatch.setattr(
+        "workflow.nodes.collect_external_evidence",
+        lambda **kwargs: {
+            "items": external_items or [],
+            "queries": ["외부 검색어"],
+            "gnews_queries": [],
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        "workflow.nodes.filter_news_safely",
+        lambda **kwargs: {
+            "kept": news_kept or [],
+            "rejected": [],
+            "stats": {"kept_count": len(news_kept or [])},
+            "output_path": None,
+            "warning": None,
+        },
+    )
+    monkeypatch.setattr(
+        "workflow.nodes.search_industry_rag_safely",
+        lambda **kwargs: {
+            "query": None,
+            "queries": [],
+            "items": industry_items or [],
+            "output_path": None,
+            "warning": None,
+        },
+    )
+    monkeypatch.setattr("workflow.nodes.save_filtered_evidence_safely", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "workflow.nodes.collect_skax_site_evidence",
+        lambda patent_context: skax_result
+        or {
+            "items": [],
+            "queries": [],
+            "stats": {"collected_evidence_count": 0},
+            "failed_urls": [],
+        },
+    )
