@@ -346,6 +346,7 @@ def build_query_generation_plan(
     patent_context: dict[str, Any],
     *,
     max_queries: int = DEFAULT_MAX_QUERIES,
+    queries_override: list[str] | None = None,
 ) -> dict[str, Any]:
     related_product = patent_field(patent_context, "related_product")
     title = patent_field(patent_context, "title_final") or patent_field(patent_context, "title_draft") or patent_field(patent_context, "title")
@@ -354,6 +355,28 @@ def build_query_generation_plan(
     title_keywords = extract_title_keywords(title, limit=4)
     domain_profiles = business_domain_profiles(patent_context)
     domain_hints = business_domain_hints(patent_context)
+    if queries_override is not None:
+        return {
+            "selected_features": {
+                "related_product": related_product,
+                "business_area": business_area,
+                "technology_area": technology_area,
+                "title_final": patent_field(patent_context, "title_final"),
+                "title_draft": patent_field(patent_context, "title_draft"),
+            },
+            "title_keywords": title_keywords,
+            "domain_hints": [
+                {
+                    "name": profile["name"],
+                    "hints": list(profile["hints"]),
+                    "preferred_paths": list(profile["preferred_paths"]),
+                }
+                for profile in domain_profiles
+            ],
+            "generated_queries": normalize_skax_site_queries(queries_override, max_queries=max_queries),
+            "dropped_duplicate_queries": [],
+            "query_source": "query_rewriting",
+        }
 
     candidates = [
         compact_query([related_product, business_area, technology_area]),
@@ -409,7 +432,19 @@ def build_query_generation_plan(
         ],
         "generated_queries": queries,
         "dropped_duplicate_queries": dropped_duplicate_queries,
+        "query_source": "rule_based",
     }
+
+
+def normalize_skax_site_queries(queries: list[str], *, max_queries: int = DEFAULT_MAX_QUERIES) -> list[str]:
+    normalized_queries = []
+    for query in queries:
+        value = " ".join(str(query or "").split())
+        if not value:
+            continue
+        value = re.sub(r"^site\s*:\s*skax\.co\.kr\s*", "", value, flags=re.IGNORECASE).strip()
+        normalized_queries.append(f"site:{SK_AX_DOMAIN} {value}".strip())
+    return unique_texts(normalized_queries)[: max(1, int(max_queries))]
 
 
 def business_domain_hints(patent_context: dict[str, Any]) -> list[str]:
@@ -460,12 +495,17 @@ def collect_skax_site_evidence(
     fetcher: Fetcher | None = None,
     searcher: Searcher | None = None,
     search_client: SearchClient | None = None,
+    queries_override: list[str] | None = None,
     max_queries: int = DEFAULT_MAX_QUERIES,
     max_results_per_query: int = DEFAULT_MAX_RESULTS_PER_QUERY,
     max_fetch_pages: int = DEFAULT_MAX_FETCH_PAGES,
     max_content_chars: int = DEFAULT_MAX_CONTENT_CHARS,
 ) -> dict[str, Any]:
-    query_generation_diagnostics = build_query_generation_plan(patent_context, max_queries=max_queries)
+    query_generation_diagnostics = build_query_generation_plan(
+        patent_context,
+        max_queries=max_queries,
+        queries_override=queries_override,
+    )
     queries = query_generation_diagnostics["generated_queries"]
     searched_result_count = 0
     search_results: list[dict[str, Any]] = []

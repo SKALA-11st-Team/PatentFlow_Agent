@@ -220,6 +220,7 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
             *rewritten.get("ko", []),
             *rewritten.get("en", []),
             *rewritten.get("industry_rag", []),
+            *rewritten.get("skax_site", []),
         ]
     )
     state.query_plan = {
@@ -227,6 +228,7 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
         "ko_queries": rewritten.get("ko", []),
         "en_queries": rewritten.get("en", []),
         "industry_rag_queries": rewritten.get("industry_rag", []),
+        "skax_site_queries": rewritten.get("skax_site", []),
         "rewrite_meta": rewritten.get("meta", {}),
     }
     state.current_stage = "query_rewriting"
@@ -287,7 +289,10 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     if industry_result.get("items"):
         evidence_items = [*evidence_items, *industry_result["items"]]
     skax_context = build_skax_patent_context_from_state(state)
-    skax_result = collect_skax_site_evidence_safely(skax_context)
+    skax_result = collect_skax_site_evidence_safely(
+        skax_context,
+        queries_override=query_plan.get("skax_site_queries") or None,
+    )
     skax_items = skax_result.get("items", [])
     if skax_items:
         evidence_items = merge_evidence_items(evidence_items, skax_items)
@@ -368,7 +373,11 @@ def build_skax_patent_context_from_state(state: PatentWorkflowState) -> dict[str
     }
 
 
-def collect_skax_site_evidence_safely(patent_context: dict[str, str]) -> dict:
+def collect_skax_site_evidence_safely(
+    patent_context: dict[str, str],
+    *,
+    queries_override: list[str] | None = None,
+) -> dict:
     if not has_skax_search_context(patent_context):
         return {
             "items": [],
@@ -378,7 +387,7 @@ def collect_skax_site_evidence_safely(patent_context: dict[str, str]) -> dict:
             "warning": "skax_site_search_skipped:missing_patent_context",
         }
     try:
-        return collect_skax_site_evidence(patent_context)
+        return collect_skax_site_evidence(patent_context, queries_override=queries_override)
     except Exception as exc:
         return {
             "items": [],

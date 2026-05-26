@@ -92,6 +92,7 @@ def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
             "ko": ["AI 투자 서비스"],
             "en": ["ai investing"],
             "industry_rag": ["웰스테크 AI 에이전트 디지털 자문"],
+            "skax_site": ["site:skax.co.kr 로보어드바이저 금융"],
             "meta": {"rewrite_source": "llm"},
         },
     )
@@ -101,7 +102,9 @@ def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
     result = query_rewriting_node(state)
 
     assert result.query_plan["industry_rag_queries"] == ["웰스테크 AI 에이전트 디지털 자문"]
+    assert result.query_plan["skax_site_queries"] == ["site:skax.co.kr 로보어드바이저 금융"]
     assert "웰스테크 AI 에이전트 디지털 자문" in result.search_queries
+    assert "site:skax.co.kr 로보어드바이저 금융" in result.search_queries
 
 
 def test_evidence_search_node_appends_skax_official_evidence(monkeypatch):
@@ -125,9 +128,11 @@ def test_evidence_search_node_appends_skax_official_evidence(monkeypatch):
         },
     )
     captured_context = {}
+    captured_kwargs = {}
 
-    def fake_collect_skax(patent_context):
+    def fake_collect_skax(patent_context, **kwargs):
         captured_context.update(patent_context)
+        captured_kwargs.update(kwargs)
         return {
             "items": [
                 {
@@ -155,6 +160,7 @@ def test_evidence_search_node_appends_skax_official_evidence(monkeypatch):
             "관련제품": "로보어드바이저",
         },
         preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={"skax_site_queries": ["site:skax.co.kr 로보어드바이저 금융"]},
     )
 
     result = evidence_search_node(state)
@@ -163,6 +169,7 @@ def test_evidence_search_node_appends_skax_official_evidence(monkeypatch):
     assert captured_context["management_number"] == "P202405001-KR0"
     assert captured_context["title_final"] == "상품 트렌드 예측을 반영한 자산배분 시스템"
     assert captured_context["related_product"] == "로보어드바이저"
+    assert captured_kwargs["queries_override"] == ["site:skax.co.kr 로보어드바이저 금융"]
     assert result.query_plan["skax_site_search"]["item_count"] == 1
     assert result.query_plan["skax_site_search"]["queries"] == ["site:skax.co.kr 로보어드바이저 금융"]
 
@@ -193,7 +200,7 @@ def test_evidence_search_node_keeps_existing_evidence_when_skax_fails(monkeypatc
         news_kept=[{"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스"}],
     )
 
-    def raise_skax_error(patent_context):
+    def raise_skax_error(patent_context, **kwargs):
         raise RuntimeError("network blocked")
 
     monkeypatch.setattr("workflow.nodes.collect_skax_site_evidence", raise_skax_error)
@@ -513,7 +520,7 @@ def configure_evidence_search_mocks(
     monkeypatch.setattr("workflow.nodes.save_filtered_evidence_safely", lambda **kwargs: None)
     monkeypatch.setattr(
         "workflow.nodes.collect_skax_site_evidence",
-        lambda patent_context: skax_result
+        lambda patent_context, **kwargs: skax_result
         or {
             "items": [],
             "queries": [],

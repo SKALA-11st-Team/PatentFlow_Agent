@@ -188,6 +188,7 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
             "ko": ["금융 데이터 전처리 AI", "기준금리 발표 시장 변동성", "에스케이 주식회사 금융데이터"],
             "en": ["financial data preprocessing", "market volatility AI"],
             "industry_rag": ["웰스테크 AI 에이전트 디지털 자문"],
+            "skax_site": ["로보어드바이저 금융 자산관리"],
         }
 
     monkeypatch.setattr(
@@ -209,6 +210,7 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
     assert len(rewritten["ko"]) <= MAX_SEARCH_QUERIES
     assert any("MarketCaster" in query for query in rewritten["ko"])
     assert rewritten["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
+    assert rewritten["skax_site"] == ["site:skax.co.kr 로보어드바이저 금융 자산관리"]
     assert rewritten["meta"]["product_query_enforced"] is True
 
 
@@ -222,6 +224,10 @@ def test_query_rewriting_parses_industry_rag_queries():
                     "웰스테크 AI 에이전트 디지털 자문",
                     "로보어드바이저 자산관리 투자자문",
                 ],
+                "skax_site": [
+                    "로보어드바이저 금융 자산관리",
+                    "site:skax.co.kr 디지털 금융 서비스 AI 예측",
+                ],
             },
             ensure_ascii=False,
         )
@@ -229,6 +235,10 @@ def test_query_rewriting_parses_industry_rag_queries():
 
     assert parsed is not None
     assert parsed["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
+    assert parsed["skax_site"] == [
+        "site:skax.co.kr 로보어드바이저 금융 자산관리",
+        "site:skax.co.kr 디지털 금융 서비스 AI 예측",
+    ]
 
 
 def test_llm_query_rewriting_includes_owner_and_joint_applicant_queries(monkeypatch):

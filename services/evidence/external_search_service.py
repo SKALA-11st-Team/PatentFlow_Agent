@@ -74,11 +74,17 @@ def rewrite_search_queries(
         for query in compact_queries(llm_result.get("industry_rag", []))[:MAX_INDUSTRY_RAG_QUERIES]
         if query not in previous
     ]
+    rewritten_skax_site = [
+        query
+        for query in normalize_skax_site_queries(llm_result.get("skax_site", []))[:MAX_SEARCH_QUERIES]
+        if query not in previous
+    ]
 
     return {
         "ko": rewritten_ko,
         "en": rewritten_en,
         "industry_rag": rewritten_industry_rag,
+        "skax_site": rewritten_skax_site,
         "meta": {
             "rewrite_source": "llm",
             "llm_error": None,
@@ -508,11 +514,12 @@ def parse_query_rewrite_response(raw: str) -> dict[str, list[str]] | None:
     if not isinstance(parsed, dict):
         return None
 
-    result: dict[str, list[str]] = {"ko": [], "en": [], "industry_rag": []}
+    result: dict[str, list[str]] = {"ko": [], "en": [], "industry_rag": [], "skax_site": []}
     limits = {
         "ko": MAX_SEARCH_QUERIES,
         "en": MAX_SEARCH_QUERIES,
         "industry_rag": MAX_INDUSTRY_RAG_QUERIES,
+        "skax_site": MAX_SEARCH_QUERIES,
     }
     for lang, limit in limits.items():
         section = parsed.get(lang)
@@ -524,7 +531,19 @@ def parse_query_rewrite_response(raw: str) -> dict[str, list[str]] | None:
                 if isinstance(value, list):
                     flattened.extend(str(query) for query in value if str(query).strip())
             result[lang] = compact_queries(flattened)[:limit]
+    result["skax_site"] = normalize_skax_site_queries(result["skax_site"])[:MAX_SEARCH_QUERIES]
     return result
+
+
+def normalize_skax_site_queries(queries: list[str]) -> list[str]:
+    normalized_queries = []
+    for query in compact_queries(queries):
+        value = re.sub(r"\s+", " ", str(query or "")).strip()
+        if not value:
+            continue
+        value = re.sub(r"^site\s*:\s*skax\.co\.kr\s*", "", value, flags=re.IGNORECASE).strip()
+        normalized_queries.append(f"site:skax.co.kr {value}".strip())
+    return compact_queries(normalized_queries)[:MAX_SEARCH_QUERIES]
 
 
 def enforce_english_queries(

@@ -4,6 +4,7 @@ from services.evidence.skax_site_search_service import (
     GoogleCustomSearchClient,
     GoogleHtmlSearchClient,
     TavilySearchClient,
+    build_query_generation_plan,
     build_search_queries,
     collect_skax_site_evidence,
     default_search_client,
@@ -33,6 +34,39 @@ def test_build_search_queries_prioritizes_related_product_and_site_condition():
     assert any("강화학습" in query or "자산배분" in query for query in queries)
     assert any("금융" in query or "투자" in query for query in queries)
     assert any("AI" in query and "예측" in query for query in queries)
+
+
+def test_build_query_generation_plan_uses_rewritten_skax_queries_when_provided():
+    plan = build_query_generation_plan(
+        PATENT_CONTEXT,
+        queries_override=[
+            "로보어드바이저 금융 자산관리",
+            "site:skax.co.kr 디지털 금융 서비스 AI 예측",
+        ],
+    )
+
+    assert plan["query_source"] == "query_rewriting"
+    assert plan["generated_queries"] == [
+        "site:skax.co.kr 로보어드바이저 금융 자산관리",
+        "site:skax.co.kr 디지털 금융 서비스 AI 예측",
+    ]
+
+
+def test_collect_skax_site_evidence_uses_rewritten_query_override():
+    seen_queries = []
+
+    def fake_searcher(query):
+        seen_queries.append(query)
+        return []
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        searcher=fake_searcher,
+        queries_override=["디지털 금융 서비스 AI 예측"],
+    )
+
+    assert seen_queries == ["site:skax.co.kr 디지털 금융 서비스 AI 예측"]
+    assert result["query_generation_diagnostics"]["query_source"] == "query_rewriting"
 
 
 def test_build_search_queries_adds_finance_hints_only_when_context_supports_them():
