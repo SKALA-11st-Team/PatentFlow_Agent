@@ -209,13 +209,21 @@ def enrich_sibling_patents(
     for sibling in siblings:
         application_number = sibling.get("application_number")
         api_data: dict[str, Any] | None = None
-        if application_number:
+        if application_number and is_kr_patent(sibling):
             try:
                 api_data = kipris_fetcher(str(application_number))
             except Exception as exc:
                 warnings.append(f"{application_number}:kipris_fetch_failed:{exc.__class__.__name__}:{str(exc)[:200]}")
         enriched.append(build_patent_api_payload(sibling, api_data=api_data))
     return enriched, warnings
+
+
+def is_kr_patent(patent: dict[str, Any]) -> bool:
+    country = normalize_text(patent.get("country")).upper()
+    if country:
+        return country == "KR"
+    application_number = normalize_text(patent.get("application_number"))
+    return application_number.startswith("10-")
 
 
 def build_patent_api_payload(
@@ -234,6 +242,7 @@ def build_patent_api_payload(
         "management_number": patent.get("management_number"),
         "application_number": patent.get("application_number"),
         "registration_number": patent.get("registration_number"),
+        "country": patent.get("country"),
         "title": metadata.get("title") or patent.get("title_final"),
         "related_product": patent.get("related_product"),
         "business_area": patent.get("business_area"),
@@ -303,6 +312,7 @@ def portfolio_prompt_patent_payload(patent: dict[str, Any]) -> dict[str, Any]:
         "management_number": patent.get("management_number"),
         "application_number": patent.get("application_number"),
         "registration_number": patent.get("registration_number"),
+        "country": patent.get("country"),
         "title": patent.get("title") or patent.get("title_final"),
         "related_product": patent.get("related_product"),
         "business_area": patent.get("business_area"),

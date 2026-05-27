@@ -3,6 +3,7 @@ import sqlite3
 
 from services.patent.portfolio_service import (
     analyze_portfolio_siblings,
+    enrich_sibling_patents,
     find_sibling_patents,
     management_family_key,
 )
@@ -460,3 +461,45 @@ def test_analyze_portfolio_siblings_builds_portfolio_context(tmp_path):
     assert "sibling_match_reasons" not in captured_prompts[0]
     assert "금융시장 이벤트를 추출한다." in captured_prompts[0]
     assert "뉴스 이벤트를 추출하는 방법" in captured_prompts[0]
+
+
+def test_enrich_sibling_patents_skips_foreign_api_fetch():
+    calls = []
+
+    def fake_kipris_fetcher(application_number):
+        calls.append(application_number)
+        return {
+            "metadata": {"title": "국내 보강 특허"},
+            "claims": [{"text": "국내 대표 청구항", "is_independent": True}],
+        }
+
+    enriched, warnings = enrich_sibling_patents(
+        [
+            {
+                "id": 10,
+                "management_number": "P1-US0",
+                "application_number": "18/020,829",
+                "registration_number": "12,417,849",
+                "title_final": "US 패밀리 특허",
+                "country": "US",
+                "related_product": "iCLUE&ASK",
+            },
+            {
+                "id": 11,
+                "management_number": "P1-KR1",
+                "application_number": "10-2020-0000001",
+                "registration_number": "10-2000001",
+                "title_final": "KR 관련 특허",
+                "country": "KR",
+                "related_product": "iCLUE&ASK",
+            },
+        ],
+        kipris_fetcher=fake_kipris_fetcher,
+    )
+
+    assert calls == ["10-2020-0000001"]
+    assert warnings == []
+    assert enriched[0]["country"] == "US"
+    assert enriched[0]["representative_claim"] == ""
+    assert enriched[0]["enrichment_source"] == "patent_db"
+    assert enriched[1]["representative_claim"] == "국내 대표 청구항"
