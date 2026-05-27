@@ -403,7 +403,7 @@ def extract_claims(claims_text: str) -> list[dict[str, Any]]:
         end = matches[index + 1].start() if index + 1 < len(matches) else len(claims_text)
         body = claims_text[start:end].strip()
         text = postprocess_agent_text(f"{first_line}\n{body}".strip())
-        dependency = _extract_int(r"청구항\s+(\d+)\s*에 있어서", text)
+        dependency = _extract_claim_dependency(text)
         claims.append(
             {
                 "claim_no": claim_no,
@@ -413,6 +413,10 @@ def extract_claims(claims_text: str) -> list[dict[str, Any]]:
             }
         )
     return claims
+
+
+def _extract_claim_dependency(text: str) -> int | None:
+    return _extract_int(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
 
 
 def build_claim_stats(reported_claim_count: int | None, claims: list[dict[str, Any]]) -> dict[str, Any]:

@@ -10,28 +10,26 @@ def build_base_input_payload(
     *,
     state: PatentWorkflowState,
     evidence: list[dict[str, Any]],
-    claims: list[dict[str, Any]] | None = None,
+    claim_context: dict[str, Any] | None = None,
     prior_art_candidates: list[str] | None = None,
     citation_evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    representative_claims = valuation_representative_claims(state)
     claim_stats = ((state.kipris_api_data or {}).get("claim_stats") or {})
-    full_claims = claims or []
     prior_art = prior_art_candidates or []
     citations = citation_evidence or {}
+    claims_provided = bool((claim_context or {}).get("all_claims_included"))
     return {
         "patent": {
             "metadata": state.patent_structured or {},
             "kipris_metadata": ((state.kipris_api_data or {}).get("metadata") or {}),
             "claim_stats": claim_stats,
-            "representative_claims": representative_claims,
-            "claims": full_claims,
+            "claim_context": claim_context or {},
             "prior_art_candidates": prior_art,
             "citation_evidence": citations,
             "claim_availability": {
                 "claim_stats_provided": bool(claim_stats),
-                "representative_claims_provided": bool(representative_claims),
-                "full_claims_provided": bool(full_claims),
+                "claim_context_provided": bool(claim_context),
+                "full_claims_provided": claims_provided,
                 "prior_art_candidates_provided": bool(prior_art),
                 "citation_evidence_provided": bool(citations),
             },
@@ -61,29 +59,25 @@ def valuation_claims(state: PatentWorkflowState) -> list[dict[str, Any]]:
     ]
 
 
-def valuation_representative_claims(
+def build_claim_context(
     state: PatentWorkflowState,
     *,
-    limit: int = 3,
-    text_limit: int = 1500,
-) -> list[dict[str, Any]]:
+    include_dependent_claims: bool = True,
+) -> dict[str, Any]:
     claims = valuation_claims(state)
+    independent_claims = [claim for claim in claims if claim.get("is_independent")]
+    dependent_claims = [claim for claim in claims if not claim.get("is_independent")]
 
-    selected = [claim for claim in claims if claim.get("is_independent") and claim.get("text")]
-    if not selected:
-        selected = [claim for claim in claims if claim.get("text")]
-
-    result = []
-    for claim in selected[:limit]:
-        result.append(
-            {
-                "claim_no": claim.get("claim_no"),
-                "is_independent": claim.get("is_independent"),
-                "dependency": claim.get("dependency"),
-                "text": normalize_text(claim.get("text"))[:text_limit],
-            }
-        )
-    return result
+    context = {
+        "independent_claims": independent_claims,
+        "independent_claim_count": len(independent_claims),
+        "dependent_claim_count": len(dependent_claims),
+        "total_claim_count": len(claims),
+        "all_claims_included": include_dependent_claims and bool(claims),
+    }
+    if include_dependent_claims:
+        context["dependent_claims"] = dependent_claims
+    return context
 
 
 def valuation_evidence_payload(item: dict[str, Any]) -> dict[str, Any]:

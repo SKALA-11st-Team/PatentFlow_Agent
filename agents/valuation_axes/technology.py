@@ -6,7 +6,7 @@ from typing import Any
 
 from agents.valuation_axes.common import select_by_types_or_axes
 from agents.valuation_axes.market import extract_representative_cpc, grade_for_score
-from agents.valuation_axes.payload_common import build_base_input_payload
+from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
 from services.patent.similar_patent_service import build_similar_patent_context
 from workflow.state import PatentWorkflowState
@@ -43,13 +43,17 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
     del state
     return select_by_types_or_axes(
         items,
-        source_types={"portfolio_context", "industry_report", "patent_api"},
+        source_types={"portfolio_context", "patent_api"},
         axes={AXIS},
     )
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    return build_base_input_payload(state=state, evidence=evidence)
+    return build_base_input_payload(
+        state=state,
+        evidence=evidence,
+        claim_context=build_claim_context(state, include_dependent_claims=False),
+    )
 
 
 def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
@@ -63,7 +67,11 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
         "claims_text": sections.get("claims_text"),
         "solution": sections.get("solution"),
         "detailed_description": sections.get("detailed_description"),
-        "representative_claim_text": "\n".join(str((claim or {}).get("text") or "") for claim in claims[:3]),
+        "independent_claim_text": "\n".join(
+            str((claim or {}).get("text") or "")
+            for claim in claims
+            if (claim or {}).get("is_independent")
+        ),
     }
     representative_cpc = extract_representative_cpc(state)
     artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None

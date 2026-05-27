@@ -116,34 +116,38 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
         captured_prompts.append(prompt)
         return json.dumps(
             {
-                "score": 70,
+                "score": 0,
                 "subscores": {
                     "right_stability": {
                         "label": "권리안정성",
-                        "score": 20,
-                        "max_score": 30,
+                        "score": 0,
+                        "max_score": 40,
                         "rationale": "등록상태는 유효하나 유사 인용문헌이 일부 존재한다.",
                     },
                     "claim_protection": {
                         "label": "청구항 보호력",
-                        "score": 20,
-                        "max_score": 30,
+                        "score": 0,
+                        "max_score": 40,
                         "rationale": "핵심 기능은 보호하지만 일부 구현 한정이 있다.",
-                    },
-                    "enforceability_product_fit": {
-                        "label": "권리행사·제품대응성",
-                        "score": 15,
-                        "max_score": 25,
-                        "rationale": "제품 적용 가능성은 있으나 직접 대응 근거가 제한적이다.",
                     },
                     "portfolio_defensive_value": {
                         "label": "포트폴리오·방어가치",
-                        "score": 15,
-                        "max_score": 15,
+                        "score": 0,
+                        "max_score": 20,
                         "rationale": "동일 관리번호 패밀리와 보완 관계가 있다.",
                     },
                 },
-                "grade": "B",
+                "scoring_labels": {
+                    "prior_art_collision": "medium",
+                    "similar_claim_density": "medium",
+                    "dependent_claim_support": "unknown",
+                    "core_feature_covered": "partial",
+                    "claim_scope_limitation": "moderate",
+                    "design_around_difficulty": "moderate",
+                    "portfolio_connection": "moderate",
+                    "portfolio_coverage_extension": "moderate",
+                },
+                "grade": "D",
                 "rationale": "권리성 단독 평가",
                 "evidence_ids": ["portfolio_001"],
                 "risk_factors": ["유사 인용문헌 비교 필요"],
@@ -158,6 +162,12 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
         patent_structured={"status": "등록", "related_product": "ESS"},
         kipris_api_data={"claim_stats": {"total_claim_count": 3}},
+        preprocessed_patent={
+            "claims": [
+                {"claim_no": 1, "text": "독립항", "is_independent": True, "dependency": None},
+                {"claim_no": 2, "text": "종속항", "is_independent": False, "dependency": 1},
+            ]
+        },
         citation_evidence={
             "kr_citation_documents": [
                 {
@@ -179,8 +189,9 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
 
     axes = result.valuation_result["axes"]
     assert list(axes) == ["legal"]
-    assert axes["legal"]["subscores"]["right_stability"]["score"] == 20
+    assert axes["legal"]["subscores"]["right_stability"]["score"] == 29
     assert axes["legal"]["evidence_ids"] == ["portfolio_001"]
+    assert axes["legal"]["legal_scoring_metrics"]["prior_art_collision"]["score"] == 13
     assert "Valuation Legal Axis Prompt" in captured_prompts[0]
     assert "citation_evidence" in captured_prompts[0]
 
@@ -1346,7 +1357,7 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
     assert "technology_metrics" not in final_input["valuation_result"]["axes"]["technology"]
 
 
-def test_axis_input_includes_representative_claims(tmp_path):
+def test_base_axis_input_excludes_claim_context_by_default(tmp_path):
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
         kipris_api_data={
@@ -1364,14 +1375,13 @@ def test_axis_input_includes_representative_claims(tmp_path):
 
     payload = build_base_input_payload(state=state, evidence=[])
 
-    assert payload["patent"]["claim_availability"]["representative_claims_provided"] is True
-    assert payload["patent"]["representative_claims"][0]["claim_no"] == 1
-    assert payload["patent"]["representative_claims"][0]["text"] == "대표 청구항 내용"
+    assert "representative_claims" not in payload["patent"]
+    assert payload["patent"]["claim_context"] == {}
+    assert payload["patent"]["claim_availability"]["claim_context_provided"] is False
     assert payload["patent"]["claim_availability"]["full_claims_provided"] is False
-    assert payload["patent"]["claims"] == []
 
 
-def test_legal_axis_input_includes_full_claims(tmp_path):
+def test_legal_axis_input_includes_full_claim_context_without_representative_duplication(tmp_path):
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
         kipris_api_data={
@@ -1391,11 +1401,49 @@ def test_legal_axis_input_includes_full_claims(tmp_path):
     legal_payload = build_legal_input_payload(state=state, evidence=[])
     market_payload = build_market_input_payload(state=state, evidence=[])
 
-    assert [claim["claim_no"] for claim in legal_payload["patent"]["claims"]] == [1, 2]
-    assert legal_payload["patent"]["claims"][1]["text"] == "종속항 전체 내용"
+    assert "representative_claims" not in legal_payload["patent"]
+    assert "claims" not in legal_payload["patent"]
+    assert [claim["claim_no"] for claim in legal_payload["patent"]["claim_context"]["independent_claims"]] == [1]
+    assert [claim["claim_no"] for claim in legal_payload["patent"]["claim_context"]["dependent_claims"]] == [2]
+    assert legal_payload["patent"]["claim_context"]["independent_claims"][0]["text"] == "독립항 전체 내용"
+    assert legal_payload["patent"]["claim_context"]["dependent_claims"][0]["text"] == "종속항 전체 내용"
+    assert legal_payload["patent"]["claim_context"]["all_claims_included"] is True
+    assert legal_payload["patent"]["claim_availability"]["claim_context_provided"] is True
     assert legal_payload["patent"]["claim_availability"]["full_claims_provided"] is True
-    assert market_payload["patent"]["claims"] == []
+    assert market_payload["patent"]["claim_context"] == {}
+    assert market_payload["patent"]["claim_availability"]["claim_context_provided"] is False
     assert market_payload["patent"]["claim_availability"]["full_claims_provided"] is False
+
+
+def test_technology_axis_input_includes_all_independent_claims_only(tmp_path):
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        preprocessed_patent={
+            "claims": [
+                {"claim_no": 1, "text": "독립항 1 전문", "is_independent": True, "dependency": None},
+                {"claim_no": 2, "text": "종속항 2 전문", "is_independent": False, "dependency": 1},
+                {"claim_no": 5, "text": "독립항 5 전문", "is_independent": True, "dependency": None},
+                {"claim_no": 9, "text": "독립항 9 전문", "is_independent": True, "dependency": None},
+                {"claim_no": 11, "text": "독립항 11 전문", "is_independent": True, "dependency": None},
+            ]
+        },
+    )
+
+    from agents.valuation_axes.technology import build_input_payload as build_technology_input_payload
+
+    technology_payload = build_technology_input_payload(state=state, evidence=[])
+
+    claim_context = technology_payload["patent"]["claim_context"]
+    assert [claim["claim_no"] for claim in claim_context["independent_claims"]] == [1, 5, 9, 11]
+    assert [claim["text"] for claim in claim_context["independent_claims"]] == [
+        "독립항 1 전문",
+        "독립항 5 전문",
+        "독립항 9 전문",
+        "독립항 11 전문",
+    ]
+    assert "dependent_claims" not in claim_context
+    assert technology_payload["patent"]["claim_availability"]["claim_context_provided"] is True
+    assert technology_payload["patent"]["claim_availability"]["full_claims_provided"] is False
 
 
 def test_legal_axis_input_includes_prior_art_candidates(tmp_path):
@@ -1477,6 +1525,7 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
         citation_evidence=citation_evidence,
+        kipris_api_data={"citing_stats": {"total_count": 2, "standardized_count": 1, "non_standardized_count": 1}},
     )
 
     from agents.valuation_axes.legal import build_input_payload as build_legal_input_payload
@@ -1495,7 +1544,14 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
         "선행 독립항 5",
         "선행 독립항 6",
     ]
-    assert citation_evidence["kr_citing_documents"][0]["representative_claims"][0]["text"] == "후행 독립항"
+    assert "kr_citing_documents" not in citation_evidence
+    assert citation_evidence["citing_signal"] == {
+        "available": True,
+        "total_count": 2,
+        "standardized_count": 1,
+        "non_standardized_count": 1,
+        "used_for": "portfolio_defensive_value_only",
+    }
     assert citation_evidence["foreign_citation_documents"][0]["publication_number"] == "JP-2017047511-A"
     assert [claim["text"] for claim in citation_evidence["foreign_citation_documents"][0]["representative_claims"]] == [
         "foreign claim 1",
@@ -1507,6 +1563,66 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
     assert citation_evidence["foreign_claim_lookup_candidates"][0]["lookup_source"] == "kipris_foreign_demand_paragraph"
     assert legal_payload["patent"]["claim_availability"]["citation_evidence_provided"] is True
     assert technology_payload["patent"]["citation_evidence"] == {}
+
+
+def test_apply_legal_scores_uses_labels_and_deterministic_metrics(tmp_path):
+    from agents.valuation_axes.legal import build_input_payload
+    from agents.valuation_axes.legal_scoring import apply_legal_scores
+
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path), "no_save": True},
+        patent_structured={"status": "등록"},
+        preprocessed_patent={
+            "claims": [
+                {"claim_no": 1, "text": "핵심 독립항", "is_independent": True, "dependency": None},
+                {"claim_no": 2, "text": "보완 종속항", "is_independent": False, "dependency": 1},
+            ]
+        },
+        kipris_api_data={"citing_stats": {"total_count": 3, "standardized_count": 2, "non_standardized_count": 1}},
+        kipris_family_patents=[
+            {"country_code": "KR", "registration_number": "1020000000000"},
+            {"country_code": "US", "registration_number": "1234567", "kind_code": "B2"},
+        ],
+    )
+    payload = build_input_payload(state=state, evidence=[])
+    result = {
+        "axis": "legal",
+        "label": "권리성",
+        "score": 0,
+        "grade": "D",
+        "rationale": "권리성 평가",
+        "evidence_ids": [],
+        "risk_factors": [],
+        "missing_information": [],
+        "confidence": 0.9,
+        "scoring_labels": {
+            "prior_art_collision": "low",
+            "similar_claim_density": "medium",
+            "dependent_claim_support": "strong",
+            "core_feature_covered": "clear",
+            "claim_scope_limitation": "moderate",
+            "design_around_difficulty": "hard",
+            "portfolio_connection": "strong",
+            "portfolio_coverage_extension": "moderate",
+        },
+        "subscores": {
+            "right_stability": {"rationale": "차별 구성이 확인됩니다."},
+            "claim_protection": {"rationale": "핵심 해결수단이 청구항에 반영됩니다."},
+            "portfolio_defensive_value": {"rationale": "관련 특허군과 보완 관계가 있습니다."},
+        },
+    }
+
+    scored = apply_legal_scores(result, payload=payload, state=state)
+
+    assert scored["score"] == 91
+    assert scored["grade"] == "A"
+    assert scored["subscores"]["right_stability"]["score"] == 36
+    assert "current_right_status" not in scored["subscores"]["right_stability"]["metrics"]
+    assert scored["legal_scoring_metrics"]["right_status_gate"]["label"] == "registered_or_active"
+    assert scored["subscores"]["claim_protection"]["score"] == 37
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 18
+    assert scored["subscores"]["portfolio_defensive_value"]["metrics"]["citing_reference_signal"]["score"] == 4
+    assert scored["legal_scoring_metrics"]["overseas_family_registration"]["score"] == 5
 
 
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):

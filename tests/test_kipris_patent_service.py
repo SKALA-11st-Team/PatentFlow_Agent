@@ -340,7 +340,25 @@ def test_fetch_kipris_bibliography_adds_citation_documents(monkeypatch):
     assert result["citing_stats"]["standardized_count"] == 1
 
 
-def test_resolve_citation_evidence_enriches_kr_citation_and_citing_documents():
+def test_normalize_kipris_claims_detects_je_dependency_phrase():
+    from services.patent.kipris_patent_service import _normalize_kipris_claims
+
+    claims = _normalize_kipris_claims(
+        [
+            {"claim": "1. 독립항 내용"},
+            {"claim": "2. 제1항에 있어서 종속항 내용"},
+            {"claim": "3. 제1항 내지 제2항 중 어느 한 항에 따른 시스템"},
+        ]
+    )
+
+    assert claims[0]["is_independent"] is True
+    assert claims[1]["is_independent"] is False
+    assert claims[1]["dependency"] == 1
+    assert claims[2]["is_independent"] is False
+    assert claims[2]["dependency"] == 1
+
+
+def test_resolve_citation_evidence_enriches_kr_citation_documents_without_citing_details():
     class Client:
         def __init__(self):
             self.advanced_calls = []
@@ -451,13 +469,13 @@ def test_resolve_citation_evidence_enriches_kr_citation_and_citing_documents():
         {"registerNumber": "1003093140000", "patent": True, "utility": False, "pageNo": 1, "numOfRows": 1},
         {"openNumber": "1020220029099", "patent": True, "utility": False, "pageNo": 1, "numOfRows": 1},
     ]
-    assert client.detail_calls == ["1019990001111", "1020200012345", "1020117007865"]
+    assert client.detail_calls == ["1019990001111", "1020200012345"]
     assert [item["application_number"] for item in result["kr_citation_documents"]] == [
         "1019990001111",
         "1020200012345",
     ]
     assert result["kr_citation_documents"][0]["representative_claims"][0]["text"] == "독립항 내용"
-    assert result["kr_citing_documents"][0]["application_number"] == "1020117007865"
+    assert "kr_citing_documents" not in result
     assert result["foreign_claim_lookup_candidates"] == [
         {
             "direction": "cited_by_target",
@@ -529,7 +547,7 @@ def test_resolve_citation_evidence_keeps_up_to_six_kr_independent_claims():
     assert [claim["claim_no"] for claim in claims] == [1, 2, 3, 4, 5, 6]
 
 
-def test_resolve_citation_evidence_prioritizes_search_report_citing_documents():
+def test_resolve_citation_evidence_does_not_enrich_citing_documents():
     class Client:
         def __init__(self):
             self.detail_calls = []
@@ -589,12 +607,8 @@ def test_resolve_citation_evidence_prioritizes_search_report_citing_documents():
         max_kr_citing=3,
     )
 
-    assert client.detail_calls == ["1020210146956", "1020210152036", "1020210140457"]
-    assert [item["application_number"] for item in result["kr_citing_documents"]] == [
-        "1020210146956",
-        "1020210152036",
-        "1020210140457",
-    ]
+    assert client.detail_calls == []
+    assert "kr_citing_documents" not in result
 
 
 def test_resolve_citation_evidence_attaches_bigquery_foreign_claims():

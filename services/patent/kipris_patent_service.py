@@ -131,8 +131,8 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
     except Exception as exc:
         result["citation_evidence"] = {
             "kr_citation_documents": [],
-            "kr_citing_documents": [],
             "foreign_claim_lookup_candidates": [],
+            "foreign_citation_documents": [],
             "warnings": [f"citation_evidence_resolve_failed:{exc.__class__.__name__}:{str(exc)[:300]}"],
         }
     return result
@@ -277,7 +277,7 @@ def _normalize_kipris_claims(raw_claims: list[dict[str, Any]]) -> list[dict[str,
         claim_no = int(match.group(1))
         body = re.sub(r"\s+", " ", match.group(2)).strip()
         is_deleted = body == "삭제"
-        dependency = _int_or_none((re.search(r"청구항\s+(\d+)\s*에 있어서", body) or ["", None])[1])
+        dependency = _extract_claim_dependency(body)
         result.append(
             {
                 "claim_no": claim_no,
@@ -289,6 +289,11 @@ def _normalize_kipris_claims(raw_claims: list[dict[str, Any]]) -> list[dict[str,
             }
         )
     return result
+
+
+def _extract_claim_dependency(text: str) -> int | None:
+    match = re.search(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
+    return _int_or_none(match.group(1) if match else None)
 
 
 def _build_api_claim_stats(reported_claim_count: int | None, claims: list[dict[str, Any]]) -> dict[str, Any]:
@@ -370,10 +375,9 @@ def resolve_citation_evidence(
     max_kr_citing: int = 3,
     max_foreign_citations: int = 3,
 ) -> dict[str, Any]:
-    """권리성 평가용 인용/피인용 근거를 조회 가능한 형태로 보강합니다."""
+    """권리성 평가용 선행 인용문헌을 조회 가능한 형태로 보강합니다."""
     warnings: list[str] = []
     kr_citation_documents = []
-    kr_citing_documents = []
     foreign_claim_lookup_candidates = []
     foreign_citation_documents = []
 
@@ -400,19 +404,6 @@ def resolve_citation_evidence(
         if enriched:
             kr_citation_documents.append(enriched)
 
-    for citing in _rank_citing_documents(citing_documents)[:max_kr_citing]:
-        application_number = citing.get("citing_application_number")
-        if not application_number:
-            continue
-        enriched = _enrich_kr_reference_document(
-            client,
-            application_number,
-            direction="citing_target",
-            source_document=citing,
-        )
-        if enriched:
-            kr_citing_documents.append(enriched)
-
     deduped_foreign_candidates = _dedupe_foreign_claim_lookup_candidates(foreign_claim_lookup_candidates)
     if deduped_foreign_candidates:
         try:
@@ -428,7 +419,6 @@ def resolve_citation_evidence(
 
     return {
         "kr_citation_documents": kr_citation_documents,
-        "kr_citing_documents": kr_citing_documents,
         "foreign_claim_lookup_candidates": deduped_foreign_candidates,
         "foreign_citation_documents": foreign_citation_documents,
         "warnings": warnings,

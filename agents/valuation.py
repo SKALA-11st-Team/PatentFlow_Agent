@@ -143,6 +143,7 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         "technology_metrics",
         "technical_differentiation_breakdown",
         "implementation_specificity_breakdown",
+        "scoring_labels",
     ):
         if optional_field in parsed:
             result[optional_field] = parsed[optional_field]
