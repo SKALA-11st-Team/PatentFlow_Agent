@@ -122,30 +122,80 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
                         "label": "권리안정성",
                         "score": 0,
                         "max_score": 40,
+                        "metrics": {
+                            "prior_art_overlap": {
+                                "label": "선행문헌 대비 청구항 중복도",
+                                "score": 22,
+                                "max_score": 30,
+                                "rationale": "일부 핵심 구성이 겹치지만 차별 구성이 남아 있다.",
+                            },
+                            "claim_structure_stability": {
+                                "label": "청구항 구조 안정성",
+                                "score": 4,
+                                "max_score": 10,
+                                "rationale": "독립항은 있으나 종속항은 1개 수준이다.",
+                            },
+                        },
                         "rationale": "등록상태는 유효하나 유사 인용문헌이 일부 존재한다.",
                     },
                     "claim_protection": {
                         "label": "청구항 보호력",
                         "score": 0,
                         "max_score": 40,
+                        "metrics": {
+                            "core_solution_coverage": {
+                                "label": "핵심 해결수단의 독립항 반영도",
+                                "score": 8,
+                                "max_score": 12,
+                                "rationale": "핵심 흐름은 반영되나 일부 조건이 약하다.",
+                            },
+                            "independent_claim_scope": {
+                                "label": "독립항 보호범위 적정성",
+                                "score": 8,
+                                "max_score": 12,
+                                "rationale": "일부 구현 조건이 있으나 핵심 범위는 유지된다.",
+                            },
+                            "dependent_claim_support": {
+                                "label": "종속항 보완성",
+                                "score": 3,
+                                "max_score": 10,
+                                "rationale": "종속항은 단순 구체화에 가깝다.",
+                            },
+                            "claim_type_diversity": {
+                                "label": "청구항 보호형태 다양성",
+                                "score": 2,
+                                "max_score": 6,
+                                "rationale": "단일 유형 중심이다.",
+                            },
+                        },
                         "rationale": "핵심 기능은 보호하지만 일부 구현 한정이 있다.",
                     },
                     "portfolio_defensive_value": {
                         "label": "포트폴리오·방어가치",
                         "score": 0,
                         "max_score": 20,
+                        "metrics": {
+                            "portfolio_connection": {
+                                "label": "관련 특허군 연결성",
+                                "score": 4,
+                                "max_score": 6,
+                                "rationale": "인접 기능의 관련 특허가 확인된다.",
+                            },
+                            "portfolio_coverage_extension": {
+                                "label": "포트폴리오 커버리지 확장성",
+                                "score": 7,
+                                "max_score": 10,
+                                "rationale": "새로운 보호 포인트가 일부 확인된다.",
+                            },
+                            "follow_on_right_signal": {
+                                "label": "후속 권리화 신호",
+                                "score": 0,
+                                "max_score": 4,
+                                "rationale": "피인용 신호는 확인되지 않는다.",
+                            },
+                        },
                         "rationale": "동일 관리번호 패밀리와 보완 관계가 있다.",
                     },
-                },
-                "scoring_labels": {
-                    "prior_art_collision": "medium",
-                    "similar_claim_density": "medium",
-                    "dependent_claim_support": "unknown",
-                    "core_feature_covered": "partial",
-                    "claim_scope_limitation": "moderate",
-                    "design_around_difficulty": "moderate",
-                    "portfolio_connection": "moderate",
-                    "portfolio_coverage_extension": "moderate",
                 },
                 "grade": "D",
                 "rationale": "권리성 단독 평가",
@@ -189,9 +239,9 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
 
     axes = result.valuation_result["axes"]
     assert list(axes) == ["legal"]
-    assert axes["legal"]["subscores"]["right_stability"]["score"] == 29
+    assert axes["legal"]["subscores"]["right_stability"]["score"] == 26
     assert axes["legal"]["evidence_ids"] == ["portfolio_001"]
-    assert axes["legal"]["legal_scoring_metrics"]["prior_art_collision"]["score"] == 13
+    assert axes["legal"]["legal_scoring_metrics"]["prior_art_overlap"]["score"] == 22
     assert "Valuation Legal Axis Prompt" in captured_prompts[0]
     assert "citation_evidence" in captured_prompts[0]
 
@@ -1595,34 +1645,44 @@ def test_apply_legal_scores_uses_labels_and_deterministic_metrics(tmp_path):
         "risk_factors": [],
         "missing_information": [],
         "confidence": 0.9,
-        "scoring_labels": {
-            "prior_art_collision": "low",
-            "similar_claim_density": "medium",
-            "dependent_claim_support": "strong",
-            "core_feature_covered": "clear",
-            "claim_scope_limitation": "moderate",
-            "design_around_difficulty": "hard",
-            "portfolio_connection": "strong",
-            "portfolio_coverage_extension": "moderate",
-        },
         "subscores": {
-            "right_stability": {"rationale": "차별 구성이 확인됩니다."},
-            "claim_protection": {"rationale": "핵심 해결수단이 청구항에 반영됩니다."},
-            "portfolio_defensive_value": {"rationale": "관련 특허군과 보완 관계가 있습니다."},
+            "right_stability": {
+                "rationale": "차별 구성이 확인됩니다.",
+                "metrics": {
+                    "prior_art_overlap": {"score": 30, "rationale": "직접 중복이 낮습니다."},
+                    "claim_structure_stability": {"score": 4, "rationale": "독립항과 종속항 1개가 확인됩니다."},
+                },
+            },
+            "claim_protection": {
+                "rationale": "핵심 해결수단이 청구항에 반영됩니다.",
+                "metrics": {
+                    "core_solution_coverage": {"score": 12, "rationale": "핵심 구성이 반영됩니다."},
+                    "independent_claim_scope": {"score": 8, "rationale": "일부 구현 조건이 있습니다."},
+                    "dependent_claim_support": {"score": 10, "rationale": "여러 보완 유형이 확인됩니다."},
+                    "claim_type_diversity": {"score": 6, "rationale": "여러 보호형태가 확인됩니다."},
+                },
+            },
+            "portfolio_defensive_value": {
+                "rationale": "관련 특허군과 보완 관계가 있습니다.",
+                "metrics": {
+                    "portfolio_connection": {"score": 6, "rationale": "구체적 연결성이 있습니다."},
+                    "portfolio_coverage_extension": {"score": 7, "rationale": "새 보호 포인트가 있습니다."},
+                    "follow_on_right_signal": {"score": 4, "rationale": "피인용 3건 이상입니다."},
+                },
+            },
         },
     }
 
     scored = apply_legal_scores(result, payload=payload, state=state)
 
-    assert scored["score"] == 91
-    assert scored["grade"] == "A"
-    assert scored["subscores"]["right_stability"]["score"] == 36
+    assert scored["score"] == 87
+    assert scored["grade"] == "B"
+    assert scored["subscores"]["right_stability"]["score"] == 34
     assert "current_right_status" not in scored["subscores"]["right_stability"]["metrics"]
     assert scored["legal_scoring_metrics"]["right_status_gate"]["label"] == "registered_or_active"
-    assert scored["subscores"]["claim_protection"]["score"] == 37
-    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 18
-    assert scored["subscores"]["portfolio_defensive_value"]["metrics"]["citing_reference_signal"]["score"] == 4
-    assert scored["legal_scoring_metrics"]["overseas_family_registration"]["score"] == 5
+    assert scored["subscores"]["claim_protection"]["score"] == 36
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 17
+    assert scored["subscores"]["portfolio_defensive_value"]["metrics"]["follow_on_right_signal"]["score"] == 4
 
 
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):

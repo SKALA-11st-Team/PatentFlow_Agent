@@ -171,6 +171,8 @@ def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
             "max_score": max_score,
             "rationale": normalize_text(item.get("rationale")),
         }
+        if isinstance(item.get("metrics"), dict):
+            normalized[str(key)]["metrics"] = item["metrics"]
     return normalized
 
 
