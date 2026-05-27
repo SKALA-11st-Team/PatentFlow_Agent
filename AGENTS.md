@@ -47,9 +47,32 @@ Review target identification
 - For not-yet-written user input, use state/action copy such as `작성 필요`, `대기 중`, or `의견 대기` instead of `N/A`.
 - Checklist totals and detail scores must use the same source. Do not mix AI 0-100 evaluation scores with business checklist 1-4 item scores in one total.
 
+## Quarter, Deadline, And Mailing Domain Rules
+
+- Quarter ranges are fixed by calendar month:
+  - Q1: January 1 through the last day of March
+  - Q2: April 1 through the last day of June
+  - Q3: July 1 through the last day of September
+  - Q4: October 1 through the last day of December
+- A quarter query includes every patent whose relevant annual-fee/review date falls inside that quarter.
+- Business-facing and mail-facing generated text must use `회신 기한`, not `마감 기한`.
+- `회신 기한` is a business-response due date configured by administrators and is separate from the internal/legal `실제 마감 기한`.
+- Review-request mail is sent by default two months before the quarter start date:
+  - Q1 patents: November 1 of the previous year
+  - Q2 patents: February 1
+  - Q3 patents: May 1
+  - Q4 patents: August 1
+- The lead time in months is configurable, so AI-generated summaries, mail drafts, or planning output must not hard-code two months except as the default.
+- Review-request mail drafts must include the patent original-document URL when that URL is available.
+- Country-specific annual-fee assumptions must not be collapsed into the domestic Korean rule. Preserve country, annual-fee basis, future due date, and any adjustment note in AI context.
+- In business classification, `기존 사업` means an ended business, not an existing/active business.
+- Business classification and technology classification are administrator-managed reference values, so AI output should treat them as controlled values unless explicitly asked to recommend additions.
+
 ## Fixed Functional Requirements
 
 Do not change the meaning or numbering of FR-001 through FR-022.
+
+For new cross-system requirements, prefer the current `FR-LEGAL-*`, `FR-BUS-*`, and `FR-COM-*` IDs maintained in the FE/BE traceability documents. Do not create new Agent-only FR numbers unless a dedicated Agent requirement document is updated at the same time.
 
 - FR-001: 검토 대상 특허 조회
 - FR-002: 특허 목록 검색/필터링/정렬
@@ -70,7 +93,7 @@ Do not change the meaning or numbering of FR-001 through FR-022.
 - FR-017: 포기 특허를 매각 후보 리스트로 분류/조회
 - FR-018~FR-022: Already assumed in project planning. Do not renumber earlier requirements.
 
-If a new requirement is needed, assign it from FR-023 onward only in documents.
+If a new Agent-only legacy requirement is still unavoidable, assign it from FR-023 onward only in a dedicated Agent requirement document. Do not use legacy `FR-023+` IDs for cross-system FE/BE requirements.
 
 ## Shared Reference Docs
 
