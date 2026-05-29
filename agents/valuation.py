@@ -164,12 +164,20 @@ def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
             max_score = int(item.get("max_score"))
         except (TypeError, ValueError):
             continue
-        normalized[str(key)] = {
+        normalized_item = {
             "label": normalize_text(item.get("label")),
             "score": max(0, min(max_score, score)),
             "max_score": max_score,
             "rationale": normalize_text(item.get("rationale")),
         }
+        details = item.get("details")
+        if isinstance(details, dict):
+            normalized_item["details"] = {
+                str(detail_key): detail_value
+                for detail_key, detail_value in details.items()
+                if isinstance(detail_key, str) and isinstance(detail_value, (int, float))
+            }
+        normalized[str(key)] = normalized_item
     return normalized
 
 

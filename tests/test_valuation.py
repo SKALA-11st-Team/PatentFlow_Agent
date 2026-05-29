@@ -22,6 +22,38 @@ def test_valuation_axes_are_split_into_axis_modules():
     assert callable(AXIS_MODULES["legal"].run)
 
 
+def test_business_fit_prompt_matches_official_evidence_criteria():
+    prompt = "prompts/valuation/valuation_business_fit.md"
+    text = __import__("pathlib").Path(prompt).read_text(encoding="utf-8")
+
+    assert "공식 사업 근거 발견도 30점" in text
+    assert "사업 맥락 직접성 45점" in text
+    assert "적용 시나리오 구체성 25점" in text
+    assert "business_fit_context.patent_description" in text
+    assert "business_fit_context.skax_official_evidence" in text
+    assert "사업 연결성 40" not in text
+    assert "포트폴리오 필요성 35" not in text
+    assert "실제 활용 가능성 15" not in text
+    assert "근거 신뢰도 10" not in text
+    assert '"subscores": {' in text
+    assert '"official_business_evidence": {' in text
+    assert '"business_context_alignment": {' in text
+    assert '"application_scenario_specificity": {' in text
+    assert '"max_score": 30' in text
+    assert '"max_score": 45' in text
+    assert '"max_score": 25' in text
+    assert "score = official_business_evidence + business_context_alignment + application_scenario_specificity" in text
+    assert "`sub_scores` 필드는 사용하지 않는다" in text
+    assert "보수적 점수 부여 원칙" in text
+    assert "95~100점대는 아래 조건을 모두 만족할 때만 허용한다" in text
+    assert "만점 제한" in text
+    assert "risk_factors가 존재한다" in text
+    assert "missing_information이 존재한다" in text
+    assert "특허와 공식 사업 근거의 1:1 매핑이 확인되지 않는다" in text
+    assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다" in text
+    assert "risk_factors에는 공식 근거 기반으로 확인되는 실제 한계만 작성한다" in text
+
+
 def test_run_valuation_agent_sets_result():
     def fake_call_llm(prompt):
         if "Return ONLY Markdown" in prompt:
@@ -73,7 +105,7 @@ def test_run_valuation_agent_sets_result():
     assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
     assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 4, 1)
     assert "평균 점수는" in result.valuation_result["decision_rationale"][0]
-    assert axes["market"]["sub_scores"]["market_growth_score"] is None
+    assert axes["market"]["subscores"]["market_growth"]["score"] is None
     assert "final_report_markdown" not in result.valuation_result
 
 
@@ -283,6 +315,302 @@ def test_business_fit_fallback_without_official_evidence_matches_existing_order(
     assert [item["evidence_id"] for item in selected] == ["news_direct", "portfolio_001", "news_secondary"]
 
 
+def test_business_fit_input_context_uses_summary_and_limited_official_evidence():
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    long_content = "SK AX 공식 사업 근거 " * 120
+    state = PatentWorkflowState(
+        patent_structured={
+            "관리번호": "P202405001-KR0",
+            "발명의 명칭(최종)": "강화학습 자산배분 특허",
+            "관련제품": "로보어드바이저",
+            "관련 사업 분야": "Data",
+            "관련 기술 분야": "데이터분석",
+        },
+        summary_result={
+            "plain_summary": "요약 우선 사용",
+            "key_points": ["핵심 1", "핵심 2"],
+        },
+        preprocessed_patent={
+            "sections": {
+                "abstract": "초록 fallback",
+                "problem": "해결 과제",
+                "solution": "핵심 해결수단",
+                "effect": "기대 효과",
+                "claims_text": "청구항 전체 원문은 들어가면 안 됨",
+            },
+            "cleaned_markdown": "정제된 전체 원문은 들어가면 안 됨",
+        },
+        parsed_pdf={"markdown_text": "PDF 전체 원문은 들어가면 안 됨"},
+    )
+    evidence = [
+        {
+            "evidence_id": f"skax_{score}",
+            "source": "sk_ax_official",
+            "source_type": "company_disclosure",
+            "title": f"SK AX 공식 근거 {score}",
+            "url": f"https://www.skax.co.kr/finance/{score}",
+            "content": long_content,
+            "relevance_score": score / 10,
+            "matched_keywords": ["로보어드바이저"],
+            "candidate_results": [{"url": "debug"}],
+            "search_request_url": "https://api.tavily.com/search",
+        }
+        for score in [1, 5, 9, 7, 3]
+    ]
+
+    payload = build_input_payload(state=state, evidence=evidence)
+    context = payload["business_fit_context"]
+    description = context["patent_description"]
+    official = context["skax_official_evidence"]
+    serialized = json.dumps(context, ensure_ascii=False)
+
+    assert description["management_number"] == "P202405001-KR0"
+    assert description["title_final"] == "강화학습 자산배분 특허"
+    assert description["related_product"] == "로보어드바이저"
+    assert description["business_area"] == "Data"
+    assert description["technology_area"] == "데이터분석"
+    assert description["summary"] == "요약 우선 사용"
+    assert description["key_points"] == ["핵심 1", "핵심 2"]
+    assert description["problem_or_purpose"] == "해결 과제"
+    assert description["solution_or_core_technology"] == "핵심 해결수단"
+    assert description["effect_or_expected_benefit"] == "기대 효과"
+    assert [item["evidence_id"] for item in official] == ["skax_9", "skax_7", "skax_5"]
+    assert all(len(item["content_excerpt"]) <= 1500 for item in official)
+    assert official[0]["matched_keywords"] == ["로보어드바이저"]
+    assert "candidate_results" not in serialized
+    assert "search_request_url" not in serialized
+    assert "청구항 전체 원문은 들어가면 안 됨" not in serialized
+    assert "정제된 전체 원문은 들어가면 안 됨" not in serialized
+    assert "PDF 전체 원문은 들어가면 안 됨" not in serialized
+
+
+def test_business_fit_patent_description_falls_back_to_sections_and_kipris():
+    from agents.valuation_axes.business_fit import build_business_fit_patent_description
+
+    state = PatentWorkflowState(
+        patent_structured={"title_final": "fallback 특허"},
+        preprocessed_patent={"sections": {"abstract": "", "solution": "섹션 해결수단"}},
+        kipris_api_data={"sections": {"abstract": "KIPRIS 초록"}},
+    )
+
+    description = build_business_fit_patent_description(state)
+
+    assert description["title_final"] == "fallback 특허"
+    assert description["summary"] == "KIPRIS 초록"
+    assert description["solution_or_core_technology"] == "섹션 해결수단"
+
+
+def test_business_fit_patent_description_uses_metadata_and_agent_summary_fallbacks():
+    from agents.valuation_axes.business_fit import build_business_fit_patent_description
+
+    state = PatentWorkflowState(
+        patent_structured={"related_product": "ChainZ", "business_area": "Blockchain", "technology_area": "인증"},
+        summary_result={
+            "title": "summary 제목",
+            "key_points": ["서명 검증 핵심", "블록체인 합의"],
+        },
+        preprocessed_patent={
+            "metadata": {"title": "preprocessed 제목"},
+            "sections": {},
+            "agent_inputs": {
+                "summary": {
+                    "abstract": "agent 초록",
+                    "problem": "agent 문제",
+                    "solution": "agent 해결수단",
+                    "technical_field": "agent 기술분야",
+                    "effect": "agent 효과",
+                },
+                "valuation": {
+                    "claims": [{"text": "valuation claims 전체는 들어가면 안 됨"}],
+                    "detailed_description": "valuation 상세설명 전체는 들어가면 안 됨",
+                },
+            },
+            "cleaned_markdown": "cleaned_markdown 전체는 들어가면 안 됨",
+        },
+        kipris_api_data={
+            "metadata": {"title": "kipris 제목"},
+            "sections": {
+                "abstract": "kipris 초록",
+                "problem": "kipris 문제",
+                "solution": "kipris 해결",
+                "technical_field": "kipris 기술분야",
+            },
+            "raw": {"secret": "kipris raw 전체는 들어가면 안 됨"},
+        },
+    )
+
+    description = build_business_fit_patent_description(state)
+    serialized = json.dumps(description, ensure_ascii=False)
+
+    assert description["title"] == "summary 제목"
+    assert description["title_final"] == "preprocessed 제목"
+    assert description["summary"] == "agent 초록"
+    assert description["problem_or_purpose"] == "agent 문제"
+    assert description["solution_or_core_technology"] == "agent 해결수단"
+    assert description["effect_or_expected_benefit"] == "agent 효과"
+    assert "ChainZ" in description["key_terms"]
+    assert "Blockchain" in description["key_terms"]
+    assert "인증" in description["key_terms"]
+    assert "서명 검증 핵심" in description["key_terms"]
+    assert "블록체인 합의" in description["key_terms"]
+    assert "valuation claims 전체는 들어가면 안 됨" not in serialized
+    assert "valuation 상세설명 전체는 들어가면 안 됨" not in serialized
+    assert "cleaned_markdown 전체는 들어가면 안 됨" not in serialized
+    assert "kipris raw 전체는 들어가면 안 됨" not in serialized
+
+
+def test_business_fit_patent_description_uses_kipris_section_fallbacks():
+    from agents.valuation_axes.business_fit import build_business_fit_patent_description
+
+    state = PatentWorkflowState(
+        kipris_api_data={
+            "metadata": {"title": "KIPRIS 제목"},
+            "sections": {
+                "abstract": "KIPRIS 초록",
+                "problem": "KIPRIS 문제",
+                "solution": "KIPRIS 해결",
+                "technical_field": "KIPRIS 기술분야",
+            },
+        },
+    )
+
+    description = build_business_fit_patent_description(state)
+
+    assert description["title"] == "KIPRIS 제목"
+    assert description["title_final"] == "KIPRIS 제목"
+    assert description["summary"] == "KIPRIS 초록"
+    assert description["problem_or_purpose"] == "KIPRIS 문제"
+    assert description["solution_or_core_technology"] == "KIPRIS 해결"
+
+
+def test_business_fit_context_is_safe_with_latest_workflow_state_fields():
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    state = PatentWorkflowState(
+        user_input={"company_context": {"company_name": "SK AX"}},
+        patent_structured={"title_final": "최신 State 특허", "related_product": "ChainZ"},
+        kipris_api_data=None,
+        kipris_family_patents=[{"application_number": "10-1"}],
+        citation_evidence={"kr_citation_documents": [{"application_number": "10-2"}]},
+        parsed_pdf={"markdown_text": "parsed_pdf 전체 원문은 들어가면 안 됨"},
+        preprocessed_patent={
+            "sections": {
+                "claims_text": "claims_text 전체 원문은 들어가면 안 됨",
+            },
+            "agent_inputs": {
+                "valuation": {
+                    "claims": [{"text": "agent_inputs valuation claims 전체는 들어가면 안 됨"}],
+                    "detailed_description": "agent_inputs valuation 상세설명은 들어가면 안 됨",
+                }
+            },
+            "cleaned_markdown": "cleaned_markdown 전체 원문은 들어가면 안 됨",
+        },
+        summary_result=None,
+        portfolio_evidence=[{"evidence_id": "portfolio_external"}],
+        portfolio_result={"summary": "포트폴리오 결과는 business_fit_context에 넣지 않음"},
+        query_plan={"queries": ["검색 계획"]},
+        search_queries=["검색어"],
+        evidence_bundle=[],
+        valuation_result={"axes": {}},
+        final_report={"summary": "final"},
+        validation_result={"ok": True},
+        summary_validation_result={"ok": True},
+        report_validation_result={"ok": True},
+        supervisor_decision={"decision": "PASS"},
+        missing_evidence=["missing"],
+    )
+
+    payload = build_input_payload(state=state, evidence=[])
+    context = payload["business_fit_context"]
+    serialized_context = json.dumps(context, ensure_ascii=False)
+
+    assert context["patent_description"]["title_final"] == "최신 State 특허"
+    assert context["patent_description"]["related_product"] == "ChainZ"
+    assert context["skax_official_evidence"] == []
+    assert "citation_evidence" not in serialized_context
+    assert "portfolio_external" not in serialized_context
+    assert "포트폴리오 결과는 business_fit_context에 넣지 않음" not in serialized_context
+    assert "summary_validation_result" not in serialized_context
+    assert "report_validation_result" not in serialized_context
+    assert "parsed_pdf 전체 원문은 들어가면 안 됨" not in serialized_context
+    assert "cleaned_markdown 전체 원문은 들어가면 안 됨" not in serialized_context
+    assert "claims_text 전체 원문은 들어가면 안 됨" not in serialized_context
+    assert "agent_inputs valuation claims 전체는 들어가면 안 됨" not in serialized_context
+    assert "agent_inputs valuation 상세설명은 들어가면 안 됨" not in serialized_context
+
+
+def test_business_fit_context_is_safe_with_minimal_empty_state():
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    payload = build_input_payload(state=PatentWorkflowState(), evidence=[])
+
+    assert payload["business_fit_context"]["patent_description"]["title_final"] == ""
+    assert payload["business_fit_context"]["patent_description"]["summary"] == ""
+    assert payload["business_fit_context"]["skax_official_evidence"] == []
+
+
+def test_business_fit_rubric_is_externalized_to_prompt_md():
+    from agents.valuation import normalize_axis_llm_result
+
+    text = __import__("pathlib").Path("prompts/valuation/valuation_business_fit.md").read_text(encoding="utf-8")
+
+    assert "총점은 100점이며 반드시 아래 3개 하위 항목 점수를 합산한다." in text
+    assert "공식 사업 근거 발견도: 30점" in text
+    assert "사업 맥락 직접성: 45점" in text
+    assert "적용 시나리오 구체성: 25점" in text
+    assert '"official_business_evidence": {' in text
+    assert '"business_context_alignment": {' in text
+    assert '"application_scenario_specificity": {' in text
+    assert '"max_score": 30' in text
+    assert '"max_score": 45' in text
+    assert '"max_score": 25' in text
+    assert "business_connection" not in text
+    assert "portfolio_necessity" not in text
+    assert "practical_applicability" not in text
+    assert "evidence_reliability" not in text
+    assert "검색 결과 개수만으로 높은 점수를 주지 않는다." in text
+    assert "공식 근거가 없다고 특허 가치가 낮다고 단정하지 않는다." in text
+    assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다." in text
+
+    result = normalize_axis_llm_result(
+        "business_fit",
+        {
+            "score": 80,
+            "grade": "B",
+            "subscores": {
+                "official_business_evidence": {
+                    "label": "공식 사업 근거 발견도",
+                    "score": 24,
+                    "max_score": 30,
+                    "rationale": "공식 근거 확인",
+                }
+            },
+            "rationale": "공식 근거 기반 평가",
+            "evidence_ids": ["skax_001"],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.8,
+        },
+        evidence=[{"evidence_id": "skax_001"}],
+    )
+
+    assert set(result) == {
+        "axis",
+        "label",
+        "score",
+        "grade",
+        "rationale",
+        "evidence_ids",
+        "risk_factors",
+        "missing_information",
+        "confidence",
+        "subscores",
+    }
+    assert result["subscores"]["official_business_evidence"]["score"] == 24
+    assert "sub_scores" not in result
+
+
 def test_market_score_helpers_apply_40_40_20_structure():
     from datetime import datetime
 
@@ -314,10 +642,25 @@ def test_market_score_helpers_apply_40_40_20_structure():
 
     assert result["score"] == 95
     assert result["grade"] == "A"
-    assert result["sub_scores"] == {
-        "industry_marketability_score": 40,
-        "market_growth_score": 35,
-        "global_business_score": 20,
+    assert result["subscores"] == {
+        "industry_marketability": {
+            "label": "산업 시장성",
+            "score": 40,
+            "max_score": 40,
+            "rationale": "",
+        },
+        "market_growth": {
+            "label": "시장 성장성",
+            "score": 35,
+            "max_score": 40,
+            "rationale": "대표 CPC 기준 최근 3년 특허 출원 증가율 및 추세로 산정된 코드 계산값입니다.",
+        },
+        "global_business": {
+            "label": "글로벌 사업성",
+            "score": 20,
+            "max_score": 20,
+            "rationale": "Patent Family 국가 정보로 산정된 코드 계산값입니다.",
+        },
     }
 
     result = apply_marketability_scores(
@@ -339,13 +682,13 @@ def test_market_score_helpers_apply_40_40_20_structure():
         },
     )
 
-    assert result["sub_scores"]["industry_marketability_score"] == 30
-    assert result["industry_marketability_breakdown"] == {
-        "industry_growth_evidence_score": 15,
-        "corporate_investment_entry_score": 10,
-        "news_market_diffusion_score": 0,
-        "source_reliability_score": 5,
+    assert result["subscores"]["industry_marketability"] == {
+        "label": "산업 시장성",
+        "score": 30,
+        "max_score": 40,
+        "rationale": "",
     }
+    assert "industry_marketability_breakdown" not in result
     assert result["score"] == 60
 
 
@@ -367,9 +710,29 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
     )
 
     assert result["score"] == 60
-    assert result["sub_scores"]["market_growth_score"] is None
+    assert result["subscores"]["market_growth"]["score"] is None
     assert MARKET_GROWTH_MISSING_MESSAGE in result["missing_information"]
     assert result["confidence"] == 0.49
+
+
+def test_market_select_evidence_keeps_all_market_evidence():
+    from agents.valuation_axes.market import select_evidence
+
+    evidence = [
+        {
+            "evidence_id": f"news_{index}",
+            "source_type": "news",
+            "source": "naver_news",
+            "title": f"시장 뉴스 {index}",
+            "related_axes": ["market"],
+        }
+        for index in range(1, 9)
+    ]
+    state = PatentWorkflowState(evidence_bundle=evidence)
+
+    selected = select_evidence(evidence, state)
+
+    assert [item["evidence_id"] for item in selected] == [f"news_{index}" for index in range(1, 9)]
 
 
 def test_technology_metrics_are_added_to_payload(monkeypatch):
@@ -425,6 +788,147 @@ def test_technology_metrics_are_added_to_payload(monkeypatch):
     assert captured_prompts[0]["artifact_name"] == "technology_input"
 
 
+def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
+    from agents.valuation_axes import technology
+
+    def fake_prior_art_context(**kwargs):
+        return {
+            "comparison_mode": "prior-art",
+            "candidate_count": 2,
+            "similar_patents": [
+                {"display_number": "KR-A", "source_type": "prior_art"},
+                {"display_number": "JP-B", "source_type": "foreign_prior_art"},
+            ],
+            "prior_art_patents": [
+                {"display_number": "KR-A", "source_type": "prior_art"},
+                {"display_number": "JP-B", "source_type": "foreign_prior_art"},
+            ],
+            "warnings": [],
+        }
+
+    def fake_similar_context(**kwargs):
+        return {
+            "comparison_mode": "similar",
+            "representative_cpc": "G05B 19/4065",
+            "candidate_count": 10,
+            "similar_patents": [
+                {"application_number": "1020200000001", "source_type": "similar"},
+                {"application_number": "1020200000002", "source_type": "similar"},
+                {"application_number": "1020200000003", "source_type": "similar"},
+                {"application_number": "1020200000004", "source_type": "similar"},
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(technology, "build_prior_art_context", fake_prior_art_context)
+    monkeypatch.setattr(technology, "build_similar_context", fake_similar_context)
+
+    state = PatentWorkflowState(
+        user_input={"technology_comparison_mode": "similar"},
+        preprocessed_patent={"metadata": {"cpc": ["G05B 19/4065"], "filing_date": "2024-01-01"}},
+    )
+
+    metrics = technology.build_technology_metrics(state)
+
+    assert metrics["comparison_mode"] == "hybrid"
+    assert metrics["selection_policy"] == "prior-art-first-then-similar"
+    assert [item.get("display_number") or item.get("application_number") for item in metrics["similar_patents"]] == [
+        "KR-A",
+        "JP-B",
+        "1020200000001",
+        "1020200000002",
+        "1020200000003",
+    ]
+
+
+def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
+    from agents.valuation_axes import technology
+
+    def fake_prior_art_context(**kwargs):
+        item = {
+            "display_number": "KR-A",
+            "source_type": "prior_art",
+            "pdf_text": "원문 전체",
+            "pdf_text_excerpt": "원문 전체",
+            "similarity_text": "유사도 계산용 텍스트",
+            "resolved_search_matches": [{"title": "검색 결과"}],
+        }
+        return {
+            "comparison_mode": "prior-art",
+            "candidate_count": 1,
+            "similar_patents": [item],
+            "prior_art_patents": [dict(item)],
+            "warnings": [],
+        }
+
+    def fake_similar_context(**kwargs):
+        return {
+            "comparison_mode": "similar",
+            "representative_cpc": "G05B 19/4065",
+            "candidate_count": 1,
+            "similar_patents": [
+                {
+                    "application_number": "1020200000001",
+                    "pdf_text": "유사문헌 원문 전체",
+                    "pdf_text_excerpt": "유사문헌 원문 전체",
+                    "similarity_text": "유사도 계산용 텍스트",
+                    "resolved_search_matches": [],
+                }
+            ],
+            "warnings": [],
+        }
+
+    monkeypatch.setattr(technology, "build_prior_art_context", fake_prior_art_context)
+    monkeypatch.setattr(technology, "build_similar_context", fake_similar_context)
+
+    metrics = technology.build_technology_metrics(
+        PatentWorkflowState(
+            preprocessed_patent={"metadata": {"cpc": ["G05B 19/4065"], "filing_date": "2024-01-01"}},
+        )
+    )
+
+    assert "prior_art_patents" not in metrics
+    assert metrics["similar_patents"][0]["pdf_text"] == "원문 전체"
+    assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
+    assert all("similarity_text" not in item for item in metrics["similar_patents"])
+    assert all("resolved_search_matches" not in item for item in metrics["similar_patents"])
+
+
+def test_technology_metrics_prior_art_only_payload_omits_prior_art_duplicates(monkeypatch):
+    from agents.valuation_axes import technology
+
+    prior_items = [
+        {
+            "display_number": f"KR-{index}",
+            "source_type": "prior_art",
+            "pdf_text": f"원문 전체 {index}",
+            "pdf_text_excerpt": f"원문 전체 {index}",
+            "similarity_text": "유사도 계산용 텍스트",
+            "resolved_search_matches": [{"title": "검색 결과"}],
+        }
+        for index in range(6)
+    ]
+
+    monkeypatch.setattr(
+        technology,
+        "build_prior_art_context",
+        lambda **kwargs: {
+            "comparison_mode": "prior-art",
+            "candidate_count": 6,
+            "similar_patents": prior_items,
+            "prior_art_patents": [dict(item) for item in prior_items],
+            "warnings": ["w"],
+        },
+    )
+
+    metrics = technology.build_technology_metrics(PatentWorkflowState())
+
+    assert metrics["selection_policy"] == "prior-art-only"
+    assert len(metrics["similar_patents"]) == 5
+    assert "prior_art_patents" not in metrics
+    assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
+
+
 def test_technology_breakdown_scores_are_binary():
     from agents.valuation_axes.technology import apply_technology_scores
 
@@ -472,6 +976,64 @@ def test_technology_breakdown_scores_are_binary():
     assert result["sub_scores"]["technical_differentiation_score"] == 38
     assert result["sub_scores"]["implementation_specificity_score"] == 24
     assert result["score"] == 62
+
+
+def test_technology_candidate_subscores_use_new_grade_thresholds():
+    from agents.valuation_axes.technology import apply_technology_scores
+
+    result = apply_technology_scores(
+        {
+            "score": 0,
+            "grade": "D",
+            "rationale": "r",
+            "evidence_ids": [],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.8,
+            "subscores": {
+                "technical_differentiation": {
+                    "label": "기술 차별성",
+                    "score": 47,
+                    "max_score": 60,
+                    "details": {
+                        "configuration_differentiation": 16,
+                        "operation_differentiation": 20,
+                        "effect_differentiation": 12,
+                    },
+                    "rationale": "차별 요소가 확인됨",
+                },
+                "implementation_specificity": {
+                    "label": "구현 구체성",
+                    "score": 30,
+                    "max_score": 40,
+                    "details": {
+                        "component_specificity": 15,
+                        "procedure_specificity": 15,
+                        "implementation_specificity_detail": 0,
+                    },
+                    "rationale": "구성 요소와 처리 절차는 구체적이나 구현 설명은 제한적임",
+                },
+            },
+        },
+        {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
+    )
+
+    assert result["score"] == 78
+    assert result["grade"] == "B"
+    assert result["sub_scores"] == {
+        "technical_differentiation_score": 48,
+        "implementation_specificity_score": 30,
+    }
+    assert result["subscores"]["technical_differentiation"]["details"] == {
+        "configuration_differentiation": 16,
+        "operation_differentiation": 20,
+        "effect_differentiation": 12,
+    }
+    assert result["subscores"]["implementation_specificity"]["details"] == {
+        "component_specificity": 15,
+        "procedure_specificity": 15,
+        "implementation_specificity_detail": 0,
+    }
 
 
 def test_valuation_fails_when_llm_valuation_is_disabled():
@@ -567,6 +1129,146 @@ def test_final_report_markdown_sanitizes_meta_note_lines():
     assert "해외 패밀리는 확인되지 않았습니다" in markdown
 
 
+def test_final_report_input_payload_is_compact_without_raw_technology_sources():
+    from agents.writing.final_report import build_final_report_input_payload
+
+    state = PatentWorkflowState(
+        patent_structured={
+            "management_number": "P1",
+            "application_number": "10-2024-0000001",
+            "registration_number": "10-3000001",
+            "title_final": "문서변환 특허",
+            "related_product": "문서변환 SW",
+            "business_area": "AI",
+            "technology_area": "문서처리",
+            "status": "등록",
+        },
+        summary_result={"plain_summary": "특허 요약", "key_points": ["요약 포인트"]},
+        evidence_bundle=[
+            {
+                "evidence_id": "news_001",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "문서변환 SW 시장 확대",
+                "url": "https://example.com/news",
+                "published_at": "2026-01-01",
+                "related_axes": ["market"],
+                "compressed_summary": "시장 수요 확대",
+                "key_facts": ["사실1", "사실2", "사실3", "사실4", "사실5", "사실6"],
+                "content": "원문 본문은 final_report input에 들어가지 않는다.",
+            },
+            {
+                "evidence_id": "news_unused",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "평가축이 쓰지 않은 뉴스",
+                "url": "https://example.com/unused",
+                "published_at": "2026-01-02",
+                "related_axes": ["market"],
+                "compressed_summary": "쓰지 않은 뉴스 요약",
+                "key_facts": ["쓰지 않은 사실"],
+            }
+        ],
+    )
+    valuation_result = {
+        "total_score": 280,
+        "average_score": 70,
+        "recommendation": "유지 권고",
+        "final_indicator": "조건부 유지",
+        "final_report_markdown": "# 기존 보고서",
+        "axes": {
+            "legal": {
+                "axis": "legal",
+                "label": "권리성",
+                "score": 70,
+                "grade": "B",
+                "rationale": "권리성 근거",
+                "risk_factors": [],
+                "missing_information": [],
+                "confidence": 0.7,
+            },
+            "technology": {
+                "axis": "technology",
+                "label": "기술성",
+                "score": 75,
+                "grade": "B",
+                "rationale": "기술성 근거",
+                "risk_factors": ["유사특허 비교 필요"],
+                "missing_information": [],
+                "confidence": 0.7,
+                "sub_scores": {"technical_differentiation_score": 35},
+                "technology_metrics": {
+                    "representative_cpc": "G06F 40/00",
+                    "similar_patents": [
+                        {
+                            "application_number": "10-2020-0000001",
+                            "pdf_text": "SECRET_FULL_SIMILAR_PATENT_TEXT",
+                            "pdf_text_excerpt": "SECRET_EXCERPT",
+                            "pdf_path": "/Users/soojeong/Documents/Team11/artifacts/similar.pdf",
+                            "markdown_paths": ["/Users/soojeong/Documents/Team11/artifacts/similar.md"],
+                        }
+                    ],
+                },
+            },
+            "market": {
+                "axis": "market",
+                "label": "시장성",
+                "score": 65,
+                "grade": "B",
+                "rationale": "시장성 근거",
+                "risk_factors": [],
+                "missing_information": [],
+                "confidence": 0.6,
+                "evidence_ids": ["news_001"],
+                "sub_scores": {"industry_marketability_score": 30},
+                "marketability_metrics": {"cpc_application_counts": [{"year": 2025, "raw": "SECRET_RAW"}]},
+            },
+            "business_fit": {
+                "axis": "business_fit",
+                "label": "사업 연계성",
+                "score": 70,
+                "grade": "B",
+                "rationale": "사업연계성 근거",
+                "risk_factors": [],
+                "missing_information": [],
+                "confidence": 0.7,
+            },
+        },
+    }
+
+    payload = build_final_report_input_payload(state=state, valuation_result=valuation_result)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["patent"]["metadata"]["title"] == "문서변환 특허"
+    assert payload["patent"]["metadata"]["application_number"] == "10-2024-0000001"
+    assert payload["patent"]["metadata"]["registration_number"] == "10-3000001"
+    assert payload["patent"]["summary_result"]["plain_summary"] == "특허 요약"
+    for axis in ["legal", "technology", "market", "business_fit"]:
+        assert payload["valuation_result"]["axes"][axis]["score"] == valuation_result["axes"][axis]["score"]
+        assert payload["valuation_result"]["axes"][axis]["rationale"] == valuation_result["axes"][axis]["rationale"]
+    assert payload["valuation_result"]["axes"]["market"]["evidence_ids"] == ["news_001"]
+    assert [item["evidence_id"] for item in payload["evidence_references"]] == ["news_001"]
+    assert payload["evidence_references"][0]["citation_title"] == "문서변환 SW 시장 확대"
+    assert payload["evidence_references"][0]["url"] == "https://example.com/news"
+    assert "compressed_summary" not in payload["evidence_references"][0]
+    assert "key_facts" not in payload["evidence_references"][0]
+
+    assert "technology_metrics" not in serialized
+    assert "marketability_metrics" not in serialized
+    assert "평가축이 쓰지 않은 뉴스" not in serialized
+    assert "https://example.com/unused" not in serialized
+    assert "쓰지 않은 뉴스 요약" not in serialized
+    assert "시장 수요 확대" not in serialized
+    assert "사실1" not in serialized
+    assert "similar_patents" not in serialized
+    assert "pdf_text" not in serialized
+    assert "pdf_text_excerpt" not in serialized
+    assert "pdf_path" not in serialized
+    assert "markdown_paths" not in serialized
+    assert "SECRET_FULL_SIMILAR_PATENT_TEXT" not in serialized
+    assert "/Users/soojeong/Documents/Team11" not in serialized
+
+
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     captured_prompts = []
 
@@ -645,17 +1347,16 @@ def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
     market_input = json.loads((input_dir / "market_input.json").read_text(encoding="utf-8"))
     assert market_input["evidence"][0]["url"] == "https://example.com/news"
     business_fit_input = json.loads((input_dir / "business_fit_input.json").read_text(encoding="utf-8"))
-    rubric = business_fit_input["business_fit_scoring_rubric"]
-    assert rubric["components"]["business_connection"] == 40
-    assert rubric["components"]["portfolio_necessity"] == 35
-    assert rubric["components"]["practical_applicability"] == 15
-    assert rubric["components"]["evidence_reliability"] == 10
-    assert "sub_scores" in rubric["rationale_instruction"]
+    assert "business_fit_context" in business_fit_input
+    assert business_fit_input["business_fit_context"]["patent_description"]["title_final"] == "문서변환 특허"
+    assert business_fit_input["business_fit_context"]["skax_official_evidence"] == []
+    assert "business_fit_scoring_rubric" not in business_fit_input
     final_input = json.loads((input_dir / "final_report_input.json").read_text(encoding="utf-8"))
     assert final_input["patent"]["metadata"]["title"] == "문서변환 특허"
     assert final_input["evidence_references"][0]["title"] == "문서변환 SW 시장 확대"
     assert final_input["evidence_references"][0]["citation_title"] == "문서변환 SW 시장 확대"
     assert final_input["evidence_references"][0]["url"] == "https://example.com/news"
+    assert "technology_metrics" not in final_input["valuation_result"]["axes"]["technology"]
 
 
 def test_axis_input_includes_representative_claims(tmp_path):

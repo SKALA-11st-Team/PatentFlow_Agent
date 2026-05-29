@@ -15,6 +15,11 @@ from workflow.state import PatentWorkflowState
 AXIS = "technology"
 LABEL = "기술성"
 PROMPT_PATH = "valuation/valuation_technology.md"
+TECHNOLOGY_COMPARISON_TARGET_COUNT = 5
+TECHNOLOGY_SUBSCORE_CANDIDATES = {
+    "technical_differentiation": (4, 8, 12, 16, 20, 5, 10, 15, 20, 25, 3, 6, 9, 12, 15),
+    "implementation_specificity": (0, 10, 15, 25, 30, 40),
+}
 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
@@ -61,16 +66,8 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
     }
     representative_cpc = extract_representative_cpc(state)
     artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
-    mode = str(((state.user_input or {}).get("technology_comparison_mode") or "similar")).strip().lower()
-    if mode not in {"similar", "prior-art", "hybrid"}:
-        mode = "similar"
-
     similar_dir = Path(artifact_dir) / "similar_patents" if artifact_dir else None
     prior_art_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
-    if mode == "similar":
-        return build_similar_context(metadata=metadata, representative_cpc=representative_cpc, output_dir=similar_dir)
-    if mode == "prior-art":
-        return build_prior_art_context(metadata=metadata, kipris_api_data=state.kipris_api_data, output_dir=prior_art_dir)
     return build_hybrid_context(
         metadata=metadata,
         kipris_api_data=state.kipris_api_data,
@@ -91,6 +88,7 @@ def build_similar_context(
             **build_similar_patent_context(
                 target_metadata=metadata,
                 representative_cpc=representative_cpc,
+                top_k=TECHNOLOGY_COMPARISON_TARGET_COUNT,
                 collect_pdf=True,
                 output_dir=output_dir,
                 pdf_text_limit=None,
@@ -139,24 +137,27 @@ def build_hybrid_context(
     representative_cpc: str | None,
     similar_dir: Path | None,
     prior_art_dir: Path | None,
-    target_top_k: int = 3,
+    target_top_k: int = TECHNOLOGY_COMPARISON_TARGET_COUNT,
 ) -> dict[str, Any]:
     prior_art = build_prior_art_context(metadata=metadata, kipris_api_data=kipris_api_data, output_dir=prior_art_dir)
     prior_items = list(prior_art.get("similar_patents") or [])
-    prior_pdf_count = count_pdf_collected(prior_items)
 
-    if prior_pdf_count >= target_top_k:
+    if len(prior_items) >= target_top_k:
         return {
-            **prior_art,
             "comparison_mode": "hybrid",
             "selection_policy": "prior-art-only",
+            "representative_cpc": representative_cpc,
+            "candidate_count": int(prior_art.get("candidate_count") or 0),
+            "similar_patents": compact_comparison_items(prior_items[:target_top_k]),
+            "target_count": target_top_k,
+            "warnings": list(prior_art.get("warnings") or []),
         }
 
     similar = build_similar_context(metadata=metadata, representative_cpc=representative_cpc, output_dir=similar_dir)
     hybrid_items = merge_hybrid_items(
         prior_items=prior_items,
         similar_items=list(similar.get("similar_patents") or []),
-        min_pdf_count=target_top_k,
+        target_count=target_top_k,
     )
     warnings = dedupe_texts(
         [
@@ -169,8 +170,8 @@ def build_hybrid_context(
         "selection_policy": "prior-art-first-then-similar",
         "representative_cpc": representative_cpc,
         "candidate_count": int(prior_art.get("candidate_count") or 0) + int(similar.get("candidate_count") or 0),
-        "similar_patents": hybrid_items,
-        "prior_art_patents": prior_items,
+        "similar_patents": compact_comparison_items(hybrid_items),
+        "target_count": target_top_k,
         "warnings": warnings,
     }
 
@@ -209,29 +210,34 @@ def merge_technology_contexts(
     }
 
 
-def merge_hybrid_items(*, prior_items: list[dict[str, Any]], similar_items: list[dict[str, Any]], min_pdf_count: int) -> list[dict[str, Any]]:
+def merge_hybrid_items(*, prior_items: list[dict[str, Any]], similar_items: list[dict[str, Any]], target_count: int) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen = set()
-    pdf_count = 0
     for item in prior_items:
-        key = item_identity(item)
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(item)
-        if item.get("pdf_collected"):
-            pdf_count += 1
-    for item in similar_items:
-        if pdf_count >= min_pdf_count:
+        if len(merged) >= target_count:
             break
         key = item_identity(item)
         if key in seen:
             continue
         seen.add(key)
         merged.append(item)
-        if item.get("pdf_collected"):
-            pdf_count += 1
+    for item in similar_items:
+        if len(merged) >= target_count:
+            break
+        key = item_identity(item)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
     return merged
+
+
+def compact_comparison_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    drop_keys = {"pdf_text_excerpt", "similarity_text", "resolved_search_matches"}
+    return [
+        {key: value for key, value in item.items() if key not in drop_keys}
+        for item in items
+    ]
 
 
 def count_pdf_collected(items: list[dict[str, Any]]) -> int:
@@ -239,6 +245,9 @@ def count_pdf_collected(items: list[dict[str, Any]]) -> int:
 
 
 def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    if has_candidate_subscores(result):
+        return apply_candidate_technology_scores(result, metrics)
+
     sub_scores = result.get("sub_scores") or {}
     comparison_items = metrics.get("similar_patents") or []
     has_pdf_evidence = any(bool(item.get("pdf_collected")) for item in comparison_items)
@@ -336,7 +345,93 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
     }
 
 
+def has_candidate_subscores(result: dict[str, Any]) -> bool:
+    subscores = result.get("subscores")
+    return isinstance(subscores, dict) and all(key in subscores for key in TECHNOLOGY_SUBSCORE_CANDIDATES)
+
+
+def apply_candidate_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
+    subscores = normalize_candidate_subscores(result.get("subscores") or {})
+    technical_differentiation_score = int(subscores["technical_differentiation"]["score"])
+    implementation_specificity_score = int(subscores["implementation_specificity"]["score"])
+    score = technical_differentiation_score + implementation_specificity_score
+    return {
+        **result,
+        "score": max(0, min(100, score)),
+        "grade": technology_grade_for_score(score),
+        "subscores": subscores,
+        "sub_scores": {
+            "technical_differentiation_score": technical_differentiation_score,
+            "implementation_specificity_score": implementation_specificity_score,
+        },
+        "technology_metrics": metrics,
+    }
+
+
+def normalize_candidate_subscores(subscores: dict[str, Any]) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    for key, candidates in TECHNOLOGY_SUBSCORE_CANDIDATES.items():
+        item = dict(subscores.get(key) or {})
+        if key == "technical_differentiation":
+            item["score"] = normalize_technology_differentiation_candidate_score(item)
+        elif key == "implementation_specificity":
+            item["score"] = normalize_implementation_specificity_candidate_score(item)
+        normalized[key] = item
+    return normalized
+
+
+def normalize_technology_differentiation_candidate_score(item: dict[str, Any]) -> int:
+    details = item.get("details")
+    if isinstance(details, dict):
+        configuration = nearest_candidate_score(details.get("configuration_differentiation"), (4, 8, 12, 16, 20))
+        operation = nearest_candidate_score(details.get("operation_differentiation"), (5, 10, 15, 20, 25))
+        effect = nearest_candidate_score(details.get("effect_differentiation"), (3, 6, 9, 12, 15))
+        item["details"] = {
+            "configuration_differentiation": configuration,
+            "operation_differentiation": operation,
+            "effect_differentiation": effect,
+        }
+        return configuration + operation + effect
+    return clamp_int(item.get("score"), default=0, max_value=60)
+
+
+def normalize_implementation_specificity_candidate_score(item: dict[str, Any]) -> int:
+    details = item.get("details")
+    if isinstance(details, dict):
+        component = nearest_candidate_score(details.get("component_specificity"), (0, 15))
+        procedure = nearest_candidate_score(details.get("procedure_specificity"), (0, 15))
+        implementation = nearest_candidate_score(details.get("implementation_specificity_detail"), (0, 10))
+        item["details"] = {
+            "component_specificity": component,
+            "procedure_specificity": procedure,
+            "implementation_specificity_detail": implementation,
+        }
+        return component + procedure + implementation
+    return clamp_int(item.get("score"), default=0, max_value=40)
+
+
+def nearest_candidate_score(value: Any, candidates: tuple[int, ...]) -> int:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return min(candidates, key=lambda candidate: (abs(candidate - score), -candidate))
+
+
+def technology_grade_for_score(score: int) -> str:
+    if score >= 90:
+        return "A"
+    if score >= 75:
+        return "B"
+    if score >= 60:
+        return "C"
+    return "D"
+
+
 def override_implementation_result_from_state(result: dict[str, Any], state: PatentWorkflowState) -> dict[str, Any]:
+    if has_candidate_subscores(result):
+        return result
+
     breakdown = build_implementation_breakdown_from_state(state)
     input_output_specificity_score = sum(
         breakdown[key]
