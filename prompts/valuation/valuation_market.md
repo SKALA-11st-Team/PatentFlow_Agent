@@ -92,10 +92,11 @@
 - 이 값을 변경하지 말고 `subscores.market_growth.score`에 그대로 반영한다.
 - `marketability_metrics.market_growth_available`이 false이면 시장 성장성은 산정 불가로 처리한다.
 - 이 경우 `missing_information`에 "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"를 포함한다.
+- 각 구간의 공개 활동성은 KIPRIS CPC 검색 결과의 `OpeningDate` 기준 공개 특허 수를 사용한다.
 - 산정 불가를 낮은 시장성으로 단정하지 말고 confidence를 낮춘다.
 
 점수 구조:
-시장 성장성(40) = 3개 1년 구간 CAGR 점수(25) + 최근 3개 구간 추세 점수(15)
+시장 성장성(40) = 3개 1년 구간 공개 특허 수 CAGR 점수(25) + 최근 3개 구간 공개 활동성 추세 점수(15)
 
 점수 후보:
 3년 CAGR 점수:
@@ -127,6 +128,8 @@ Patent Family 국가 정보를 바탕으로 해당 기술이 해외 또는 글�
 - 이 값을 변경하지 말고 `subscores.global_business.score`에 그대로 반영한다.
 - 글로벌 사업성은 외부 시장 확장 가능성 판단이며, SK AX 내부 해외 사업 전략과의 적합성 판단이 아니다.
 - Patent Family 정보가 부족하면 해외 확장 가능성을 단정하지 않는다.
+- Patent Family 정보 부재를 시장성 감점 사유처럼 작성하지 않는다.
+- 해외 Patent Family가 확인된 경우에만 글로벌 사업성의 보조 긍정 근거로 설명한다.
 
 점수 후보:
 20:
@@ -137,6 +140,10 @@ Patent Family 국가 정보를 바탕으로 해당 기술이 해외 또는 글�
 
 0:
 국내 단독 출원으로 확인되거나 해외 Patent Family 정보가 확인되지 않음
+
+작성 주의:
+- `global_business_score`가 0이어도 "해외 패밀리 정보 부재로 점수가 깎였다"처럼 쓰지 않는다.
+- 이 경우 "현재 입력 기준으로 해외 Patent Family 가점 근거는 별도로 반영되지 않았다"처럼 중립적으로 작성한다.
 
 
 ----------------------------------------
@@ -187,7 +194,7 @@ confidence:
 - 각 세부 평가지표는 `label`, `score`, `max_score`, `rationale`을 포함한다.
 - `subscores.industry_marketability.details`와 `subscores.market_growth.details`에는 세부점수만 넣고 설명 문장은 넣지 않는다.
 - `subscores.industry_marketability.rationale`에는 산업 성장 근거, 기업 투자·진입 근거, 뉴스 기반 시장 확산 근거, 자료 신뢰도 판단을 함께 요약하되 세부점수 항목명을 나열하지 않는다.
-- `subscores.market_growth.rationale`에는 대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수, CAGR, 최근 3개 구간 추세 점수 판단을 요약하되 세부점수 항목명을 나열하지 않는다.
+- `subscores.market_growth.rationale`에는 대표 CPC 기준 18개월 전 종료 3개 1년 구간의 공개 특허 수, CAGR, 최근 3개 구간 공개 활동성 추세 점수 판단을 요약하되 세부점수 항목명을 나열하지 않는다.
 - `subscores.global_business.rationale`에는 Patent Family 국가 정보와 국내 단독/해외 출원/다국가 출원 판단을 요약한다.
 - legacy score fields, `industry_marketability_score`, `industry_marketability_breakdown`은 출력하지 않는다.
 

@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +43,21 @@ def test_business_fit_prompt_matches_official_evidence_criteria():
     assert "실제 활용 가능성 15" not in text
     assert "근거 신뢰도 10" not in text
     assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다" in text
+
+
+def test_legal_prompt_does_not_treat_missing_foreign_claims_as_weakness():
+    text = Path("prompts/valuation/valuation_legal.md").read_text(encoding="utf-8")
+
+    assert "해외 출원 청구항 상세가 제공되지 않은 경우에도 이를 권리 확장성 부족, 권리 약화, 감점 사유로 작성하지 않는다." in text
+    assert "해외 패밀리 또는 해외 등록 정보는 확인된 경우에만 보조 긍정 근거로 사용한다." in text
+
+
+def test_technology_and_final_report_prompts_do_not_require_benchmark_data():
+    technology = Path("prompts/valuation/valuation_technology.md").read_text(encoding="utf-8")
+    final_report = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
+
+    assert "특허 문헌은 논문 또는 실험보고서가 아니므로 정량 성능 검증, benchmark, 학습 데이터 세부 부재를 기술적 약점이나 감점 사유로 작성하지 않는다." in technology
+    assert "정량 성능 검증, benchmark, 학습 데이터 세부 부재를 기술성 약점처럼 쓰지 않습니다." in final_report
 
 
 def test_run_valuation_agent_sets_result():
@@ -826,11 +842,22 @@ def test_business_fit_rubric_is_externalized_to_prompt_md():
 
 
 def test_market_score_helpers_apply_40_40_20_structure():
-    from datetime import datetime
+    from datetime import date, datetime
 
-    from agents.valuation_axes.market import apply_marketability_scores, recent_three_years, score_cagr, score_recent_trend
+    from agents.valuation_axes.market import (
+        apply_marketability_scores,
+        market_growth_reference_date,
+        market_growth_windows,
+        score_cagr,
+        score_recent_trend,
+    )
 
-    assert recent_three_years(datetime(2026, 5, 19)) == [2023, 2024, 2025]
+    assert market_growth_reference_date(datetime(2026, 5, 29)) == date(2024, 11, 29)
+    assert market_growth_windows(date(2024, 11, 29)) == [
+        {"label": "2021-11-30~2022-11-29", "start_date": date(2021, 11, 30), "end_date": date(2022, 11, 29)},
+        {"label": "2022-11-30~2023-11-29", "start_date": date(2022, 11, 30), "end_date": date(2023, 11, 29)},
+        {"label": "2023-11-30~2024-11-29", "start_date": date(2023, 11, 30), "end_date": date(2024, 11, 29)},
+    ]
     assert score_cagr(0.16) == 25
     assert score_cagr(0.1) == 20
     assert score_cagr(0.05) == 15
@@ -867,7 +894,7 @@ def test_market_score_helpers_apply_40_40_20_structure():
             "label": "시장 성장성",
             "score": 35,
             "max_score": 40,
-            "rationale": "대표 CPC 기준 최근 3년 특허 출원 증가율 및 추세로 산정된 코드 계산값입니다.",
+            "rationale": "대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 증가율 및 추세로 산정된 코드 계산값입니다.",
         },
         "global_business": {
             "label": "글로벌 사업성",
@@ -906,6 +933,22 @@ def test_market_score_helpers_apply_40_40_20_structure():
     assert result["score"] == 60
 
 
+def test_market_prompt_uses_18_month_lagged_three_window_activity():
+    prompt = Path("prompts/valuation/valuation_market.md").read_text(encoding="utf-8")
+
+    assert "18개월 전을 마지막 시점으로 하는 3개 1년 구간" in prompt
+    assert "최근 3개년 공개 활동성" not in prompt
+    assert "Patent Family 정보 부재를 시장성 감점 사유처럼 작성하지 않는다." in prompt
+
+
+def test_final_report_prompt_does_not_frame_missing_family_as_market_penalty():
+    prompt = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
+
+    assert "Patent Family 정보 부재를 시장성 감점 사유처럼 작성하지 마세요." in prompt
+    assert "해외 Patent Family가 확인되면 글로벌 사업성의 긍정 근거로 설명하세요." in prompt
+    assert "해외 Patent Family가 확인되지 않아 글로벌 사업성은 국내 단독 출원 기준으로 낮게 반영되었습니다." not in prompt
+
+
 def test_market_growth_missing_is_not_replaced_with_default_score():
     from agents.valuation_axes.market import MARKET_GROWTH_MISSING_MESSAGE, apply_marketability_scores
 
@@ -929,11 +972,42 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
     assert result["confidence"] == 0.49
 
 
-def test_collect_cpc_yearly_counts_does_not_make_extra_validation_call(monkeypatch):
-    from agents.valuation_axes.market import collect_cpc_yearly_application_counts
+def test_market_growth_with_zero_start_count_is_unavailable(monkeypatch):
+    import agents.valuation_axes.market as market
+
+    monkeypatch.setattr(
+        market,
+        "collect_cpc_window_application_counts",
+        lambda representative_cpc, windows: [
+            {"label": "w1", "start_date": "2021-11-30", "end_date": "2022-11-29", "count": 0},
+            {"label": "w2", "start_date": "2022-11-30", "end_date": "2023-11-29", "count": 179},
+            {"label": "w3", "start_date": "2023-11-30", "end_date": "2024-11-29", "count": 234},
+        ],
+    )
+
+    metrics = market.build_market_growth_metrics("G06Q 40/06")
+
+    assert metrics["market_growth_available"] is False
+    assert metrics["cagr"] is None
+    assert metrics["cagr_score"] is None
+    assert metrics["trend_status"] is None
+    assert metrics["trend_score"] is None
+    assert metrics["market_growth_score"] is None
+    assert metrics["missing_reason"] == "cagr_start_count_zero"
+
+
+def test_collect_cpc_window_counts_does_not_make_extra_validation_call(monkeypatch):
+    from datetime import date
+
+    from agents.valuation_axes.market import collect_cpc_window_application_counts
     import open_api.kipris_client as kipris_client
 
     calls = []
+    windows = [
+        {"label": "w1", "start_date": date(2023, 1, 1), "end_date": date(2023, 12, 31)},
+        {"label": "w2", "start_date": date(2024, 1, 1), "end_date": date(2024, 12, 31)},
+        {"label": "w3", "start_date": date(2025, 1, 1), "end_date": date(2025, 12, 31)},
+    ]
 
     class FakeKiprisClient:
         def search_by_cpc(self, cpc_number, **params):
@@ -960,12 +1034,12 @@ def test_collect_cpc_yearly_counts_does_not_make_extra_validation_call(monkeypat
 
     monkeypatch.setattr(kipris_client, "KiprisClient", FakeKiprisClient)
 
-    counts = collect_cpc_yearly_application_counts("G06F 40/00", years=[2023, 2024, 2025], page_size=20)
+    counts = collect_cpc_window_application_counts("G06F 40/00", windows=windows, page_size=20)
 
     assert counts == [
-        {"year": 2023, "count": 1},
-        {"year": 2024, "count": 1},
-        {"year": 2025, "count": 1},
+        {"label": "w1", "start_date": "2023-01-01", "end_date": "2023-12-31", "count": 1},
+        {"label": "w2", "start_date": "2024-01-01", "end_date": "2024-12-31", "count": 1},
+        {"label": "w3", "start_date": "2025-01-01", "end_date": "2025-12-31", "count": 1},
     ]
     assert len(calls) == 1
     assert calls[0][1] == {
@@ -979,11 +1053,18 @@ def test_collect_cpc_yearly_counts_does_not_make_extra_validation_call(monkeypat
     }
 
 
-def test_collect_cpc_yearly_counts_uses_opening_date_and_stops_at_old_year(monkeypatch):
-    from agents.valuation_axes.market import collect_cpc_yearly_application_counts
+def test_collect_cpc_window_counts_uses_opening_date_and_stops_at_old_window(monkeypatch):
+    from datetime import date
+
+    from agents.valuation_axes.market import collect_cpc_window_application_counts
     import open_api.kipris_client as kipris_client
 
     calls = []
+    windows = [
+        {"label": "w1", "start_date": date(2023, 1, 1), "end_date": date(2023, 12, 31)},
+        {"label": "w2", "start_date": date(2024, 1, 1), "end_date": date(2024, 12, 31)},
+        {"label": "w3", "start_date": date(2025, 1, 1), "end_date": date(2025, 12, 31)},
+    ]
 
     class FakeKiprisClient:
         def search_by_cpc(self, cpc_number, **params):
@@ -1007,17 +1088,17 @@ def test_collect_cpc_yearly_counts_uses_opening_date_and_stops_at_old_year(monke
 
     monkeypatch.setattr(kipris_client, "KiprisClient", FakeKiprisClient)
 
-    counts = collect_cpc_yearly_application_counts(
+    counts = collect_cpc_window_application_counts(
         "G06F 40/00",
-        years=[2023, 2024, 2025],
+        windows=windows,
         page_size=2,
         max_pages=5,
     )
 
     assert counts == [
-        {"year": 2023, "count": 0},
-        {"year": 2024, "count": 0},
-        {"year": 2025, "count": 1},
+        {"label": "w1", "start_date": "2023-01-01", "end_date": "2023-12-31", "count": 0},
+        {"label": "w2", "start_date": "2024-01-01", "end_date": "2024-12-31", "count": 0},
+        {"label": "w3", "start_date": "2025-01-01", "end_date": "2025-12-31", "count": 1},
     ]
     assert len(calls) == 1
 

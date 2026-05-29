@@ -357,7 +357,7 @@ def build_market_subscores(
             "score": market_growth_score,
             "max_score": 40,
             "rationale": normalize_text(market_growth.get("rationale"))
-            or "대표 CPC 기준 최근 3년 특허 출원 증가율 및 추세로 산정된 코드 계산값입니다.",
+            or "대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 증가율 및 추세로 산정된 코드 계산값입니다.",
         },
         "global_business": {
             "label": "글로벌 사업성",
