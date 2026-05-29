@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.valuation_axes.common import select_by_types_or_axes
-from agents.valuation_axes.market import extract_representative_cpc, grade_for_score
+from agents.valuation_axes.market import extract_representative_cpc
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
 from services.patent.similar_patent_service import build_similar_patent_context
@@ -330,7 +330,6 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
     return {
         **result,
         "score": max(0, min(100, score)),
-        "grade": grade_for_score(score),
         "technical_differentiation_score": technical_differentiation_score,
         "implementation_specificity_score": implementation_specificity_score,
         "technical_differentiation_breakdown": technical_breakdown,
@@ -353,7 +352,6 @@ def apply_candidate_technology_scores(result: dict[str, Any], metrics: dict[str,
     return {
         **result,
         "score": max(0, min(100, score)),
-        "grade": technology_grade_for_score(score),
         "subscores": subscores,
         "technology_metrics": metrics,
     }
@@ -407,16 +405,6 @@ def nearest_candidate_score(value: Any, candidates: tuple[int, ...]) -> int:
     except (TypeError, ValueError):
         return 0
     return min(candidates, key=lambda candidate: (abs(candidate - score), -candidate))
-
-
-def technology_grade_for_score(score: int) -> str:
-    if score >= 90:
-        return "A"
-    if score >= 75:
-        return "B"
-    if score >= 60:
-        return "C"
-    return "D"
 
 
 def override_implementation_result_from_state(result: dict[str, Any], state: PatentWorkflowState) -> dict[str, Any]:

@@ -1293,7 +1293,7 @@ def test_technology_candidate_subscores_use_new_grade_thresholds():
     result = apply_technology_scores(
         {
             "score": 0,
-            "grade": "D",
+            "grade": "LLM_GRADE",
             "rationale": "r",
             "evidence_ids": [],
             "risk_factors": [],
@@ -1328,7 +1328,7 @@ def test_technology_candidate_subscores_use_new_grade_thresholds():
     )
 
     assert result["score"] == 78
-    assert result["grade"] == "B"
+    assert result["grade"] == "LLM_GRADE"
     assert result["subscores"]["technical_differentiation"]["score"] == 48
     assert result["subscores"]["implementation_specificity"]["score"] == 30
     assert result["subscores"]["technical_differentiation"]["details"] == {
