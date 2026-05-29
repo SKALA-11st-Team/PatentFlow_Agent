@@ -285,13 +285,7 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
             "exception_iteration_update_score": 3,
         },
     )
-    risk_factors = list(result.get("risk_factors") or [])
     missing_information = list(result.get("missing_information") or [])
-    technical_breakdown = apply_technical_penalties(
-        technical_breakdown,
-        risk_factors=risk_factors,
-        missing_information=missing_information,
-    )
 
     if not has_pdf_evidence:
         technical_breakdown = {key: 0 for key in technical_breakdown}
@@ -533,67 +527,6 @@ def normalize_ternary_breakdown(values: dict[str, Any], maximums: dict[str, int]
         else:
             normalized[key] = 0
     return normalized
-
-
-def apply_conservative_penalties(
-    technical_breakdown: dict[str, int],
-    implementation_breakdown: dict[str, int],
-    *,
-    risk_factors: list[Any],
-    missing_information: list[Any],
-) -> tuple[dict[str, int], dict[str, int]]:
-    technical = apply_technical_penalties(
-        technical_breakdown,
-        risk_factors=risk_factors,
-        missing_information=missing_information,
-    )
-    implementation = apply_implementation_penalties(
-        implementation_breakdown,
-        risk_factors=risk_factors,
-        missing_information=missing_information,
-    )
-    return technical, implementation
-
-
-def apply_technical_penalties(
-    technical_breakdown: dict[str, int],
-    *,
-    risk_factors: list[Any],
-    missing_information: list[Any],
-) -> dict[str, int]:
-    combined = " ".join(str(item or "") for item in [*risk_factors, *missing_information]).lower()
-    technical = dict(technical_breakdown)
-
-    if contains_any(combined, ["중복", "overlap", "대체", "유사", "차별", "novelty"]):
-        technical["new_component_score"] = 0
-        technical["solution_approach_difference_score"] = 0
-    if contains_any(combined, ["근거", "전문", "명세서", "비교", "disclosure"]):
-        technical["evidence_clarity_score"] = 0
-    return technical
-
-
-def apply_implementation_penalties(
-    implementation_breakdown: dict[str, int],
-    *,
-    risk_factors: list[Any],
-    missing_information: list[Any],
-) -> dict[str, int]:
-    combined = " ".join(str(item or "") for item in [*risk_factors, *missing_information]).lower()
-    implementation = dict(implementation_breakdown)
-
-    if contains_any(combined, ["수식", "공식", "formula", "임계", "threshold", "가중", "weight", "파라미터", "parameter", "하이퍼"]):
-        implementation["condition_parameter_score"] = 0
-        implementation["calculation_decision_score"] = 0
-    if contains_any(combined, ["예외", "반복", "갱신", "업데이트", "update", "반영 규칙", "전환 규칙"]):
-        implementation["exception_iteration_update_score"] = 0
-    if contains_any(combined, ["불명확", "부족", "추가", "검증", "성능", "backtest", "benchmark"]):
-        implementation["logic_score"] = 0
-
-    return implementation
-
-
-def contains_any(text: str, needles: list[str]) -> bool:
-    return any(needle.lower() in text for needle in needles)
 
 
 def item_identity(item: dict[str, Any]) -> str:
