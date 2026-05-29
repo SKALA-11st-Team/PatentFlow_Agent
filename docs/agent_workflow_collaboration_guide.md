@@ -159,7 +159,7 @@ def run(state, runtime):
 
 권리성/기술성/시장성은 대부분 `source_type`이나 `related_axes`만 보고 근거를 고를 수 있습니다.
 
-예를 들어 시장성은 `news`, `industry_report`, `company_disclosure`를 고르면 됩니다.
+예를 들어 시장성은 `news`, `industry_report`를 고르면 됩니다.
 
 사업 연계성은 조금 다릅니다. 단순히 뉴스 전체를 넣으면 “시장 뉴스”와 “우리 회사/제품과 연결되는 뉴스”가 섞이기 쉽습니다. 그래서 `business_fit.py`는 아래 로직을 추가로 가집니다.
 

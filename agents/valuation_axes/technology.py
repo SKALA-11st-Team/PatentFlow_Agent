@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.valuation_axes.common import select_by_types_or_axes
-from agents.valuation_axes.market import extract_representative_cpc, grade_for_score
+from agents.valuation_axes.market import extract_representative_cpc
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
 from services.patent.similar_patent_service import build_similar_patent_context
@@ -284,13 +284,7 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
             "exception_iteration_update_score": 3,
         },
     )
-    risk_factors = list(result.get("risk_factors") or [])
     missing_information = list(result.get("missing_information") or [])
-    technical_breakdown = apply_technical_penalties(
-        technical_breakdown,
-        risk_factors=risk_factors,
-        missing_information=missing_information,
-    )
 
     if not has_pdf_evidence:
         technical_breakdown = {key: 0 for key in technical_breakdown}
@@ -336,7 +330,6 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
     return {
         **result,
         "score": max(0, min(100, score)),
-        "grade": grade_for_score(score),
         "technical_differentiation_score": technical_differentiation_score,
         "implementation_specificity_score": implementation_specificity_score,
         "technical_differentiation_breakdown": technical_breakdown,
@@ -359,7 +352,6 @@ def apply_candidate_technology_scores(result: dict[str, Any], metrics: dict[str,
     return {
         **result,
         "score": max(0, min(100, score)),
-        "grade": technology_grade_for_score(score),
         "subscores": subscores,
         "technology_metrics": metrics,
     }
@@ -413,16 +405,6 @@ def nearest_candidate_score(value: Any, candidates: tuple[int, ...]) -> int:
     except (TypeError, ValueError):
         return 0
     return min(candidates, key=lambda candidate: (abs(candidate - score), -candidate))
-
-
-def technology_grade_for_score(score: int) -> str:
-    if score >= 90:
-        return "A"
-    if score >= 75:
-        return "B"
-    if score >= 60:
-        return "C"
-    return "D"
 
 
 def override_implementation_result_from_state(result: dict[str, Any], state: PatentWorkflowState) -> dict[str, Any]:
@@ -543,67 +525,6 @@ def normalize_ternary_breakdown(values: dict[str, Any], maximums: dict[str, int]
         else:
             normalized[key] = 0
     return normalized
-
-
-def apply_conservative_penalties(
-    technical_breakdown: dict[str, int],
-    implementation_breakdown: dict[str, int],
-    *,
-    risk_factors: list[Any],
-    missing_information: list[Any],
-) -> tuple[dict[str, int], dict[str, int]]:
-    technical = apply_technical_penalties(
-        technical_breakdown,
-        risk_factors=risk_factors,
-        missing_information=missing_information,
-    )
-    implementation = apply_implementation_penalties(
-        implementation_breakdown,
-        risk_factors=risk_factors,
-        missing_information=missing_information,
-    )
-    return technical, implementation
-
-
-def apply_technical_penalties(
-    technical_breakdown: dict[str, int],
-    *,
-    risk_factors: list[Any],
-    missing_information: list[Any],
-) -> dict[str, int]:
-    combined = " ".join(str(item or "") for item in [*risk_factors, *missing_information]).lower()
-    technical = dict(technical_breakdown)
-
-    if contains_any(combined, ["중복", "overlap", "대체", "유사", "차별", "novelty"]):
-        technical["new_component_score"] = 0
-        technical["solution_approach_difference_score"] = 0
-    if contains_any(combined, ["근거", "전문", "명세서", "비교", "disclosure"]):
-        technical["evidence_clarity_score"] = 0
-    return technical
-
-
-def apply_implementation_penalties(
-    implementation_breakdown: dict[str, int],
-    *,
-    risk_factors: list[Any],
-    missing_information: list[Any],
-) -> dict[str, int]:
-    combined = " ".join(str(item or "") for item in [*risk_factors, *missing_information]).lower()
-    implementation = dict(implementation_breakdown)
-
-    if contains_any(combined, ["수식", "공식", "formula", "임계", "threshold", "가중", "weight", "파라미터", "parameter", "하이퍼"]):
-        implementation["condition_parameter_score"] = 0
-        implementation["calculation_decision_score"] = 0
-    if contains_any(combined, ["예외", "반복", "갱신", "업데이트", "update", "반영 규칙", "전환 규칙"]):
-        implementation["exception_iteration_update_score"] = 0
-    if contains_any(combined, ["불명확", "부족", "추가", "검증", "성능", "backtest", "benchmark"]):
-        implementation["logic_score"] = 0
-
-    return implementation
-
-
-def contains_any(text: str, needles: list[str]) -> bool:
-    return any(needle.lower() in text for needle in needles)
 
 
 def item_identity(item: dict[str, Any]) -> str:

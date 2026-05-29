@@ -133,6 +133,8 @@
 - "입력상 제공되지 않아", "정보 부족으로 제한적", "방어력 약화", "전무", "최소 점수", "판단 불가" 같은 표현은 사용하지 않습니다.
 - 자료 부족은 감점 사유처럼 길게 쓰지 말고, "현재 입력 기준에서 보수적으로 산정" 또는 "사업부 판단 전 확인 범위가 남아 있음" 정도로 짧게 표현합니다.
 - 기술성에서는 benchmark 논문처럼 수치 성능 검증 여부를 요구하지 않습니다. 특허 명세서에 기재된 해결수단과 발명의 효과의 연결을 중심으로 기술적 의미를 설명합니다.
+- 정량 성능 검증, benchmark, 학습 데이터 세부 부재를 기술성 약점처럼 쓰지 않습니다.
+- 해외 출원 청구항 상세 부재를 권리 확장성 부족이나 권리 약화처럼 쓰지 않습니다.
 
 ### market / business_fit 규칙
 - 외부 뉴스/리포트의 핵심 사실을 구체적으로 반영합니다.
@@ -144,12 +146,14 @@
 - 시장성 섹션에서는 총점만 설명하지 말고, `산업 시장성`, `시장 성장성`, `글로벌 사업성` 세부 점수를 각각 설명하세요.
 - `valuation.axes.market.subscores`가 있으면 다음 값을 반드시 반영하세요.
   - `industry_marketability.score`: 산업 리포트, 기업 투자·진입, 뉴스 확산, 자료 신뢰도 근거로 산정된 산업 시장성 점수
-  - `market_growth.score`: 대표 CPC 기준 최근 3년 특허 출원 증가율 및 추세로 산정된 시장 성장성 점수
+  - `market_growth.score`: 대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 증가율 및 추세로 산정된 시장 성장성 점수
   - `global_business.score`: Patent Family 국가 정보로 산정된 글로벌 사업성 점수
 - `valuation.axes.market.marketability_metrics`가 있으면 시장 성장성 설명에 `representative_cpc`, `cpc_application_counts`, `cagr`, `cagr_score`, `trend_status`, `trend_score`를 자연어로 반영하세요.
-  - 예: “대표 CPC G06Q 40/02 기준 최근 3년 출원 수가 2023년 14건, 2024년 27건, 2025년 43건으로 연속 증가해 시장 성장성 점수가 높게 반영되었습니다.”
+  - 예: “대표 CPC G06Q 40/02 기준 18개월 전 종료 3개 1년 구간 공개 특허 수가 14건, 27건, 43건으로 연속 증가해 시장 성장성 점수가 높게 반영되었습니다.”
 - 글로벌 사업성 설명에는 `family_countries`, `foreign_family_countries`, `global_business_status`, `global_business_score`를 반영하세요.
-  - 예: “해외 Patent Family가 확인되지 않아 글로벌 사업성은 국내 단독 출원 기준으로 낮게 반영되었습니다.”
+  - Patent Family 정보 부재를 시장성 감점 사유처럼 작성하지 마세요.
+  - 해외 Patent Family가 확인되면 글로벌 사업성의 긍정 근거로 설명하세요.
+  - 해외 Patent Family가 확인되지 않은 경우에는 "현재 입력 기준으로 해외 Patent Family 가점 근거는 별도로 반영되지 않았습니다"처럼 중립적으로 작성하세요.
 - `market_growth_score`가 null이거나 `market_growth_available`이 false이면, 시장 성장성은 산정 불가였음을 쓰고 `missing_reason` 또는 `missing_information`을 사람이 읽는 표현으로 요약하세요.
 - 시장성 세부지표는 3~5개 불릿 안에 자연스럽게 포함하세요. 별도의 JSON, 코드블록, 내부 필드명은 쓰지 마세요.
 - `(세부 점수 반영: ...)`처럼 괄호로 세부 점수를 별도 표기하지 마세요.

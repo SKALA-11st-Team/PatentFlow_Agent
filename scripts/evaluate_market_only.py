@@ -247,6 +247,7 @@ def render_market_report(result: dict[str, Any]) -> str:
         f"- 관리번호: {patent.get('management_number') or ''}",
         f"- 특허명: {patent.get('title_final') or patent.get('title_draft') or ''}",
         f"- 대표 CPC: {metrics.get('representative_cpc') or '-'}",
+        f"- 시장 성장성 기준 종료일: {metrics.get('market_growth_reference_date') or '-'}",
         "",
         "## 평가 결과 요약",
         "",
@@ -290,14 +291,15 @@ def render_market_report(result: dict[str, Any]) -> str:
             "",
             f"시장 성장성 점수: {format_score(market_growth.get('score'))} / 40",
             "",
-            "| 연도 | CPC 출원 수 |",
+            "| 기간 | 공개 특허 수 |",
             "| --- | ---: |",
         ]
     )
     counts = metrics.get("cpc_application_counts") or []
     if counts:
         for item in counts:
-            lines.append(f"| {item.get('year')} | {item.get('count')} |")
+            label = item.get("label") or build_window_label(item)
+            lines.append(f"| {label} | {item.get('count')} |")
     else:
         lines.append("| - | - |")
 
@@ -306,7 +308,7 @@ def render_market_report(result: dict[str, Any]) -> str:
             "",
             f"- CAGR: {format_percent(metrics.get('cagr'))}",
             f"- CAGR 점수: {format_score(metrics.get('cagr_score'))} / 25",
-            f"- 최근 3년 추세: {trend_label(metrics.get('trend_status'))}",
+            f"- 최근 3개 구간 추세: {trend_label(metrics.get('trend_status'))}",
             f"- 추세 점수: {format_score(metrics.get('trend_score'))} / 15",
         ]
     )
@@ -355,6 +357,14 @@ def format_percent(value: Any) -> str:
         return f"{float(value) * 100:.1f}%"
     except (TypeError, ValueError):
         return str(value)
+
+
+def build_window_label(item: dict[str, Any]) -> str:
+    start_date = item.get("start_date")
+    end_date = item.get("end_date")
+    if start_date and end_date:
+        return f"{start_date}~{end_date}"
+    return "-"
 
 
 def trend_label(value: Any) -> str:
