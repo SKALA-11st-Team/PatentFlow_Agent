@@ -12,7 +12,6 @@
 
 산업 시장성에 사용할 수 있는 근거:
 - Vector DB에서 검색된 `industry_report`
-- Vector DB 또는 공시/리포트 기반 `company_disclosure`
 - 최근 뉴스 기반 `news`
 
 산업 시장성에 사용하지 말아야 할 근거:
@@ -44,7 +43,7 @@
 - 산업리포트가 대상 특허의 적용 산업과 다르면 산업 시장성 근거로 사용하지 않는다.
 - 넓은 산업의 성장성, 투자 확대, AI/자동화 도입 흐름은 대상 특허의 구체 기능 수요와 연결될 때만 산업 시장성에 긍정 반영한다.
 - 시장 흐름이 대상 특허 기능을 더 큰 플랫폼이나 범용 솔루션에 흡수시키는 방향이면 독립 시장성 리스크로 반영한다.
-- 뉴스는 최근 적용 확산 신호로만 사용하고, 산업 리포트나 기업 자료와 결합될 때 자료 신뢰도 점수에 반영한다.
+- 뉴스는 최근 적용 확산 신호로만 사용하고, 산업 리포트와 결합될 때 자료 신뢰도 점수에 반영한다.
 - 단순히 "시장성이 있음"이라고 쓰지 말고, 어떤 산업 근거가 어떤 시장 신호를 보여주는지 설명한다.
 
 점수 후보:
@@ -67,7 +66,7 @@
 최근 시장 확산 신호를 확인할 근거가 부족함
 
 자료 신뢰도 5:
-리포트·기업자료·뉴스 등 복수 출처에서 동일한 성장 흐름이 확인됨
+산업 리포트·뉴스 등 복수 출처에서 동일한 성장 흐름이 확인됨
 
 자료 신뢰도 0:
 복수 출처 교차 확인이 부족함
@@ -86,17 +85,17 @@
 ----------------------------------------
 
 목적:
-대표 CPC 기준 최근 3년 특허 출원 증가율과 추세를 통해 해당 기술 분야의 성장 흐름을 평가한다.
+대표 CPC 기준 현재 시점에서 18개월 전을 마지막 시점으로 하는 3개 1년 구간의 공개 특허 건수 증가율과 추세를 통해 해당 기술 분야의 성장 흐름을 평가한다.
 
 평가 규칙:
 - `marketability_metrics.market_growth_score`는 코드 계산값이다.
 - 이 값을 변경하지 말고 `subscores.market_growth.score`에 그대로 반영한다.
 - `marketability_metrics.market_growth_available`이 false이면 시장 성장성은 산정 불가로 처리한다.
-- 이 경우 `missing_information`에 "CPC 기준 최근 3년 연도별 특허 출원 수 확인 필요"를 포함한다.
+- 이 경우 `missing_information`에 "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"를 포함한다.
 - 산정 불가를 낮은 시장성으로 단정하지 말고 confidence를 낮춘다.
 
 점수 구조:
-시장 성장성(40) = 3년 CAGR 점수(25) + 최근 3년 추세 점수(15)
+시장 성장성(40) = 3개 1년 구간 CAGR 점수(25) + 최근 3개 구간 추세 점수(15)
 
 점수 후보:
 3년 CAGR 점수:
@@ -188,7 +187,7 @@ confidence:
 - 각 세부 평가지표는 `label`, `score`, `max_score`, `rationale`을 포함한다.
 - `subscores.industry_marketability.details`와 `subscores.market_growth.details`에는 세부점수만 넣고 설명 문장은 넣지 않는다.
 - `subscores.industry_marketability.rationale`에는 산업 성장 근거, 기업 투자·진입 근거, 뉴스 기반 시장 확산 근거, 자료 신뢰도 판단을 함께 요약하되 세부점수 항목명을 나열하지 않는다.
-- `subscores.market_growth.rationale`에는 대표 CPC 기준 최근 3년 특허 출원 수, CAGR, 최근 3년 추세 점수 판단을 요약하되 세부점수 항목명을 나열하지 않는다.
+- `subscores.market_growth.rationale`에는 대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수, CAGR, 최근 3개 구간 추세 점수 판단을 요약하되 세부점수 항목명을 나열하지 않는다.
 - `subscores.global_business.rationale`에는 Patent Family 국가 정보와 국내 단독/해외 출원/다국가 출원 판단을 요약한다.
 - legacy score fields, `industry_marketability_score`, `industry_marketability_breakdown`은 출력하지 않는다.
 
