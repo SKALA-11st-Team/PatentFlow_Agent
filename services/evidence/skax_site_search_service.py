@@ -75,7 +75,7 @@ DOMAIN_HINT_PROFILES = [
     {
         "name": "manufacturing_smart_factory",
         "triggers": ("cmp", "반도체", "제조", "공정", "물류", "설비", "agv", "컨베이어", "스마트팩토리"),
-        "hints": ("제조", "스마트팩토리", "공정", "물류", "자동화", "설비"),
+        "hints": ("제조", "스마트팩토리", "MCS", "공정", "물류", "자동화", "설비", "설비 제어"),
         "preferred_paths": ("/manufacturing", "/industry", "/smart-factory", "/enterprise"),
     },
 ]
@@ -167,6 +167,7 @@ class GoogleCustomSearchClient(SearchClient):
 class TavilySearchClient(SearchClient):
     provider = "tavily_search"
     default_max_results = 3
+    include_raw_content = True
 
     def __init__(
         self,
@@ -191,7 +192,7 @@ class TavilySearchClient(SearchClient):
                 "search_provider": self.provider,
                 "search_request_url": TAVILY_SEARCH_URL,
                 "missing_config": False,
-                "raw_content_included": False,
+                "raw_content_included": self.include_raw_content,
                 "max_results": max_results,
                 "max_content_chars": self.max_content_chars,
             }
@@ -209,7 +210,7 @@ class TavilySearchClient(SearchClient):
                     "query": query,
                     "search_depth": "basic",
                     "include_domains": [SK_AX_DOMAIN],
-                    "include_raw_content": False,
+                    "include_raw_content": self.include_raw_content,
                     "max_results": max_results,
                 },
                 timeout=self.timeout,
@@ -353,6 +354,7 @@ def build_query_generation_plan(
     business_area = patent_field(patent_context, "business_area")
     technology_area = patent_field(patent_context, "technology_area")
     title_keywords = extract_title_keywords(title, limit=4)
+    strong_terms = strong_search_terms(patent_context, title_keywords)
     domain_profiles = business_domain_profiles(patent_context)
     domain_hints = business_domain_hints(patent_context)
     if queries_override is not None:
@@ -850,7 +852,7 @@ def parse_tavily_search_json_with_candidates(
             candidate_results.append(candidate)
             continue
         seen.add(normalized_url)
-        content = normalize_text(item.get("content") or item.get("snippet"))
+        content = normalize_text(item.get("raw_content") or item.get("content") or item.get("snippet"))
         if len(content) > max_content_chars:
             content = content[:max_content_chars]
         candidate["accepted"] = True
@@ -895,7 +897,7 @@ def annotate_candidate_final_selection(
                 candidate["final_selected"] = True
                 candidate["final_skip_reason"] = None
             elif normalized_url not in filtered_scores:
-                candidate["final_skip_reason"] = "lower_relevance_than_selected"
+                candidate["final_skip_reason"] = "insufficient_specific_match"
             elif normalized_url not in selected_urls:
                 candidate["final_skip_reason"] = (
                     "lower_relevance_than_selected"
@@ -1063,7 +1065,7 @@ def filter_search_results(results: list[dict[str, Any]], patent_context: dict[st
             continue
         seen.add(url)
         score = score_search_result(result, patent_context)
-        if score["relevance_score"] <= 0:
+        if score["relevance_score"] <= 0 or not score["is_relevant"]:
             continue
         filtered.append({**result, "url": url, **score})
     filtered.sort(key=lambda item: item["relevance_score"], reverse=True)
@@ -1076,6 +1078,7 @@ def score_search_result(result: dict[str, Any], patent_context: dict[str, Any]) 
     business_area = patent_field(patent_context, "business_area")
     technology_area = patent_field(patent_context, "technology_area")
     title_keywords = extract_title_keywords(title, limit=4)
+    strong_terms = strong_search_terms(patent_context, title_keywords)
     domain_profiles = business_domain_profiles(patent_context)
     domain_hints = business_domain_hints(patent_context)
     url = normalize_text(result.get("url"))
@@ -1083,17 +1086,22 @@ def score_search_result(result: dict[str, Any], patent_context: dict[str, Any]) 
     text = normalize_text(" ".join(str(result.get(field) or "") for field in ("title", "snippet", "content", "url"))).lower()
 
     matched_keywords: list[str] = []
+    matched_strong_terms: list[str] = []
     score_reasons: list[str] = []
     points = 0.0
+    related_product_matched = False
     if related_product and contains_keyword(text, related_product):
         matched_keywords.append(related_product)
+        matched_strong_terms.append(related_product)
         score_reasons.append("matched_related_product")
         points += 0.5
-    for keyword in title_keywords:
+        related_product_matched = True
+    for keyword in strong_terms:
         if contains_keyword(text, keyword):
             matched_keywords.append(keyword)
-            score_reasons.append(f"matched_title_keyword:{keyword}")
-            points += 0.12
+            matched_strong_terms.append(keyword)
+            score_reasons.append(f"matched_strong_term:{keyword}")
+            points += 0.16
     if technology_area and contains_keyword(text, technology_area):
         matched_keywords.append(technology_area)
         score_reasons.append("matched_technology_area")
@@ -1118,11 +1126,35 @@ def score_search_result(result: dict[str, Any], patent_context: dict[str, Any]) 
             score_reasons.append("penalty_unrelated_keyword:AICC")
             points -= 0.5
 
+    domain_hint_matches = [reason for reason in score_reasons if reason.startswith("matched_domain_hint:")]
+    preferred_path_matched = any(reason.startswith("matched_preferred_path:") for reason in score_reasons)
+    is_relevant = (
+        related_product_matched
+        or len(unique_texts(matched_strong_terms)) >= 2
+        or (len(unique_texts(matched_strong_terms)) >= 1 and preferred_path_matched)
+        or (preferred_path_matched and len(domain_hint_matches) >= 2)
+    )
+    if not is_relevant:
+        score_reasons.append("insufficient_specific_match")
+        points = min(points, 0.0)
+
     return {
         "relevance_score": min(1.0, max(0.0, round(points, 3))),
         "matched_keywords": unique_texts(matched_keywords),
+        "matched_strong_terms": unique_texts(matched_strong_terms),
         "score_reasons": unique_texts(score_reasons),
+        "is_relevant": is_relevant,
     }
+
+
+def strong_search_terms(patent_context: dict[str, Any], title_keywords: list[str]) -> list[str]:
+    terms = [
+        patent_field(patent_context, "related_product"),
+        *title_keywords,
+        patent_field(patent_context, "technology_area"),
+    ]
+    broad_terms = {"ai", "data", "cloud", "서비스", "플랫폼", "자동화", "보안", "인증"}
+    return [term for term in unique_texts(terms) if term and term.lower() not in broad_terms][:8]
 
 
 def normalize_search_result(result: dict[str, Any], query: str) -> dict[str, Any] | None:

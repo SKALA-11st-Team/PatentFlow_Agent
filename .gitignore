@@ -32,6 +32,7 @@ env/
 # Runtime artifacts
 run.json
 artifacts/
+tmp/
 
 # Legacy output location kept for old runs only
 data/outputs/
