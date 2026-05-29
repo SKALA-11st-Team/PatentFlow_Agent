@@ -146,9 +146,8 @@ def render_technology_report(result: dict[str, Any]) -> str:
     mode = str(metrics.get("comparison_mode") or "similar")
     source_heading = comparison_heading(mode)
     items = metrics.get("similar_patents") or []
-    sub_scores = technology.get("sub_scores") or {}
     subscores = technology.get("subscores") or {}
-    score_rows = technology_score_rows(subscores, sub_scores)
+    score_rows = technology_score_rows(subscores)
 
     lines = [
         "# 기술성 평가 리포트",
@@ -169,8 +168,6 @@ def render_technology_report(result: dict[str, Any]) -> str:
 
     if subscores:
         append_subscore_rationales(lines, subscores)
-    else:
-        append_legacy_breakdowns(lines, technology, sub_scores)
 
     lines.extend(
         [
@@ -220,21 +217,7 @@ def render_technology_report(result: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def append_breakdown_table(
-    lines: list[str],
-    *,
-    title: str,
-    breakdown: dict[str, Any],
-    rows: list[tuple[str, str, int]],
-) -> None:
-    if not breakdown:
-        return
-    lines.extend(["", f"### {title}", "", "| 세부 항목 | 점수 |", "| --- | ---: |"])
-    for label, key, maximum in rows:
-        lines.append(f"| {label} | {format_score(breakdown.get(key))} / {maximum} |")
-
-
-def technology_score_rows(subscores: dict[str, Any], sub_scores: dict[str, Any]) -> list[tuple[str, Any, int]]:
+def technology_score_rows(subscores: dict[str, Any]) -> list[tuple[str, Any, int]]:
     if subscores:
         if "implementation_specificity" in subscores and "technical_differentiation" in subscores:
             return [
@@ -266,10 +249,7 @@ def technology_score_rows(subscores: dict[str, Any], sub_scores: dict[str, Any])
                 20,
             ),
         ]
-    return [
-        ("기술 차별성", sub_scores.get("technical_differentiation_score"), 60),
-        ("구현 구체성", sub_scores.get("implementation_specificity_score"), 40),
-    ]
+    return []
 
 
 def append_subscore_rationales(lines: list[str], subscores: dict[str, Any]) -> None:
@@ -290,54 +270,6 @@ def append_subscore_rationales(lines: list[str], subscores: dict[str, Any]) -> N
                 f"- 근거: {item.get('rationale') or '-'}",
             ]
         )
-
-
-def append_legacy_breakdowns(lines: list[str], technology: dict[str, Any], sub_scores: dict[str, Any]) -> None:
-    lines.extend(
-        [
-            "",
-            "## 기술 차별성 근거",
-            "",
-            f"기술 차별성 점수: {format_score(sub_scores.get('technical_differentiation_score'))} / 60",
-        ]
-    )
-    append_breakdown_table(
-        lines,
-        title="기술 차별성 세부 점수",
-        breakdown=technology.get("technical_differentiation_breakdown") or {},
-        rows=[
-            ("신규 구성요소 존재", "new_component_score", 15),
-            ("기술 조합 차별성", "combination_difference_score", 15),
-            ("처리 구조 차별성", "processing_structure_difference_score", 15),
-            ("해결 방식 차별성", "solution_approach_difference_score", 10),
-            ("차별 근거 명확성", "evidence_clarity_score", 5),
-        ],
-    )
-    lines.extend(
-        [
-            "",
-            "## 구현 구체성 근거",
-            "",
-            f"구현 구체성 점수: {format_score(sub_scores.get('implementation_specificity_score'))} / 40",
-        ]
-    )
-    append_breakdown_table(
-        lines,
-        title="구현 구체성 세부 점수",
-        breakdown=technology.get("implementation_specificity_breakdown") or {},
-        rows=[
-            ("입력 데이터 명시", "input_data_score", 4),
-            ("처리 대상 명시", "processing_target_score", 3),
-            ("핵심 변수 명시", "core_variable_score", 3),
-            ("출력 결과 구조", "output_structure_score", 3),
-            ("구성요소 연결성", "component_linkage_score", 2),
-            ("처리 절차 제시", "procedure_score", 6),
-            ("처리 로직 설명", "logic_score", 6),
-            ("조건·파라미터 존재", "condition_parameter_score", 5),
-            ("계산·판단 구조 존재", "calculation_decision_score", 5),
-            ("예외·반복·업데이트 구조", "exception_iteration_update_score", 3),
-        ],
-    )
 
 
 def format_score(value: Any) -> str:

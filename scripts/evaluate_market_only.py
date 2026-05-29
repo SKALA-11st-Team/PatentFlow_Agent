@@ -192,7 +192,7 @@ def run_market_only(args: argparse.Namespace) -> dict[str, Any]:
     market_result = state.valuation_result["axes"]["market"]
     log_step(
         "market valuation done: "
-        f"score={market_result.get('score')}, sub_scores={market_result.get('sub_scores')}"
+        f"score={market_result.get('score')}, subscores={market_result.get('subscores')}"
     )
 
     result = {
@@ -229,8 +229,11 @@ def render_market_report(result: dict[str, Any]) -> str:
     patent = result.get("patent") or {}
     market = result.get("market_result") or {}
     metrics = market.get("marketability_metrics") or {}
-    sub_scores = market.get("sub_scores") or {}
-    industry_breakdown = market.get("industry_marketability_breakdown") or {}
+    subscores = market.get("subscores") or {}
+    industry = subscores.get("industry_marketability") or {}
+    market_growth = subscores.get("market_growth") or {}
+    global_business = subscores.get("global_business") or {}
+    industry_breakdown = industry.get("details") or {}
     evidence_items = (result.get("industry_rag") or {}).get("items") or []
     used_evidence = [
         item
@@ -251,13 +254,13 @@ def render_market_report(result: dict[str, Any]) -> str:
         "",
         "| 평가 항목 | 점수 |",
         "| --- | ---: |",
-        f"| 산업 시장성 | {format_score(sub_scores.get('industry_marketability_score'))} / 40 |",
-        f"| 시장 성장성 | {format_score(sub_scores.get('market_growth_score'))} / 40 |",
-        f"| 글로벌 사업성 | {format_score(sub_scores.get('global_business_score'))} / 20 |",
+        f"| 산업 시장성 | {format_score(industry.get('score'))} / 40 |",
+        f"| 시장 성장성 | {format_score(market_growth.get('score'))} / 40 |",
+        f"| 글로벌 사업성 | {format_score(global_business.get('score'))} / 20 |",
         "",
         "## 산업 시장성 근거",
         "",
-        f"산업 시장성 점수: {format_score(sub_scores.get('industry_marketability_score'))} / 40",
+        f"산업 시장성 점수: {format_score(industry.get('score'))} / 40",
         "",
         "| 세부 항목 | 점수 |",
         "| --- | ---: |",
@@ -285,7 +288,7 @@ def render_market_report(result: dict[str, Any]) -> str:
             "",
             "## 시장 성장성 근거",
             "",
-            f"시장 성장성 점수: {format_score(sub_scores.get('market_growth_score'))} / 40",
+            f"시장 성장성 점수: {format_score(market_growth.get('score'))} / 40",
             "",
             "| 연도 | CPC 출원 수 |",
             "| --- | ---: |",
@@ -315,7 +318,7 @@ def render_market_report(result: dict[str, Any]) -> str:
             "",
             "## 글로벌 사업성 근거",
             "",
-            f"글로벌 사업성 점수: {format_score(sub_scores.get('global_business_score'))} / 20",
+            f"글로벌 사업성 점수: {format_score(global_business.get('score'))} / 20",
             "",
             f"- Patent Family 국가: {', '.join(metrics.get('family_countries') or []) or '-'}",
             f"- 해외 패밀리 국가: {', '.join(metrics.get('foreign_family_countries') or []) or '-'}",

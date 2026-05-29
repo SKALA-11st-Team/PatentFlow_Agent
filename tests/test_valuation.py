@@ -109,7 +109,7 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
                         "label": "권리안정성",
                         "score": 26,
                         "max_score": 40,
-                        "metrics": {
+                        "details": {
                             "prior_art_overlap": {
                                 "label": "선행문헌 대비 청구항 중복도",
                                 "score": 22,
@@ -129,7 +129,7 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
                         "label": "청구항 보호력",
                         "score": 21,
                         "max_score": 40,
-                        "metrics": {
+                        "details": {
                             "core_solution_coverage": {
                                 "label": "핵심 해결수단의 독립항 반영도",
                                 "score": 8,
@@ -161,7 +161,7 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
                         "label": "포트폴리오·방어가치",
                         "score": 11,
                         "max_score": 20,
-                        "metrics": {
+                        "details": {
                             "portfolio_connection": {
                                 "label": "관련 특허군 연결성",
                                 "score": 4,
@@ -229,7 +229,6 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     assert axes["legal"]["subscores"]["right_stability"]["score"] == 26
     assert axes["legal"]["score"] == 58
     assert axes["legal"]["evidence_ids"] == ["portfolio_001"]
-    assert axes["legal"]["sub_scores"]["right_stability_score"] == 26
     assert axes["legal"]["legal_context"]["claim_count_context"]["evidence"]["total_claim_count"] == 2
     assert "Valuation Legal Axis Prompt" in captured_prompts[0]
     assert "citation_evidence" in captured_prompts[0]
@@ -787,7 +786,6 @@ def test_business_fit_rubric_is_externalized_to_prompt_md():
         "subscores",
     }
     assert result["subscores"]["official_business_evidence"]["score"] == 24
-    assert "sub_scores" not in result
 
 
 def test_market_score_helpers_apply_40_40_20_structure():
@@ -1152,8 +1150,6 @@ def test_technology_breakdown_scores_are_binary():
     }
     assert result["implementation_specificity_breakdown"]["processing_target_score"] == 0
     assert result["implementation_specificity_breakdown"]["logic_score"] == 0
-    assert result["sub_scores"]["technical_differentiation_score"] == 38
-    assert result["sub_scores"]["implementation_specificity_score"] == 24
     assert result["score"] == 62
 
 
@@ -1199,10 +1195,8 @@ def test_technology_candidate_subscores_use_new_grade_thresholds():
 
     assert result["score"] == 78
     assert result["grade"] == "B"
-    assert result["sub_scores"] == {
-        "technical_differentiation_score": 48,
-        "implementation_specificity_score": 30,
-    }
+    assert result["subscores"]["technical_differentiation"]["score"] == 48
+    assert result["subscores"]["implementation_specificity"]["score"] == 30
     assert result["subscores"]["technical_differentiation"]["details"] == {
         "configuration_differentiation": 16,
         "operation_differentiation": 20,
@@ -1375,7 +1369,9 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
                 "risk_factors": ["유사특허 비교 필요"],
                 "missing_information": [],
                 "confidence": 0.7,
-                "sub_scores": {"technical_differentiation_score": 35},
+                "subscores": {
+                    "technical_differentiation": {"score": 35, "max_score": 60},
+                },
                 "technology_metrics": {
                     "representative_cpc": "G06F 40/00",
                     "similar_patents": [
@@ -1399,7 +1395,9 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
                 "missing_information": [],
                 "confidence": 0.6,
                 "evidence_ids": ["news_001"],
-                "sub_scores": {"industry_marketability_score": 30},
+                "subscores": {
+                    "industry_marketability": {"score": 30, "max_score": 40},
+                },
                 "marketability_metrics": {"cpc_application_counts": [{"year": 2025, "raw": "SECRET_RAW"}]},
             },
             "business_fit": {
@@ -1780,7 +1778,7 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
                 "score": 34,
                 "max_score": 40,
                 "rationale": "차별 구성이 확인됩니다.",
-                "metrics": {
+                "details": {
                     "prior_art_overlap": {"score": 30, "rationale": "직접 중복이 낮습니다."},
                     "claim_structure_stability": {"score": 4, "rationale": "독립항과 종속항 1개가 확인됩니다."},
                 },
@@ -1789,7 +1787,7 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
                 "score": 36,
                 "max_score": 40,
                 "rationale": "핵심 해결수단이 청구항에 반영됩니다.",
-                "metrics": {
+                "details": {
                     "core_solution_coverage": {"score": 12, "rationale": "핵심 구성이 반영됩니다."},
                     "independent_claim_scope": {"score": 8, "rationale": "일부 구현 조건이 있습니다."},
                     "dependent_claim_support": {"score": 10, "rationale": "여러 보완 유형이 확인됩니다."},
@@ -1800,7 +1798,7 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
                 "score": 17,
                 "max_score": 20,
                 "rationale": "관련 특허군과 보완 관계가 있습니다.",
-                "metrics": {
+                "details": {
                     "portfolio_connection": {"score": 6, "rationale": "구체적 연결성이 있습니다."},
                     "portfolio_coverage_extension": {"score": 7, "rationale": "새 보호 포인트가 있습니다."},
                     "follow_on_right_signal": {"score": 4, "rationale": "피인용 3건 이상입니다."},
@@ -1817,8 +1815,7 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
     assert scored["legal_context"]["right_status_gate"]["label"] == "registered_or_active"
     assert scored["subscores"]["claim_protection"]["score"] == 36
     assert scored["subscores"]["portfolio_defensive_value"]["score"] == 17
-    assert scored["subscores"]["portfolio_defensive_value"]["metrics"]["follow_on_right_signal"]["score"] == 4
-    assert scored["sub_scores"]["portfolio_defensive_value_score"] == 17
+    assert scored["subscores"]["portfolio_defensive_value"]["details"]["follow_on_right_signal"]["score"] == 4
 
 
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):

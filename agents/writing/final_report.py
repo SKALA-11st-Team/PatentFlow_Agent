@@ -111,9 +111,8 @@ def compact_final_report_axis_result(axis_result: dict[str, Any]) -> dict[str, A
         )
         if key in axis_result
     }
-    for key in ("subscores", "sub_scores"):
-        if isinstance(axis_result.get(key), dict):
-            compact[key] = compact_mapping(axis_result[key])
+    if isinstance(axis_result.get("subscores"), dict):
+        compact["subscores"] = compact_mapping(axis_result["subscores"])
     for key in (
         "technical_differentiation_score",
         "implementation_specificity_score",

@@ -239,9 +239,9 @@ confidence:
 - 자료 부족은 missing_information에 작성한다.
 - "정보 없음 = 낮은 가치"로 해석하지 않는다.
 - "방어력이 제한적" 같은 단정 표현 금지.
-- 각 metric score는 위 점수화 기준에 명시된 점수 중 하나만 사용한다.
+- 각 detail score는 위 점수화 기준에 명시된 점수 중 하나만 사용한다.
 - 출력 score, grade, subscores.score는 시스템 코드가 재계산하지 않으므로 위 합계와 반드시 일치시킨다.
-- 입력의 legal_context 값은 판단 근거로 사용하되, 출력 metrics에는 평가에 사용한 metric score와 rationale을 그대로 작성한다.
+- 입력의 legal_context 값은 판단 근거로 사용하되, 출력 details에는 평가에 사용한 detail score와 rationale을 그대로 작성한다.
 
 
 Return ONLY JSON:
@@ -255,7 +255,7 @@ Return ONLY JSON:
       "label": "권리안정성",
       "score": 0,
       "max_score": 40,
-      "metrics": {
+      "details": {
         "prior_art_overlap": {
           "label": "선행문헌 대비 청구항 중복도",
           "score": 0,
@@ -277,7 +277,7 @@ Return ONLY JSON:
       "label": "권리보호력",
       "score": 0,
       "max_score": 40,
-      "metrics": {
+      "details": {
         "core_solution_coverage": {
           "label": "핵심 해결수단의 독립항 반영도",
           "score": 0,
@@ -306,7 +306,7 @@ Return ONLY JSON:
       "label": "포트폴리오·방어가치",
       "score": 0,
       "max_score": 20,
-      "metrics": {
+      "details": {
         "portfolio_connection": {
           "label": "관련 특허군 연결성",
           "score": 0,

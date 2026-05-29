@@ -190,7 +190,7 @@ confidence:
 - `subscores.industry_marketability.rationale`에는 산업 성장 근거, 기업 투자·진입 근거, 뉴스 기반 시장 확산 근거, 자료 신뢰도 판단을 함께 요약하되 세부점수 항목명을 나열하지 않는다.
 - `subscores.market_growth.rationale`에는 대표 CPC 기준 최근 3년 특허 출원 수, CAGR, 최근 3년 추세 점수 판단을 요약하되 세부점수 항목명을 나열하지 않는다.
 - `subscores.global_business.rationale`에는 Patent Family 국가 정보와 국내 단독/해외 출원/다국가 출원 판단을 요약한다.
-- `sub_scores`, `industry_marketability_score`, `industry_marketability_breakdown`은 출력하지 않는다.
+- legacy score fields, `industry_marketability_score`, `industry_marketability_breakdown`은 출력하지 않는다.
 
 
 Return ONLY JSON:

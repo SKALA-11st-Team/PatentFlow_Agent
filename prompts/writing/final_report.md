@@ -142,10 +142,10 @@
 
 ### market 세부지표 설명 규칙
 - 시장성 섹션에서는 총점만 설명하지 말고, `산업 시장성`, `시장 성장성`, `글로벌 사업성` 세부 점수를 각각 설명하세요.
-- `valuation.axes.market.sub_scores`가 있으면 다음 값을 반드시 반영하세요.
-  - `industry_marketability_score`: 산업 리포트, 기업 투자·진입, 뉴스 확산, 자료 신뢰도 근거로 산정된 산업 시장성 점수
-  - `market_growth_score`: 대표 CPC 기준 최근 3년 특허 출원 증가율 및 추세로 산정된 시장 성장성 점수
-  - `global_business_score`: Patent Family 국가 정보로 산정된 글로벌 사업성 점수
+- `valuation.axes.market.subscores`가 있으면 다음 값을 반드시 반영하세요.
+  - `industry_marketability.score`: 산업 리포트, 기업 투자·진입, 뉴스 확산, 자료 신뢰도 근거로 산정된 산업 시장성 점수
+  - `market_growth.score`: 대표 CPC 기준 최근 3년 특허 출원 증가율 및 추세로 산정된 시장 성장성 점수
+  - `global_business.score`: Patent Family 국가 정보로 산정된 글로벌 사업성 점수
 - `valuation.axes.market.marketability_metrics`가 있으면 시장 성장성 설명에 `representative_cpc`, `cpc_application_counts`, `cagr`, `cagr_score`, `trend_status`, `trend_score`를 자연어로 반영하세요.
   - 예: “대표 CPC G06Q 40/02 기준 최근 3년 출원 수가 2023년 14건, 2024년 27건, 2025년 43건으로 연속 증가해 시장 성장성 점수가 높게 반영되었습니다.”
 - 글로벌 사업성 설명에는 `family_countries`, `foreign_family_countries`, `global_business_status`, `global_business_score`를 반영하세요.

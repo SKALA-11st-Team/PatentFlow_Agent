@@ -257,7 +257,6 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
     if has_candidate_subscores(result):
         return apply_candidate_technology_scores(result, metrics)
 
-    sub_scores = result.get("sub_scores") or {}
     comparison_items = metrics.get("similar_patents") or []
     has_pdf_evidence = any(bool(item.get("pdf_collected")) for item in comparison_items)
     technical_breakdown = normalize_ternary_breakdown(
@@ -340,13 +339,6 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
         "grade": grade_for_score(score),
         "technical_differentiation_score": technical_differentiation_score,
         "implementation_specificity_score": implementation_specificity_score,
-        "sub_scores": {
-            **sub_scores,
-            "technical_differentiation_score": technical_differentiation_score,
-            "implementation_specificity_score": implementation_specificity_score,
-            "input_output_specificity_score": input_output_specificity_score,
-            "implementation_logic_score": implementation_logic_score,
-        },
         "technical_differentiation_breakdown": technical_breakdown,
         "implementation_specificity_breakdown": implementation_breakdown,
         "technology_metrics": metrics,
@@ -369,10 +361,6 @@ def apply_candidate_technology_scores(result: dict[str, Any], metrics: dict[str,
         "score": max(0, min(100, score)),
         "grade": technology_grade_for_score(score),
         "subscores": subscores,
-        "sub_scores": {
-            "technical_differentiation_score": technical_differentiation_score,
-            "implementation_specificity_score": implementation_specificity_score,
-        },
         "technology_metrics": metrics,
     }
 
@@ -463,19 +451,10 @@ def override_implementation_result_from_state(result: dict[str, Any], state: Pat
         )
     )
     implementation_specificity_score = input_output_specificity_score + implementation_logic_score
-    sub_scores = dict(result.get("sub_scores") or {})
-    sub_scores.update(
-        {
-            "implementation_specificity_score": implementation_specificity_score,
-            "input_output_specificity_score": input_output_specificity_score,
-            "implementation_logic_score": implementation_logic_score,
-        }
-    )
     return {
         **result,
         "implementation_specificity_score": implementation_specificity_score,
         "implementation_specificity_breakdown": breakdown,
-        "sub_scores": sub_scores,
     }
 
 

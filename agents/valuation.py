@@ -138,7 +138,6 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         "industry_marketability_breakdown",
         "technical_differentiation_score",
         "implementation_specificity_score",
-        "sub_scores",
         "marketability_metrics",
         "technology_metrics",
         "technical_differentiation_breakdown",
@@ -171,10 +170,10 @@ def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
             "max_score": max_score,
             "rationale": normalize_text(item.get("rationale")),
         }
-        if isinstance(item.get("metrics"), dict):
-            normalized_item["metrics"] = item["metrics"]
-        details = item.get("details")
-        if isinstance(details, dict):
+        if isinstance(item.get("details"), dict):
+            normalized_item["details"] = item["details"]
+        details = normalized_item.get("details")
+        if isinstance(details, dict) and all(isinstance(value, (int, float)) for value in details.values()):
             normalized_item["details"] = {
                 str(detail_key): detail_value
                 for detail_key, detail_value in details.items()

@@ -256,14 +256,12 @@ def extract_country_code(item: dict[str, Any]) -> str | None:
 def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     industry_breakdown = normalize_industry_marketability_breakdown(
         result.get("industry_marketability_breakdown")
-        or (result.get("sub_scores") or {}).get("industry_marketability_breakdown")
     )
     if industry_breakdown:
         industry_score = sum(industry_breakdown.values())
     else:
         industry_score = normalize_industry_score(
             result.get("industry_marketability_score")
-            or (result.get("sub_scores") or {}).get("industry_marketability_score")
             or ((result.get("subscores") or {}).get("industry_marketability") or {}).get("score")
         )
     market_growth_score = metrics.get("market_growth_score")
@@ -284,18 +282,12 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
         not in {
             "industry_marketability_score",
             "industry_marketability_breakdown",
-            "sub_scores",
         }
     }
     return {
         **sanitized_result,
         "score": max(0, min(100, score)),
         "grade": grade_for_score(score),
-        "sub_scores": {
-            "industry_marketability_score": industry_score,
-            "market_growth_score": market_growth_score,
-            "global_business_score": global_business_score,
-        },
         "subscores": build_market_subscores(
             result,
             industry_score=industry_score,

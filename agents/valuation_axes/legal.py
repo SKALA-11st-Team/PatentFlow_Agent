@@ -54,10 +54,6 @@ def attach_legal_context(
 ) -> dict[str, Any]:
     return {
         **result,
-        "sub_scores": {
-            **(result.get("sub_scores") if isinstance(result.get("sub_scores"), dict) else {}),
-            **build_legacy_sub_scores(result.get("subscores")),
-        },
         "legal_context": build_legal_context(state=state, payload=payload),
     }
 
@@ -102,30 +98,6 @@ def build_legal_context(
             evidence=(citation_evidence.get("citing_signal") if isinstance(citation_evidence, dict) else {}) or {},
         ),
     }
-
-
-def build_legacy_sub_scores(subscores: Any) -> dict[str, int]:
-    subscores = subscores if isinstance(subscores, dict) else {}
-    values = {
-        "right_stability_score": "right_stability",
-        "claim_protection_score": "claim_protection",
-        "portfolio_defensive_value_score": "portfolio_defensive_value",
-    }
-    return {
-        score_key: score
-        for score_key, subscore_key in values.items()
-        if (score := subscore_value(subscores, subscore_key)) is not None
-    }
-
-
-def subscore_value(subscores: dict[str, Any], key: str) -> int | None:
-    item = subscores.get(key)
-    if not isinstance(item, dict):
-        return None
-    try:
-        return int(item.get("score"))
-    except (TypeError, ValueError):
-        return None
 
 
 def right_status_gate_label(state: PatentWorkflowState, patent: dict[str, Any]) -> str:
