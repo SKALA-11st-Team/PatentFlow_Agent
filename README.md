@@ -84,7 +84,7 @@ venv/bin/python -m app.main P202405001-KR0
 Unified API 서버를 먼저 실행합니다.
 
 ```bash
-venv/bin/python -m uvicorn open_api.api_server:app --reload
+venv/bin/python -m uvicorn open_api.api_server:app --reload --port 8080
 ```
 
 워크플로우 내부에서 Query Rewriting, Naver/GNews/KIPRIS evidence 수집, 뉴스 필터링, 산업 RAG, evidence compression이 순서대로 실행됩니다.

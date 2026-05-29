@@ -892,6 +892,99 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
     assert result["confidence"] == 0.49
 
 
+def test_collect_cpc_yearly_counts_does_not_make_extra_validation_call(monkeypatch):
+    from agents.valuation_axes.market import collect_cpc_yearly_application_counts
+    import open_api.kipris_client as kipris_client
+
+    calls = []
+
+    class FakeKiprisClient:
+        def search_by_cpc(self, cpc_number, **params):
+            calls.append((cpc_number, params))
+            return {
+                "items": [
+                    {
+                        "ApplicationNumber": "1020250000001",
+                        "OpeningDate": "20250102",
+                        "RegistrationStatus": "공개",
+                    },
+                    {
+                        "ApplicationNumber": "1020240000001",
+                        "OpeningDate": "20240102",
+                        "RegistrationStatus": "공개",
+                    },
+                    {
+                        "ApplicationNumber": "1020230000001",
+                        "OpeningDate": "20230102",
+                        "RegistrationStatus": "공개",
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(kipris_client, "KiprisClient", FakeKiprisClient)
+
+    counts = collect_cpc_yearly_application_counts("G06F 40/00", years=[2023, 2024, 2025], page_size=20)
+
+    assert counts == [
+        {"year": 2023, "count": 1},
+        {"year": 2024, "count": 1},
+        {"year": 2025, "count": 1},
+    ]
+    assert len(calls) == 1
+    assert calls[0][1] == {
+        "patent": True,
+        "utility": False,
+        "docsCount": 20,
+        "docsStart": 1,
+        "descSort": True,
+        "sortSpec": "OPD",
+        "lastvalue": "",
+    }
+
+
+def test_collect_cpc_yearly_counts_uses_opening_date_and_stops_at_old_year(monkeypatch):
+    from agents.valuation_axes.market import collect_cpc_yearly_application_counts
+    import open_api.kipris_client as kipris_client
+
+    calls = []
+
+    class FakeKiprisClient:
+        def search_by_cpc(self, cpc_number, **params):
+            calls.append((cpc_number, params))
+            return {
+                "items": [
+                    {
+                        "ApplicationNumber": "1020250000001",
+                        "OpeningDate": "20250102",
+                        "RegistrationDate": "20220102",
+                        "RegistrationStatus": "등록",
+                    },
+                    {
+                        "ApplicationNumber": "1020220000001",
+                        "OpeningDate": "20220102",
+                        "RegistrationDate": "20250102",
+                        "RegistrationStatus": "등록",
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(kipris_client, "KiprisClient", FakeKiprisClient)
+
+    counts = collect_cpc_yearly_application_counts(
+        "G06F 40/00",
+        years=[2023, 2024, 2025],
+        page_size=2,
+        max_pages=5,
+    )
+
+    assert counts == [
+        {"year": 2023, "count": 0},
+        {"year": 2024, "count": 0},
+        {"year": 2025, "count": 1},
+    ]
+    assert len(calls) == 1
+
+
 def test_market_select_evidence_keeps_all_market_evidence():
     from agents.valuation_axes.market import select_evidence
 
@@ -1151,6 +1244,47 @@ def test_technology_breakdown_scores_are_binary():
     assert result["implementation_specificity_breakdown"]["processing_target_score"] == 0
     assert result["implementation_specificity_breakdown"]["logic_score"] == 0
     assert result["score"] == 62
+
+
+def test_technology_risk_text_does_not_apply_keyword_penalty():
+    from agents.valuation_axes.technology import apply_technology_scores
+
+    result = apply_technology_scores(
+        {
+            "score": 80,
+            "grade": "A",
+            "rationale": "r",
+            "evidence_ids": [],
+            "risk_factors": ["정량 성능 검증 및 benchmark 정보는 특허 문헌상 제한적임"],
+            "missing_information": ["학습 데이터 세부 정보 부족"],
+            "confidence": 0.8,
+            "technical_differentiation_breakdown": {
+                "new_component_score": 15,
+                "combination_difference_score": 15,
+                "processing_structure_difference_score": 15,
+                "solution_approach_difference_score": 10,
+                "evidence_clarity_score": 5,
+            },
+            "implementation_specificity_breakdown": {
+                "input_data_score": 4,
+                "processing_target_score": 3,
+                "core_variable_score": 3,
+                "output_structure_score": 3,
+                "component_linkage_score": 2,
+                "procedure_score": 6,
+                "logic_score": 6,
+                "condition_parameter_score": 5,
+                "calculation_decision_score": 5,
+                "exception_iteration_update_score": 3,
+            },
+        },
+        {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
+    )
+
+    assert result["technical_differentiation_breakdown"]["new_component_score"] == 15
+    assert result["technical_differentiation_breakdown"]["solution_approach_difference_score"] == 10
+    assert result["implementation_specificity_breakdown"]["logic_score"] == 6
+    assert result["score"] == 100
 
 
 def test_technology_candidate_subscores_use_new_grade_thresholds():

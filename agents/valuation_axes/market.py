@@ -135,7 +135,6 @@ def collect_cpc_yearly_application_counts(
     earliest_year = min(target_years)
     seen: dict[str, dict[str, Any]] = {}
     client = KiprisClient()
-    validate_cpc_search_available(client, representative_cpc)
     for page_no in range(1, max_pages + 1):
         raw = client.search_by_cpc(
             representative_cpc,
@@ -143,23 +142,28 @@ def collect_cpc_yearly_application_counts(
             utility=False,
             docsCount=page_size,
             docsStart=page_no,
+            descSort=True,
+            sortSpec="OPD",
+            lastvalue="",
         )
         items = extract_kipris_items(raw)
         if not items:
             break
-        has_recent_item = False
+        should_stop = False
         for item in items:
-            status = normalize_text(first_present(item, "RegistrationStatus", "registerStatus", "registrationStatus"))
-            item_year = cpc_item_market_year(item)
-            if item_year is None or item_year >= earliest_year:
-                has_recent_item = True
-            if item_year not in target_year_set or status not in {"공개", "등록"}:
+            item_year = extract_year(first_present(item, "OpeningDate", "openDate", "openingDate"))
+            if item_year is None:
+                continue
+            if item_year < earliest_year:
+                should_stop = True
+                continue
+            if item_year not in target_year_set:
                 continue
             key = patent_item_key(item)
             if key not in seen:
                 seen[key] = item
                 seen[key]["_market_growth_year"] = item_year
-        if len(items) < page_size or not has_recent_item:
+        if len(items) < page_size or should_stop:
             break
 
     counts_by_year = {year: 0 for year in target_years}
@@ -168,30 +172,6 @@ def collect_cpc_yearly_application_counts(
         if year in counts_by_year:
             counts_by_year[year] += 1
     return [{"year": year, "count": counts_by_year[year]} for year in target_years]
-
-
-def validate_cpc_search_available(client: Any, representative_cpc: str) -> None:
-    raw = client.search_by_cpc(representative_cpc, numOfRows=1, pageNo=1)
-    header = (raw.get("response") or {}).get("header") or {}
-    if header.get("resultCode") not in (None, "00"):
-        raise RuntimeError(
-            "cpc_search_unavailable:"
-            f"{header.get('resultCode')}:{header.get('resultMsg')}"
-        )
-
-
-def cpc_item_market_year(item: dict[str, Any]) -> int | None:
-    status = normalize_text(first_present(item, "RegistrationStatus", "registerStatus", "registrationStatus"))
-    if status == "등록":
-        return extract_year(first_present(item, "RegistrationDate", "registerDate", "registrationDate")) or extract_year(
-            first_present(item, "OpeningDate", "openDate", "openingDate")
-        )
-    if status == "공개":
-        return extract_year(first_present(item, "OpeningDate", "openDate", "openingDate"))
-    return extract_year(first_present(item, "OpeningDate", "openDate", "openingDate")) or extract_year(
-        first_present(item, "RegistrationDate", "registerDate", "registrationDate")
-    )
-
 
 def recent_three_years(now: datetime | None = None) -> list[int]:
     year = (now or datetime.now()).year
