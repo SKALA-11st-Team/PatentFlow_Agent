@@ -237,7 +237,7 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     assert "citation_evidence" in captured_prompts[0]
 
 
-def test_business_fit_selects_news_with_company_or_product_context():
+def test_business_fit_selects_only_news_with_sk_ax_or_cnc_context():
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": False, "use_llm_final_report": False},
         patent_structured={
@@ -250,22 +250,22 @@ def test_business_fit_selects_news_with_company_or_product_context():
                 "evidence_id": "news_001",
                 "source": "naver_news",
                 "source_type": "news",
-                "title": "에스케이 문서변환 SW 사업 확대",
-                "compressed_summary": "문서변환 SW가 업무 자동화에 적용되고 있다.",
+                "title": "SK AX 문서변환 SW 사업 확대",
+                "compressed_summary": "SK AX 문서변환 SW가 업무 자동화에 적용되고 있다.",
             },
             {
                 "evidence_id": "news_002",
                 "source": "naver_news",
                 "source_type": "news",
-                "title": "무관한 산업 뉴스",
-                "compressed_summary": "다른 시장 이야기",
+                "title": "에스케이 문서변환 SW 사업 확대",
+                "compressed_summary": "문서변환 SW가 업무 자동화에 적용되고 있다.",
             },
         ],
     )
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert selected[0]["evidence_id"] == "news_001"
+    assert [item["evidence_id"] for item in selected] == ["news_001"]
 
 
 def test_business_fit_prioritizes_sk_ax_official_evidence():
@@ -281,8 +281,8 @@ def test_business_fit_prioritizes_sk_ax_official_evidence():
                 "evidence_id": "news_001",
                 "source": "naver_news",
                 "source_type": "news",
-                "title": "로보어드바이저 자산배분 시장 확대",
-                "compressed_summary": "데이터분석 서비스 수요 확대",
+                "title": "SK AX 로보어드바이저 자산배분 시장 확대",
+                "compressed_summary": "SK AX 데이터분석 서비스 수요 확대",
             },
             {
                 "evidence_id": "skax_low",
@@ -333,7 +333,7 @@ def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
     assert selected[0]["evidence_id"] == "skax_meta"
 
 
-def test_business_fit_fallback_without_official_evidence_matches_existing_order():
+def test_business_fit_prioritizes_owned_media_before_sk_mentioned_news_and_secondary():
     state = PatentWorkflowState(
         patent_structured={
             "related_product": "문서변환 SW",
@@ -342,10 +342,25 @@ def test_business_fit_fallback_without_official_evidence_matches_existing_order(
         kipris_api_data={"metadata": {"assignee": ["에스케이"]}},
         evidence_bundle=[
             {
-                "evidence_id": "news_direct",
+                "evidence_id": "general_news",
                 "source": "naver_news",
                 "source_type": "news",
                 "title": "에스케이 문서변환 SW 사업 확대",
+            },
+            {
+                "evidence_id": "sk_news",
+                "source": "naver_news",
+                "source_type": "news",
+                "title": "SK C&C 문서변환 SW 사업 확대",
+            },
+            {
+                "evidence_id": "owned_media",
+                "source": "sk_group_owned_media",
+                "source_type": "company_disclosure",
+                "source_domain": "openapi.sk.com",
+                "title": "SK주식회사 AX 문서변환 SW",
+                "content": "SK주식회사 AX 문서변환 SW",
+                "relevance_score": 0.5,
             },
             {
                 "evidence_id": "portfolio_001",
@@ -354,7 +369,7 @@ def test_business_fit_fallback_without_official_evidence_matches_existing_order(
                 "compressed_summary": "문서변환 포트폴리오 맥락",
             },
             {
-                "evidence_id": "news_secondary",
+                "evidence_id": "irrelevant_news",
                 "source": "naver_news",
                 "source_type": "news",
                 "title": "무관한 산업 뉴스",
@@ -364,7 +379,7 @@ def test_business_fit_fallback_without_official_evidence_matches_existing_order(
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected] == ["news_direct", "portfolio_001", "news_secondary"]
+    assert [item["evidence_id"] for item in selected] == ["owned_media", "sk_news", "portfolio_001"]
 
 
 def test_business_fit_input_context_uses_summary_and_limited_official_evidence():
@@ -499,6 +514,42 @@ def test_business_fit_quantitative_metrics_scores_rule_based_subscores_from_offi
     assert metrics["product_function_direct_match"]["score"] == 36
     assert metrics["product_function_direct_match"]["product_match_level"] == "direct"
     assert "자산배분" in metrics["product_function_direct_match"]["matched_strong_core_terms"]
+
+
+def test_business_fit_quantitative_metrics_uses_sk_owned_media_as_lower_tier_evidence():
+    from agents.valuation_axes.business_fit import build_business_fit_quantitative_metrics, build_input_payload
+
+    state = PatentWorkflowState(
+        patent_structured={
+            "title_final": "AI 영상 분석 시스템",
+            "related_product": "AIDEN VAS",
+            "business_area": "AI",
+            "technology_area": "Vision AI",
+        },
+    )
+    evidence = [
+        {
+            "evidence_id": "sk_owned_001",
+            "source": "sk_group_owned_media",
+            "source_domain": "skcareersjournal.com",
+            "source_tier": "sk_related_owned_media",
+            "source_type": "company_disclosure",
+            "title": "SK AX AIDEN VAS",
+            "url": "https://www.skcareersjournal.com/2827",
+            "content": "SK AX AIDEN VAS AI 영상 분석 서비스",
+            "relevance_score": 0.8,
+        }
+    ]
+
+    payload = build_input_payload(state=state, evidence=evidence)
+    metrics = build_business_fit_quantitative_metrics(state=state, evidence=evidence)
+
+    assert payload["business_fit_context"]["skax_official_evidence"] == []
+    assert payload["business_fit_context"]["sk_owned_media_evidence"][0]["source_domain"] == "skcareersjournal.com"
+    assert metrics["official_site_evidence_count"] == 0
+    assert metrics["sk_owned_media_evidence_count"] == 1
+    assert metrics["official_business_evidence"]["score"] == 8
+    assert metrics["product_function_direct_match"]["score"] > 0
 
 
 def test_business_fit_quantitative_metrics_limits_match_when_core_terms_are_missing():

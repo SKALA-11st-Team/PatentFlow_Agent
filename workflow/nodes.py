@@ -387,7 +387,11 @@ def collect_skax_site_evidence_safely(
             "warning": "skax_site_search_skipped:missing_patent_context",
         }
     try:
-        return collect_skax_site_evidence(patent_context, queries_override=queries_override)
+        return collect_skax_site_evidence(
+            patent_context,
+            queries_override=queries_override,
+            include_related_media=True,
+        )
     except Exception as exc:
         return {
             "items": [],

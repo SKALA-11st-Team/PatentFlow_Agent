@@ -54,9 +54,11 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
     payload = build_base_input_payload(state=state, evidence=evidence)
     patent_description = build_business_fit_patent_description(state)
     skax_evidence = build_skax_official_evidence_summary(evidence, state=state)
+    sk_owned_media_evidence = build_sk_owned_media_evidence_summary(evidence, state=state)
     payload["business_fit_context"] = {
         "patent_description": patent_description,
         "skax_official_evidence": skax_evidence,
+        "sk_owned_media_evidence": sk_owned_media_evidence,
         "quantitative_metrics": build_business_fit_quantitative_metrics(
             state=state,
             evidence=evidence,
@@ -165,6 +167,44 @@ def build_skax_official_evidence_summary(
     return summaries
 
 
+def build_sk_owned_media_evidence_summary(
+    evidence_items: list[dict[str, Any]],
+    state: PatentWorkflowState | None = None,
+    *,
+    max_items: int = 3,
+    max_content_chars: int = EVIDENCE_EXCERPT_LIMIT,
+) -> list[dict[str, Any]]:
+    del state
+    media_items = [item for item in evidence_items if is_sk_owned_media_evidence(item)]
+    summaries = []
+    for item in sort_official_evidence(media_items, [])[: max(1, int(max_items))]:
+        metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        score = item.get("relevance_score") or item.get("candidate_relevance_score") or metadata.get("relevance_score")
+        summaries.append(
+            {
+                "evidence_id": item.get("evidence_id"),
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "source": item.get("source"),
+                "source_domain": item.get("source_domain") or metadata.get("source_domain"),
+                "source_type": item.get("source_type"),
+                "source_tier": item.get("source_tier") or metadata.get("source_tier"),
+                "relevance_score": score,
+                "matched_keywords": item.get("matched_keywords") or metadata.get("matched_keywords") or [],
+                "matched_terms": item.get("matched_terms") or metadata.get("matched_terms") or [],
+                "score_reasons": item.get("score_reasons") or metadata.get("score_reasons") or [],
+                "content_excerpt": limit_text(item.get("content") or item.get("compressed_summary"), max_content_chars),
+                "business_context_hint": first_text(
+                    item.get("business_context_hint"),
+                    item.get("business_area"),
+                    metadata.get("business_context_hint"),
+                    metadata.get("business_area"),
+                ),
+            }
+        )
+    return summaries
+
+
 def build_business_fit_quantitative_metrics(
     *,
     state: PatentWorkflowState,
@@ -172,26 +212,39 @@ def build_business_fit_quantitative_metrics(
     patent_description: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     description = patent_description or build_business_fit_patent_description(state)
-    official_items = sort_official_evidence(
-        [item for item in evidence if is_sk_ax_official_evidence(item)],
+    official_site_items = [item for item in evidence if is_sk_ax_official_evidence(item)]
+    owned_media_items = [item for item in evidence if is_sk_owned_media_evidence(item)]
+    business_evidence_items = sort_official_evidence(
+        [*official_site_items, *owned_media_items],
         business_fit_keywords(state),
     )
-    official_score = score_official_evidence_presence(official_items)
-    product_score = score_product_function_direct_match(description, official_items)
+    official_score = score_official_evidence_presence(official_site_items, owned_media_items)
+    product_score = score_product_function_direct_match(description, business_evidence_items)
     return {
-        "official_evidence_count": len(official_items),
-        "best_relevance_score": max((evidence_relevance_score(item) for item in official_items), default=0.0),
+        "official_evidence_count": len(official_site_items),
+        "official_site_evidence_count": len(official_site_items),
+        "sk_owned_media_evidence_count": len(owned_media_items),
+        "business_evidence_count": len(business_evidence_items),
+        "best_relevance_score": max((evidence_relevance_score(item) for item in business_evidence_items), default=0.0),
         "official_business_evidence": official_score,
         "product_function_direct_match": product_score,
     }
 
 
-def score_official_evidence_presence(items: list[dict[str, Any]]) -> dict[str, Any]:
+def score_official_evidence_presence(
+    items: list[dict[str, Any]],
+    owned_media_items: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     count = len(items)
-    if count == 0:
+    owned_media_count = len(owned_media_items or [])
+    if count == 0 and owned_media_count == 0:
         score = 0
         reasons = ["no_skax_official_evidence"]
-        rationale = "SK AX 공식 evidence가 확인되지 않아 공식 근거 존재성은 0점이다."
+        rationale = "SK AX 공식 사이트 또는 SK 계열 매체 evidence가 확인되지 않아 공식 근거 존재성은 0점이다."
+    elif count == 0:
+        score = 8 if owned_media_count == 1 else 16
+        reasons = ["sk_owned_media_only"]
+        rationale = "SK AX 공식 사이트 근거는 없으나 SK 계열 매체에서 SK AX/SK C&C 언급이 확인되어 보조 근거로 평가된다."
     elif all(is_broad_or_weak_official_evidence(item) for item in items):
         score = 8
         reasons = ["broad_or_weak_official_evidence_only"]
@@ -213,6 +266,8 @@ def score_official_evidence_presence(items: list[dict[str, Any]]) -> dict[str, A
         "max_score": 30,
         "rationale": rationale,
         "evidence_count": count,
+        "official_site_evidence_count": count,
+        "sk_owned_media_evidence_count": owned_media_count,
         "score_reasons": reasons,
     }
 
@@ -380,23 +435,28 @@ def normalize_core_term(value: Any) -> str:
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     keywords = business_fit_keywords(state)
     official_matches = []
-    direct_matches = []
+    owned_media_matches = []
+    sk_mentioned_matches = []
     secondary_matches = []
     for item in items:
         if is_sk_ax_official_evidence(item):
             official_matches.append(item)
             continue
+        if is_sk_owned_media_evidence(item):
+            owned_media_matches.append(item)
+            continue
         source_type = item.get("source_type")
+        if source_type in {"company_disclosure", "news"} and has_sk_ax_or_cnc_mention(item):
+            sk_mentioned_matches.append(item)
+            continue
         if source_type in {"company_disclosure", "portfolio_context"}:
             secondary_matches.append(item)
-        if source_type != "news":
-            continue
-        text = evidence_text(item)
-        if any(keyword and keyword in text for keyword in keywords):
-            direct_matches.append(item)
-        else:
-            secondary_matches.append(item)
-    return [*sort_official_evidence(official_matches, keywords), *direct_matches, *secondary_matches][:5]
+    return [
+        *sort_official_evidence(official_matches, keywords),
+        *sort_official_evidence(owned_media_matches, keywords),
+        *sort_official_evidence(sk_mentioned_matches, keywords),
+        *sort_official_evidence(secondary_matches, keywords),
+    ][:5]
 
 
 def business_fit_keywords(state: PatentWorkflowState) -> list[str]:
@@ -440,6 +500,39 @@ def is_sk_ax_official_evidence(item: dict[str, Any]) -> bool:
         metadata.get("evidence_type"),
     ]
     return any(normalize_text(value) == "sk_ax_official" for value in values)
+
+
+def is_sk_owned_media_evidence(item: dict[str, Any]) -> bool:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    values = [
+        item.get("source"),
+        item.get("source_tier"),
+        item.get("source_domain"),
+        metadata.get("source"),
+        metadata.get("source_tier"),
+        metadata.get("source_domain"),
+    ]
+    return any(normalize_text(value) == "sk_group_owned_media" for value in values) or any(
+        normalize_text(value) in {"skcareersjournal.com", "openapi.sk.com", "sk_related_owned_media"}
+        for value in values
+    )
+
+
+def has_sk_ax_or_cnc_mention(item: dict[str, Any]) -> bool:
+    text = evidence_text(item).lower()
+    return any(
+        marker in text
+        for marker in (
+            "sk ax",
+            "sk c&c",
+            "sk㈜ ax",
+            "sk㈜ c&c",
+            "sk(주) ax",
+            "sk(주) c&c",
+            "sk주식회사 ax",
+            "sk주식회사 c&c",
+        )
+    )
 
 
 def sort_official_evidence(items: list[dict[str, Any]], keywords: list[str]) -> list[dict[str, Any]]:

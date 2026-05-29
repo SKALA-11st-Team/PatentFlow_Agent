@@ -61,8 +61,15 @@
   - score_reasons
   - content_excerpt
   - business_context_hint
+- `business_fit_context.sk_owned_media_evidence`
+  - SK Careers Journal, SK OpenAPI News 등 SK 계열 운영 매체에서 수집된 보조 evidence
+  - 수집 시 본문에 SK AX 또는 SK C&C 언급이 확인된 항목만 포함된다.
+  - 이 evidence는 `skax.co.kr` 공식 사이트 근거보다 낮은 신뢰도 tier로 취급한다.
 - `business_fit_context.quantitative_metrics`
   - official_evidence_count
+  - official_site_evidence_count
+  - sk_owned_media_evidence_count
+  - business_evidence_count
   - best_relevance_score
   - official_business_evidence
   - product_function_direct_match
@@ -88,7 +95,9 @@ SK AX 공식 evidence가 대상 특허의 사업 연계성 판단에 사용할 �
 
 평가 규칙:
 - `skax_official_evidence`와 `quantitative_metrics.official_business_evidence`를 우선 참고한다.
-- 공식 evidence가 없는 경우 이 항목은 0점이다.
+- `sk_owned_media_evidence`는 SK 계열 운영 매체의 보조 근거로만 사용한다.
+- 계열 매체 evidence만 있는 경우 `SK AX 공식 사이트에서 확인`이라고 쓰지 말고 `SK 계열 매체에서 SK AX/SK C&C 관련 언급이 확인`된다고 표현한다.
+- `skax.co.kr` 공식 evidence와 SK 계열 운영 매체 evidence가 모두 없는 경우 이 항목은 0점이다.
 - 공식 evidence가 있더라도 일반 인사이트/트렌드 페이지에 가깝고 구체 사업 페이지가 아니면 낮게 평가한다.
 - 단순 건수만 보지 말고 title, url, content_excerpt가 대상 특허의 제품/사업/기술 문맥과 연결되는지 함께 본다.
 
@@ -96,8 +105,10 @@ SK AX 공식 evidence가 대상 특허의 사업 연계성 판단에 사용할 �
 - 30점: 구체적인 SK AX 공식 evidence가 3건 이상 확인되고 대상 특허의 사업/제품/기술 문맥과 연결됨
 - 24점: 구체적인 SK AX 공식 evidence가 2건 확인되고 대상 특허의 사업/제품/기술 문맥과 연결됨
 - 16점: 구체적인 SK AX 공식 evidence가 1건 확인되어 일부 공식 근거가 있음
+- 16점: SK AX 공식 사이트 근거는 없지만 SK 계열 운영 매체 evidence가 2건 이상 있고, 본문에서 SK AX 또는 SK C&C 관련 사업/서비스 문맥이 확인됨
 - 8점: 공식 evidence는 있으나 일반 소개, 인사이트, 트렌드 성격이 강하거나 대상 특허와의 연결이 넓음
-- 0점: SK AX 공식 evidence가 확인되지 않음
+- 8점: SK AX 공식 사이트 근거는 없지만 SK 계열 운영 매체 evidence가 1건 있고, 본문에서 SK AX 또는 SK C&C 관련 사업/서비스 문맥이 확인됨
+- 0점: SK AX 공식 사이트 및 SK 계열 운영 매체 evidence가 확인되지 않음
 
 
 ----------------------------------------
@@ -179,6 +190,7 @@ confidence:
 - `evidence_ids`에는 출력 근거로 실제 사용한 evidence_id만 작성한다.
 - 점수 감점 사유와 자료 부족 사유를 구분한다.
 - 관련제품 또는 핵심 기능이 공식 evidence에서 확인되지 않으면 그 한계를 구체적으로 작성한다.
+- 계열 매체 근거만 있는 경우 공식 사이트 근거 부재를 `missing_information`에 포함한다.
 - `정보 부족 있음`, `추가 확인 필요`, `N/A`는 누락, 불충분, 미적용 자료에만 사용한다.
 - legacy 사업 연계성 필드는 출력하지 않는다.
 

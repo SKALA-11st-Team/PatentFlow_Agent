@@ -229,6 +229,60 @@ def test_collect_skax_site_evidence_fetches_relevant_results_and_normalizes_evid
     assert result["stats"]["failed_url_count"] == 0
 
 
+def test_collect_sk_related_media_requires_sk_ax_or_cnc_body_marker():
+    fetched_urls = []
+
+    def searcher(query):
+        if "skcareersjournal.com" not in query:
+            return []
+        return [
+            {
+                "title": "SK AX AI 영상 분석",
+                "snippet": "AI 영상 분석 서비스",
+                "url": "https://www.skcareersjournal.com/2827",
+            },
+            {
+                "title": "AI 영상 분석 일반 기사",
+                "snippet": "AI 영상 분석 서비스",
+                "url": "https://www.skcareersjournal.com/no-skax-marker",
+            },
+        ]
+
+    def fetcher(url):
+        fetched_urls.append(url)
+        if url.endswith("/no-skax-marker"):
+            return "<html><body><main>AI 영상 분석 서비스 소개</main></body></html>"
+        return "<html><body><main>SK AX AIDEN VAS AI 영상 분석 서비스</main></body></html>"
+
+    result = collect_skax_site_evidence(
+        {
+            "관리번호": "P202410001-KR0",
+            "발명의 명칭(최종)": "AI 영상 분석 시스템",
+            "관련사업 분야": "AI",
+            "관련기술 분야": "Vision AI",
+            "관련제품": "AIDEN VAS",
+        },
+        searcher=searcher,
+        fetcher=fetcher,
+        max_queries=1,
+        max_fetch_pages=3,
+        include_related_media=True,
+    )
+
+    assert fetched_urls == [
+        "https://www.skcareersjournal.com/2827",
+        "https://www.skcareersjournal.com/no-skax-marker",
+    ]
+    assert [item["url"] for item in result["items"]] == ["https://www.skcareersjournal.com/2827"]
+    evidence = result["items"][0]
+    assert evidence["source"] == "sk_group_owned_media"
+    assert evidence["source_domain"] == "skcareersjournal.com"
+    assert evidence["source_tier"] == "sk_related_owned_media"
+    assert evidence["source_type"] == "company_disclosure"
+    assert "SK AX" in evidence["content"]
+    assert result["stats"]["skipped_url_count"] == 1
+
+
 def test_fetch_failure_and_empty_html_do_not_fail_collection():
     def searcher(query):
         return [
@@ -862,8 +916,8 @@ def test_google_custom_search_client_extracts_only_skax_results(monkeypatch):
     assert captured["params"]["num"] == 10
     assert captured["params"]["hl"] == "ko"
     assert captured["params"]["gl"] == "kr"
-    assert captured["params"]["siteSearch"] == "skax.co.kr"
-    assert captured["params"]["siteSearchFilter"] == "i"
+    assert "siteSearch" not in captured["params"]
+    assert "siteSearchFilter" not in captured["params"]
     assert result["results"] == [
         {
             "title": "SK AX 로보어드바이저",
@@ -1092,7 +1146,7 @@ def test_tavily_search_client_extracts_only_skax_results(monkeypatch):
     assert captured["url"] == "https://api.tavily.com/search"
     assert captured["json"]["api_key"] == "tavily-key"
     assert captured["json"]["query"] == "site:skax.co.kr 로보어드바이저"
-    assert captured["json"]["include_domains"] == ["skax.co.kr"]
+    assert captured["json"]["include_domains"] == ["skax.co.kr", "skcareersjournal.com", "openapi.sk.com"]
     assert captured["json"]["include_raw_content"] is True
     assert captured["json"]["search_depth"] == "basic"
     assert captured["json"]["max_results"] == 3

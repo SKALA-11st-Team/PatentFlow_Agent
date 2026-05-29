@@ -15,6 +15,16 @@ from services.evidence.store_service import ensure_evidence_ids, now_iso
 
 SK_AX_DOMAIN = "skax.co.kr"
 SK_AX_SOURCE = "sk_ax_official"
+SK_GROUP_OWNED_MEDIA_SOURCE = "sk_group_owned_media"
+SK_RELATED_MEDIA_DOMAINS = ("skcareersjournal.com", "openapi.sk.com")
+SK_OWNED_DOMAINS = (SK_AX_DOMAIN, *SK_RELATED_MEDIA_DOMAINS)
+SK_RELATED_MEDIA_REQUIRED_MARKERS = (
+    "sk ax",
+    "sk c&c",
+    "sk㈜ ax",
+    "sk주식회사 ax",
+    "sk주식회사 c&c",
+)
 DEFAULT_MAX_QUERIES = 5
 DEFAULT_MAX_RESULTS_PER_QUERY = 5
 DEFAULT_MAX_FETCH_PAGES = 5
@@ -141,8 +151,6 @@ class GoogleCustomSearchClient(SearchClient):
                     "num": min(10, max(1, int(max_results))),
                     "hl": "ko",
                     "gl": "kr",
-                    "siteSearch": SK_AX_DOMAIN,
-                    "siteSearchFilter": "i",
                 },
                 timeout=self.timeout,
             )
@@ -209,7 +217,7 @@ class TavilySearchClient(SearchClient):
                     "api_key": self.api_key,
                     "query": query,
                     "search_depth": "basic",
-                    "include_domains": [SK_AX_DOMAIN],
+                    "include_domains": list(SK_OWNED_DOMAINS),
                     "include_raw_content": self.include_raw_content,
                     "max_results": max_results,
                 },
@@ -493,13 +501,20 @@ def collect_skax_site_evidence(
     max_results_per_query: int = DEFAULT_MAX_RESULTS_PER_QUERY,
     max_fetch_pages: int = DEFAULT_MAX_FETCH_PAGES,
     max_content_chars: int = DEFAULT_MAX_CONTENT_CHARS,
+    include_related_media: bool = False,
 ) -> dict[str, Any]:
     query_generation_diagnostics = build_query_generation_plan(
         patent_context,
         max_queries=max_queries,
         queries_override=queries_override,
     )
-    queries = query_generation_diagnostics["generated_queries"]
+    base_queries = query_generation_diagnostics["generated_queries"]
+    related_media_queries = (
+        build_related_media_queries(base_queries, max_queries=max_queries)
+        if include_related_media
+        else []
+    )
+    queries = [*base_queries, *related_media_queries]
     searched_result_count = 0
     search_results: list[dict[str, Any]] = []
     search_diagnostics: list[dict[str, Any]] = []
@@ -574,6 +589,9 @@ def collect_skax_site_evidence(
         if not content:
             skipped_url_count += 1
             continue
+        if is_related_media_url(url) and not contains_sk_ax_or_cnc_marker(content):
+            skipped_url_count += 1
+            continue
         if len(content) > max_content_chars:
             truncated_content_count += 1
             content = content[:max_content_chars]
@@ -606,6 +624,16 @@ def default_search_client() -> SearchClient:
     if GoogleCustomSearchClient.has_config():
         return GoogleCustomSearchClient()
     return GoogleHtmlSearchClient()
+
+
+def build_related_media_queries(base_queries: list[str], *, max_queries: int = DEFAULT_MAX_QUERIES) -> list[str]:
+    related_queries: list[str] = []
+    for base_query in base_queries[: max(1, int(max_queries))]:
+        query_body = re.sub(r"^site\s*:\s*skax\.co\.kr\s*", "", base_query, flags=re.IGNORECASE).strip()
+        query_body = compact_query(["SK AX", query_body])
+        for domain in SK_RELATED_MEDIA_DOMAINS:
+            related_queries.append(f"site:{domain} {query_body}".strip())
+    return unique_texts(related_queries)
 
 
 def default_html_searcher(query: str) -> list[SearchResult]:
@@ -1034,7 +1062,8 @@ def extract_google_target_url(href: str | None) -> str | None:
 
 def extract_skax_urls_from_text(text: str) -> list[str]:
     decoded = html_unescape(unquote(normalize_text(text))).replace("\\/", "/")
-    candidates = re.findall(r"https?://(?:[A-Za-z0-9-]+\.)*skax\.co\.kr[^\s\"'<>)]*", decoded)
+    domain_pattern = "|".join(re.escape(domain) for domain in SK_OWNED_DOMAINS)
+    candidates = re.findall(rf"https?://(?:[A-Za-z0-9-]+\.)*(?:{domain_pattern})[^\s\"'<>)]*", decoded)
     urls: list[str] = []
     for candidate in candidates:
         url = normalize_url(strip_google_tail_params(candidate).rstrip(".,;:"))
@@ -1177,10 +1206,13 @@ def normalize_page_evidence(
     page_title: str | None,
     content: str,
 ) -> dict[str, Any]:
+    source_domain = evidence_source_domain(result["url"])
     return {
         "evidence_id": None,
         "source_type": "company_disclosure",
-        "source": SK_AX_SOURCE,
+        "source": evidence_source_for_url(result["url"]),
+        "source_domain": source_domain,
+        "source_tier": evidence_source_tier(result["url"]),
         "title": page_title or result.get("title") or result["url"],
         "url": result["url"],
         "published_at": None,
@@ -1237,7 +1269,33 @@ def normalize_url(url: Any) -> str | None:
 
 def is_skax_url(url: str) -> bool:
     netloc = urlparse(url).netloc.lower()
-    return netloc == SK_AX_DOMAIN or netloc.endswith(f".{SK_AX_DOMAIN}")
+    return any(netloc == domain or netloc.endswith(f".{domain}") for domain in SK_OWNED_DOMAINS)
+
+
+def is_related_media_url(url: str) -> bool:
+    domain = evidence_source_domain(url)
+    return domain in SK_RELATED_MEDIA_DOMAINS
+
+
+def evidence_source_domain(url: str) -> str:
+    netloc = urlparse(url).netloc.lower()
+    for domain in SK_OWNED_DOMAINS:
+        if netloc == domain or netloc.endswith(f".{domain}"):
+            return domain
+    return netloc
+
+
+def evidence_source_for_url(url: str) -> str:
+    return SK_GROUP_OWNED_MEDIA_SOURCE if is_related_media_url(url) else SK_AX_SOURCE
+
+
+def evidence_source_tier(url: str) -> str:
+    return "sk_related_owned_media" if is_related_media_url(url) else "sk_ax_official_site"
+
+
+def contains_sk_ax_or_cnc_marker(content: str) -> bool:
+    haystack = normalize_text(content).lower()
+    return any(marker in haystack for marker in SK_RELATED_MEDIA_REQUIRED_MARKERS)
 
 
 def is_file_url(url: str) -> bool:
