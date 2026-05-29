@@ -9,7 +9,7 @@
 실질적인 보호력을 가지며,
 사내 IP 포트폴리오에서 전략적 의미가 있는지를 평가한다.
 
-총점은 100점이며 시스템 코드가 아래 3개 하위 항목 점수를 합산한다.
+총점은 100점이며 아래 3개 하위 항목 점수를 합산한다.
 
 1. 권리안정성: 40점
 2. 권리보호력: 40점
@@ -51,7 +51,10 @@
 - citation_evidence.foreign_citation_documents
 - citation_evidence.foreign_claim_lookup_candidates
 - citation_evidence.citing_signal
-- legal_scoring_context
+- legal_context
+  - right_status_gate: 현재 권리상태 참고값
+  - claim_count_context: 독립항/종속항/전체 청구항 수 입력값
+  - citing_reference_context: 피인용/후속 참조 통계 입력값
 - 패밀리 특허 정보
 - 해외 등록 B 문헌 여부
 - portfolio_context
@@ -91,6 +94,9 @@
 - 여러 문헌에서 유사 구성이 반복되면 중복도가 높은 쪽으로 판단한다.
 - "상세 1:1 비교가 추가로 필요하다"는 표현만으로 평가를 회피하지 않는다.
 - 제공된 문헌 정보 범위 내에서 비교 판단을 수행한다.
+- overlap_basis는 대상 청구항의 어떤 핵심 구성요소가 어떤 선행문헌의 청구항·초록·기술내용과 겹친다고 보았는지 작성한다.
+- overlap_basis에는 대상 청구항 번호, 겹치는 구성요소, 비교 문헌 식별값을 포함한다.
+- 겹침이 없으면 overlap_basis에 "핵심 구성의 실질적 중복은 확인되지 않음"처럼 작성한다.
 
 점수화 기준:
 - prior_art_overlap:
@@ -210,12 +216,17 @@
 종합 점수
 ----------------------------------------
 
-score = 코드에서 재계산한다. LLM은 각 세부지표의 score와 rationale을 제공한다.
+score = 권리안정성 + 권리보호력 + 포트폴리오·방어가치
+
+하위 항목 score:
+- right_stability.score = prior_art_overlap.score + claim_structure_stability.score
+- claim_protection.score = core_solution_coverage.score + independent_claim_scope.score + dependent_claim_support.score + claim_type_diversity.score
+- portfolio_defensive_value.score = portfolio_connection.score + portfolio_coverage_extension.score + follow_on_right_signal.score
 
 grade:
-90 이상 → A
-75 이상 → B
-60 이상 → C
+80 이상 → A
+60 이상 → B
+40 이상 → C
 미만 → D
 
 confidence:
@@ -229,7 +240,8 @@ confidence:
 - "정보 없음 = 낮은 가치"로 해석하지 않는다.
 - "방어력이 제한적" 같은 단정 표현 금지.
 - 각 metric score는 위 점수화 기준에 명시된 점수 중 하나만 사용한다.
-- LLM이 출력한 score, grade, subscores.score는 코드에서 재계산되므로 metric score 선택의 일관성을 우선한다.
+- 출력 score, grade, subscores.score는 시스템 코드가 재계산하지 않으므로 위 합계와 반드시 일치시킨다.
+- 입력의 legal_context 값은 판단 근거로 사용하되, 출력 metrics에는 평가에 사용한 metric score와 rationale을 그대로 작성한다.
 
 
 Return ONLY JSON:
@@ -248,13 +260,15 @@ Return ONLY JSON:
           "label": "선행문헌 대비 청구항 중복도",
           "score": 0,
           "max_score": 30,
-          "rationale": "..."
+          "overlap_claim_count": 2,
+          "compared_prior_art_count": 3,
+          "overlap_basis": "독립항 1의 데이터 수집/분석 구성과 KR...의 대표 청구항 일부가 겹침",
+          "rationale": "선행문헌 일부와 핵심 구성은 겹치지만 대상 특허의 차별 구성 또는 결합 방식이 남아 있어 22점으로 판단함"
         },
         "claim_structure_stability": {
           "label": "청구항 구조 안정성",
           "score": 0,
-          "max_score": 10,
-          "rationale": "..."
+          "max_score": 10
         }
       },
       "rationale": "..."
@@ -267,20 +281,17 @@ Return ONLY JSON:
         "core_solution_coverage": {
           "label": "핵심 해결수단의 독립항 반영도",
           "score": 0,
-          "max_score": 12,
-          "rationale": "..."
+          "max_score": 12
         },
         "independent_claim_scope": {
           "label": "독립항 보호범위 적정성",
           "score": 0,
-          "max_score": 12,
-          "rationale": "..."
+          "max_score": 12
         },
         "dependent_claim_support": {
           "label": "종속항 보완성",
           "score": 0,
-          "max_score": 10,
-          "rationale": "..."
+          "max_score": 10
         },
         "claim_type_diversity": {
           "label": "청구항 보호형태 다양성",
@@ -299,20 +310,17 @@ Return ONLY JSON:
         "portfolio_connection": {
           "label": "관련 특허군 연결성",
           "score": 0,
-          "max_score": 6,
-          "rationale": "..."
+          "max_score": 6
         },
         "portfolio_coverage_extension": {
           "label": "포트폴리오 커버리지 확장성",
           "score": 0,
-          "max_score": 10,
-          "rationale": "..."
+          "max_score": 10
         },
         "follow_on_right_signal": {
           "label": "후속 권리화 신호",
           "score": 0,
-          "max_score": 4,
-          "rationale": "..."
+          "max_score": 4
         }
       },
       "rationale": "..."
