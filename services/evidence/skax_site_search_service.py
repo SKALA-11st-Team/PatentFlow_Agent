@@ -357,42 +357,29 @@ def build_query_generation_plan(
     strong_terms = strong_search_terms(patent_context, title_keywords)
     domain_profiles = business_domain_profiles(patent_context)
     domain_hints = business_domain_hints(patent_context)
-    if queries_override is not None:
-        return {
-            "selected_features": {
-                "related_product": related_product,
-                "business_area": business_area,
-                "technology_area": technology_area,
-                "title_final": patent_field(patent_context, "title_final"),
-                "title_draft": patent_field(patent_context, "title_draft"),
-            },
-            "title_keywords": title_keywords,
-            "domain_hints": [
-                {
-                    "name": profile["name"],
-                    "hints": list(profile["hints"]),
-                    "preferred_paths": list(profile["preferred_paths"]),
-                }
-                for profile in domain_profiles
-            ],
-            "generated_queries": normalize_skax_site_queries(queries_override, max_queries=max_queries),
-            "dropped_duplicate_queries": [],
-            "query_source": "query_rewriting",
-        }
 
+    product_anchor_candidates = (
+        [
+            compact_query([related_product]),
+            compact_query(["SK AX", related_product]),
+            compact_query([related_product, "news room"]),
+        ]
+        if related_product
+        else []
+    )
     candidates = [
+        *product_anchor_candidates,
         compact_query([related_product, business_area, technology_area]),
-        compact_query([related_product, *title_keywords[:2], technology_area]),
-        compact_query([related_product, *title_keywords[:3]]),
-        compact_query([business_area, technology_area, related_product]),
     ]
     if domain_hints:
-        candidates.extend(
-            [
-                compact_query([*domain_hints[:5]]),
-                compact_query([related_product, *domain_hints[:2], technology_area]),
-            ]
-        )
+        candidates.append(compact_query([*domain_hints[:5]]))
+    candidates.extend(
+        [
+            compact_query([related_product, *title_keywords[:2], technology_area]),
+            compact_query([related_product, *title_keywords[:3]]),
+            compact_query([business_area, technology_area, related_product]),
+        ]
+    )
     if not related_product:
         candidates.extend(
             [
@@ -403,10 +390,14 @@ def build_query_generation_plan(
 
     queries: list[str] = []
     dropped_duplicate_queries: list[str] = []
-    for candidate in candidates:
-        if not candidate:
+    base_candidates = [candidate for candidate in candidates if candidate]
+    override_queries = normalize_skax_site_queries(queries_override or [], max_queries=max_queries)
+    raw_queries = [f"site:{SK_AX_DOMAIN} {candidate}" for candidate in base_candidates]
+    raw_queries.extend(override_queries)
+    for query in raw_queries:
+        query = " ".join(str(query or "").split())
+        if not query:
             continue
-        query = f"site:{SK_AX_DOMAIN} {candidate}"
         if query not in queries:
             queries.append(query)
         else:
@@ -434,7 +425,7 @@ def build_query_generation_plan(
         ],
         "generated_queries": queries,
         "dropped_duplicate_queries": dropped_duplicate_queries,
-        "query_source": "rule_based",
+        "query_source": "rule_based_with_query_rewriting" if queries_override is not None else "rule_based",
     }
 
 

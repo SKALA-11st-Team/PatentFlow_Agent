@@ -26,11 +26,15 @@ def test_business_fit_prompt_matches_official_evidence_criteria():
     prompt = "prompts/valuation/valuation_business_fit.md"
     text = __import__("pathlib").Path(prompt).read_text(encoding="utf-8")
 
-    assert "사업 문맥 적합성만 판단한다" in text
-    assert "전체 business_fit score를 산정하지 않는다" in text
+    assert "사업 연계성 축을 평가한다" in text
+    assert "공식 근거 존재성: 30점" in text
+    assert "제품·기능 직접 매칭도: 45점" in text
+    assert "사업 문맥 적합성: 25점" in text
     assert "direct/plausible/broad/weak/none" in text
     assert "context_fit_label" in text
-    assert "score, grade, subscores, confidence, risk_factors, missing_information은 출력하지 않는다" in text
+    assert '"axis": "business_fit"' in text
+    assert '"score": 0' in text
+    assert '"subscores"' in text
     assert "patent_description" in text
     assert "skax_official_evidence" in text
     assert "사업 연결성 40" not in text
@@ -38,7 +42,6 @@ def test_business_fit_prompt_matches_official_evidence_criteria():
     assert "실제 활용 가능성 15" not in text
     assert "근거 신뢰도 10" not in text
     assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다" in text
-    assert "내부 진단 필드명을 출력하지 않는다" in text
 
 
 def test_run_valuation_agent_sets_result():
@@ -533,23 +536,52 @@ def test_business_fit_quantitative_metrics_limits_match_when_core_terms_are_miss
     assert metrics["product_function_direct_match"]["strong_core_match_ratio"] == 0.0
 
 
-def test_business_fit_run_uses_llm_only_for_context_label(monkeypatch):
+def test_business_fit_run_uses_llm_for_final_axis_json():
     from agents.valuation import AxisRuntime
     from agents.valuation_axes import business_fit
 
     captured_payloads = []
+    captured_llm_calls = []
 
     def fake_build_prompt(**kwargs):
         captured_payloads.append(kwargs["payload"])
         return "saved artifact prompt"
 
-    def forbidden_run_llm_required(**kwargs):
-        raise AssertionError("business_fit must not ask LLM to produce final score JSON")
+    def fake_run_llm_required(**kwargs):
+        captured_llm_calls.append(kwargs)
+        return {
+            "axis": "business_fit",
+            "label": "사업 연계성",
+            "score": 70,
+            "grade": "C",
+            "rationale": "공식 근거와 제품 문맥이 일부 연결된다.",
+            "evidence_ids": ["skax_finance_001"],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.75,
+            "subscores": {
+                "official_business_evidence": {
+                    "label": "공식 근거 존재성",
+                    "score": 16,
+                    "max_score": 30,
+                    "rationale": "공식 근거 1건이 확인된다.",
+                },
+                "product_function_direct_match": {
+                    "label": "제품·기능 직접 매칭도",
+                    "score": 36,
+                    "max_score": 45,
+                    "rationale": "관련제품과 핵심 기능 일부가 확인된다.",
+                },
+                "business_context_fit": {
+                    "label": "사업 문맥 적합성",
+                    "score": 18,
+                    "max_score": 25,
+                    "details": {"context_fit_label": "plausible"},
+                    "rationale": "사업 문맥이 자연스럽게 연결된다.",
+                },
+            },
+        }
 
-    monkeypatch.setattr(
-        "agents.valuation_axes.business_fit.call_llm",
-        lambda prompt: '{"context_fit_label":"plausible","rationale":"사업 문맥이 자연스럽게 연결됨","confirmed_contexts":["금융 서비스"],"unconfirmed_contexts":["1:1 제품 적용"]}',
-    )
     state = PatentWorkflowState(
         patent_structured={
             "title_final": "강화학습 자산배분 시스템",
@@ -572,14 +604,17 @@ def test_business_fit_run_uses_llm_only_for_context_label(monkeypatch):
 
     result = business_fit.run(
         state,
-        AxisRuntime(build_prompt=fake_build_prompt, run_llm_required=forbidden_run_llm_required),
+        AxisRuntime(build_prompt=fake_build_prompt, run_llm_required=fake_run_llm_required),
     )
 
     assert captured_payloads[0]["business_fit_context"]["quantitative_metrics"]
+    assert captured_llm_calls[0]["axis"] == "business_fit"
+    assert captured_llm_calls[0]["prompt"] == "saved artifact prompt"
+    assert captured_llm_calls[0]["evidence"][0]["evidence_id"] == "skax_finance_001"
     assert result["subscores"]["official_business_evidence"]["score"] == 16
     assert result["subscores"]["product_function_direct_match"]["score"] == 36
     assert result["subscores"]["business_context_fit"]["score"] == 18
-    assert result["subscores"]["business_context_fit"]["label_result"] == "plausible"
+    assert result["subscores"]["business_context_fit"]["details"]["context_fit_label"] == "plausible"
     assert result["score"] == 70
     assert result["grade"] == "C"
 
@@ -740,11 +775,13 @@ def test_business_fit_rubric_is_externalized_to_prompt_md():
 
     text = __import__("pathlib").Path("prompts/valuation/valuation_business_fit.md").read_text(encoding="utf-8")
 
-    assert "사업 문맥 적합성만 판단한다" in text
-    assert "전체 business_fit score를 산정하지 않는다" in text
-    assert "공식 근거 존재성 점수와 제품·기능 직접 매칭도 점수를 변경하지 않는다" in text
+    assert "사업 연계성 축을 평가한다" in text
+    assert "공식 근거 존재성: 30점" in text
+    assert "제품·기능 직접 매칭도: 45점" in text
+    assert "사업 문맥 적합성: 25점" in text
+    assert '"axis": "business_fit"' in text
+    assert '"subscores"' in text
     assert "context_fit_label" in text
-    assert "score, grade, subscores, confidence, risk_factors, missing_information은 출력하지 않는다" in text
     assert "business_connection" not in text
     assert "portfolio_necessity" not in text
     assert "practical_applicability" not in text
@@ -1600,7 +1637,7 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     run_final_report_agent(state)
 
     axis_prompts = [prompt for prompt in captured_prompts if "Return ONLY one JSON object" in prompt]
-    assert len(axis_prompts) == 3
+    assert len(axis_prompts) == 4
     assert all(prompt.index("# Common Valuation Axis Rules") < prompt.index("# Valuation") for prompt in axis_prompts)
 
 
