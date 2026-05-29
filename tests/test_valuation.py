@@ -26,17 +26,32 @@ def test_business_fit_prompt_matches_official_evidence_criteria():
     prompt = "prompts/valuation/valuation_business_fit.md"
     text = __import__("pathlib").Path(prompt).read_text(encoding="utf-8")
 
-    assert "사업 문맥 적합성만 판단한다" in text
-    assert "전체 business_fit score를 산정하지 않는다" in text
-    assert "direct/plausible/broad/weak/none" in text
-    assert "context_fit_label" in text
-    assert "score, grade, subscores, confidence, risk_factors, missing_information은 출력하지 않는다" in text
+    assert "공식 사업 근거 발견도 30점" in text
+    assert "사업 맥락 직접성 45점" in text
+    assert "적용 시나리오 구체성 25점" in text
+    assert "business_fit_context.patent_description" in text
+    assert "business_fit_context.skax_official_evidence" in text
     assert "사업 연결성 40" not in text
     assert "포트폴리오 필요성 35" not in text
     assert "실제 활용 가능성 15" not in text
     assert "근거 신뢰도 10" not in text
+    assert '"subscores": {' in text
+    assert '"official_business_evidence": {' in text
+    assert '"business_context_alignment": {' in text
+    assert '"application_scenario_specificity": {' in text
+    assert '"max_score": 30' in text
+    assert '"max_score": 45' in text
+    assert '"max_score": 25' in text
+    assert "score = official_business_evidence + business_context_alignment + application_scenario_specificity" in text
+    assert "`sub_scores` 필드는 사용하지 않는다" in text
+    assert "보수적 점수 부여 원칙" in text
+    assert "95~100점대는 아래 조건을 모두 만족할 때만 허용한다" in text
+    assert "만점 제한" in text
+    assert "risk_factors가 존재한다" in text
+    assert "missing_information이 존재한다" in text
+    assert "특허와 공식 사업 근거의 1:1 매핑이 확인되지 않는다" in text
     assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다" in text
-    assert "내부 진단 필드명을 출력하지 않는다" in text
+    assert "risk_factors에는 공식 근거 기반으로 확인되는 실제 한계만 작성한다" in text
 
 
 def test_run_valuation_agent_sets_result():
@@ -101,11 +116,11 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
         captured_prompts.append(prompt)
         return json.dumps(
             {
-                "score": 0,
+                "score": 58,
                 "subscores": {
                     "right_stability": {
                         "label": "권리안정성",
-                        "score": 0,
+                        "score": 26,
                         "max_score": 40,
                         "metrics": {
                             "prior_art_overlap": {
@@ -125,7 +140,7 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
                     },
                     "claim_protection": {
                         "label": "청구항 보호력",
-                        "score": 0,
+                        "score": 21,
                         "max_score": 40,
                         "metrics": {
                             "core_solution_coverage": {
@@ -157,7 +172,7 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
                     },
                     "portfolio_defensive_value": {
                         "label": "포트폴리오·방어가치",
-                        "score": 0,
+                        "score": 11,
                         "max_score": 20,
                         "metrics": {
                             "portfolio_connection": {
@@ -225,8 +240,10 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     axes = result.valuation_result["axes"]
     assert list(axes) == ["legal"]
     assert axes["legal"]["subscores"]["right_stability"]["score"] == 26
+    assert axes["legal"]["score"] == 58
     assert axes["legal"]["evidence_ids"] == ["portfolio_001"]
-    assert axes["legal"]["legal_scoring_metrics"]["prior_art_overlap"]["score"] == 22
+    assert axes["legal"]["sub_scores"]["right_stability_score"] == 26
+    assert axes["legal"]["legal_context"]["claim_count_context"]["evidence"]["total_claim_count"] == 2
     assert "Valuation Legal Axis Prompt" in captured_prompts[0]
     assert "citation_evidence" in captured_prompts[0]
 
@@ -1166,35 +1183,48 @@ def test_technology_candidate_subscores_use_new_grade_thresholds():
             "missing_information": [],
             "confidence": 0.8,
             "subscores": {
-                "technical_feasibility": {
-                    "label": "기술 완성도·실현 가능성",
-                    "score": 36,
-                    "max_score": 45,
-                    "rationale": "구현 구조는 구체적이나 일부 조건이 추상적임",
-                },
                 "technical_differentiation": {
                     "label": "기술 차별성",
-                    "score": 28,
-                    "max_score": 35,
+                    "score": 47,
+                    "max_score": 60,
+                    "details": {
+                        "configuration_differentiation": 16,
+                        "operation_differentiation": 20,
+                        "effect_differentiation": 12,
+                    },
                     "rationale": "차별 요소가 확인됨",
                 },
-                "technical_utility": {
-                    "label": "기술 유용성",
-                    "score": 16,
-                    "max_score": 20,
-                    "rationale": "개선 효과가 확인됨",
+                "implementation_specificity": {
+                    "label": "구현 구체성",
+                    "score": 30,
+                    "max_score": 40,
+                    "details": {
+                        "component_specificity": 15,
+                        "procedure_specificity": 15,
+                        "implementation_specificity_detail": 0,
+                    },
+                    "rationale": "구성 요소와 처리 절차는 구체적이나 구현 설명은 제한적임",
                 },
             },
         },
         {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
     )
 
-    assert result["score"] == 80
+    assert result["score"] == 78
     assert result["grade"] == "B"
     assert result["sub_scores"] == {
-        "technical_feasibility_score": 36,
-        "technical_differentiation_score": 28,
-        "technical_utility_score": 16,
+        "technical_differentiation_score": 48,
+        "implementation_specificity_score": 30,
+    }
+    assert result["subscores"]["technical_differentiation"]["details"] == {
+        "configuration_differentiation": 16,
+        "operation_differentiation": 20,
+        "effect_differentiation": 12,
+    }
+    assert result["subscores"]["implementation_specificity"]["details"] == {
+        "component_specificity": 15,
+        "procedure_specificity": 15,
+        "implementation_specificity_detail": 0,
     }
 
 

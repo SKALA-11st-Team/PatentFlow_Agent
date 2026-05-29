@@ -236,6 +236,19 @@ def append_breakdown_table(
 
 def technology_score_rows(subscores: dict[str, Any], sub_scores: dict[str, Any]) -> list[tuple[str, Any, int]]:
     if subscores:
+        if "implementation_specificity" in subscores and "technical_differentiation" in subscores:
+            return [
+                (
+                    str((subscores.get("technical_differentiation") or {}).get("label") or "기술 차별성"),
+                    (subscores.get("technical_differentiation") or {}).get("score"),
+                    60,
+                ),
+                (
+                    str((subscores.get("implementation_specificity") or {}).get("label") or "구현 구체성"),
+                    (subscores.get("implementation_specificity") or {}).get("score"),
+                    40,
+                ),
+            ]
         return [
             (
                 str((subscores.get("technical_feasibility") or {}).get("label") or "기술 완성도·실현 가능성"),
@@ -261,7 +274,12 @@ def technology_score_rows(subscores: dict[str, Any], sub_scores: dict[str, Any])
 
 def append_subscore_rationales(lines: list[str], subscores: dict[str, Any]) -> None:
     lines.extend(["", "## 하위 지표 근거"])
-    for key in ("technical_feasibility", "technical_differentiation", "technical_utility"):
+    keys = (
+        ("technical_differentiation", "implementation_specificity")
+        if "implementation_specificity" in subscores
+        else ("technical_feasibility", "technical_differentiation", "technical_utility")
+    )
+    for key in keys:
         item = subscores.get(key) or {}
         lines.extend(
             [

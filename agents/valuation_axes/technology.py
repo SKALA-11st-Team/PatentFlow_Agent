@@ -6,7 +6,7 @@ from typing import Any
 
 from agents.valuation_axes.common import select_by_types_or_axes
 from agents.valuation_axes.market import extract_representative_cpc, grade_for_score
-from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
+from agents.valuation_axes.payload_common import build_base_input_payload
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
 from services.patent.similar_patent_service import build_similar_patent_context
 from workflow.state import PatentWorkflowState
@@ -17,9 +17,8 @@ LABEL = "기술성"
 PROMPT_PATH = "valuation/valuation_technology.md"
 TECHNOLOGY_COMPARISON_TARGET_COUNT = 5
 TECHNOLOGY_SUBSCORE_CANDIDATES = {
-    "technical_feasibility": (0, 15, 27, 36, 45),
-    "technical_differentiation": (0, 10, 20, 28, 35),
-    "technical_utility": (0, 4, 10, 16, 20),
+    "technical_differentiation": (4, 8, 12, 16, 20, 5, 10, 15, 20, 25, 3, 6, 9, 12, 15),
+    "implementation_specificity": (0, 10, 15, 25, 30, 40),
 }
 
 
@@ -43,17 +42,13 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
     del state
     return select_by_types_or_axes(
         items,
-        source_types={"portfolio_context", "patent_api"},
+        source_types={"portfolio_context", "industry_report", "patent_api"},
         axes={AXIS},
     )
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    return build_base_input_payload(
-        state=state,
-        evidence=evidence,
-        claim_context=build_claim_context(state, include_dependent_claims=False),
-    )
+    return build_base_input_payload(state=state, evidence=evidence)
 
 
 def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
@@ -67,11 +62,7 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
         "claims_text": sections.get("claims_text"),
         "solution": sections.get("solution"),
         "detailed_description": sections.get("detailed_description"),
-        "independent_claim_text": "\n".join(
-            str((claim or {}).get("text") or "")
-            for claim in claims
-            if (claim or {}).get("is_independent")
-        ),
+        "representative_claim_text": "\n".join(str((claim or {}).get("text") or "") for claim in claims[:3]),
     }
     representative_cpc = extract_representative_cpc(state)
     artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
@@ -361,19 +352,17 @@ def has_candidate_subscores(result: dict[str, Any]) -> bool:
 
 def apply_candidate_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     subscores = normalize_candidate_subscores(result.get("subscores") or {})
-    technical_feasibility_score = int(subscores["technical_feasibility"]["score"])
     technical_differentiation_score = int(subscores["technical_differentiation"]["score"])
-    technical_utility_score = int(subscores["technical_utility"]["score"])
-    score = technical_feasibility_score + technical_differentiation_score + technical_utility_score
+    implementation_specificity_score = int(subscores["implementation_specificity"]["score"])
+    score = technical_differentiation_score + implementation_specificity_score
     return {
         **result,
         "score": max(0, min(100, score)),
         "grade": technology_grade_for_score(score),
         "subscores": subscores,
         "sub_scores": {
-            "technical_feasibility_score": technical_feasibility_score,
             "technical_differentiation_score": technical_differentiation_score,
-            "technical_utility_score": technical_utility_score,
+            "implementation_specificity_score": implementation_specificity_score,
         },
         "technology_metrics": metrics,
     }
@@ -383,9 +372,42 @@ def normalize_candidate_subscores(subscores: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
     for key, candidates in TECHNOLOGY_SUBSCORE_CANDIDATES.items():
         item = dict(subscores.get(key) or {})
-        item["score"] = nearest_candidate_score(item.get("score"), candidates)
+        if key == "technical_differentiation":
+            item["score"] = normalize_technology_differentiation_candidate_score(item)
+        elif key == "implementation_specificity":
+            item["score"] = normalize_implementation_specificity_candidate_score(item)
         normalized[key] = item
     return normalized
+
+
+def normalize_technology_differentiation_candidate_score(item: dict[str, Any]) -> int:
+    details = item.get("details")
+    if isinstance(details, dict):
+        configuration = nearest_candidate_score(details.get("configuration_differentiation"), (4, 8, 12, 16, 20))
+        operation = nearest_candidate_score(details.get("operation_differentiation"), (5, 10, 15, 20, 25))
+        effect = nearest_candidate_score(details.get("effect_differentiation"), (3, 6, 9, 12, 15))
+        item["details"] = {
+            "configuration_differentiation": configuration,
+            "operation_differentiation": operation,
+            "effect_differentiation": effect,
+        }
+        return configuration + operation + effect
+    return clamp_int(item.get("score"), default=0, max_value=60)
+
+
+def normalize_implementation_specificity_candidate_score(item: dict[str, Any]) -> int:
+    details = item.get("details")
+    if isinstance(details, dict):
+        component = nearest_candidate_score(details.get("component_specificity"), (0, 15))
+        procedure = nearest_candidate_score(details.get("procedure_specificity"), (0, 15))
+        implementation = nearest_candidate_score(details.get("implementation_specificity_detail"), (0, 10))
+        item["details"] = {
+            "component_specificity": component,
+            "procedure_specificity": procedure,
+            "implementation_specificity_detail": implementation,
+        }
+        return component + procedure + implementation
+    return clamp_int(item.get("score"), default=0, max_value=40)
 
 
 def nearest_candidate_score(value: Any, candidates: tuple[int, ...]) -> int:
