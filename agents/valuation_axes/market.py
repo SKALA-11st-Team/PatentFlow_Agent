@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from agents.valuation_axes.common import select_by_types_or_axes
@@ -12,7 +12,7 @@ from workflow.state import PatentWorkflowState
 AXIS = "market"
 LABEL = "시장성"
 PROMPT_PATH = "valuation/valuation_market.md"
-MARKET_GROWTH_MISSING_MESSAGE = "CPC 기준 최근 3년 연도별 특허 출원 수 확인 필요"
+MARKET_GROWTH_MISSING_MESSAGE = "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"
 INDUSTRY_MARKETABILITY_BREAKDOWN_LIMITS = {
     "industry_growth_evidence_score": 15,
     "corporate_investment_entry_score": 10,
@@ -80,24 +80,27 @@ def build_market_growth_metrics(representative_cpc: str | None) -> dict[str, Any
     if not representative_cpc:
         return missing_market_growth("representative_cpc_not_found", [])
 
+    windows = market_growth_windows()
     try:
-        counts = collect_cpc_yearly_application_counts(representative_cpc)
+        counts = collect_cpc_window_application_counts(representative_cpc, windows=windows)
     except Exception as exc:
-        return missing_market_growth(f"kipris_search_failed:{exc.__class__.__name__}", [])
+        return missing_market_growth(f"kipris_search_failed:{exc.__class__.__name__}", windows)
 
     if len(counts) < 3 or any(item.get("count") is None for item in counts):
-        return missing_market_growth("yearly_counts_incomplete", counts)
+        return missing_market_growth("window_counts_incomplete", windows)
 
     first_count = int(counts[0]["count"] or 0)
     last_count = int(counts[-1]["count"] or 0)
     if first_count <= 0:
-        return missing_market_growth("cagr_start_count_zero", counts)
+        return missing_market_growth("cagr_start_count_zero", windows)
 
     cagr = (last_count / first_count) ** (1 / (len(counts) - 1)) - 1
     cagr_score = score_cagr(cagr)
     trend_status, trend_score = score_recent_trend([int(item["count"]) for item in counts])
+    reference_date = windows[-1]["end_date"] if windows else None
     return {
         "cpc_application_counts": counts,
+        "market_growth_reference_date": reference_date.isoformat() if isinstance(reference_date, date) else None,
         "market_growth_available": True,
         "cagr": round(cagr, 6),
         "cagr_score": cagr_score,
@@ -108,9 +111,20 @@ def build_market_growth_metrics(representative_cpc: str | None) -> dict[str, Any
     }
 
 
-def missing_market_growth(reason: str, counts: list[dict[str, Any]]) -> dict[str, Any]:
+def missing_market_growth(reason: str, windows: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = [
+        {
+            "label": item["label"],
+            "start_date": item["start_date"].isoformat(),
+            "end_date": item["end_date"].isoformat(),
+            "count": None,
+        }
+        for item in windows
+    ]
+    reference_date = windows[-1]["end_date"] if windows else None
     return {
         "cpc_application_counts": counts,
+        "market_growth_reference_date": reference_date.isoformat() if isinstance(reference_date, date) else None,
         "market_growth_available": False,
         "cagr": None,
         "cagr_score": None,
@@ -121,27 +135,29 @@ def missing_market_growth(reason: str, counts: list[dict[str, Any]]) -> dict[str
     }
 
 
-def collect_cpc_yearly_application_counts(
+def collect_cpc_window_application_counts(
     representative_cpc: str,
     *,
-    years: list[int] | None = None,
+    windows: list[dict[str, Any]] | None = None,
     page_size: int = 500,
-    max_pages: int = 20,
+    max_pages: int = 5,
 ) -> list[dict[str, Any]]:
     from open_api.kipris_client import KiprisClient
 
-    target_years = years or recent_three_years()
-    target_year_set = set(target_years)
-    earliest_year = min(target_years)
+    target_windows = windows or market_growth_windows()
+    if not target_windows:
+        return []
+    earliest_start = min(item["start_date"] for item in target_windows)
     seen: dict[str, dict[str, Any]] = {}
     client = KiprisClient()
     for page_no in range(1, max_pages + 1):
+        docs_start = ((page_no - 1) * page_size) + 1
         raw = client.search_by_cpc(
             representative_cpc,
             patent=True,
             utility=False,
             docsCount=page_size,
-            docsStart=page_no,
+            docsStart=docs_start,
             descSort=True,
             sortSpec="OPD",
             lastvalue="",
@@ -151,31 +167,69 @@ def collect_cpc_yearly_application_counts(
             break
         should_stop = False
         for item in items:
-            item_year = extract_year(first_present(item, "OpeningDate", "openDate", "openingDate"))
-            if item_year is None:
+            opening_date = cpc_item_opening_date(item)
+            if opening_date is None:
                 continue
-            if item_year < earliest_year:
+            if opening_date < earliest_start:
                 should_stop = True
                 continue
-            if item_year not in target_year_set:
+            window = market_growth_window_for_date(opening_date, target_windows)
+            if window is None:
                 continue
             key = patent_item_key(item)
             if key not in seen:
                 seen[key] = item
-                seen[key]["_market_growth_year"] = item_year
+                seen[key]["_market_growth_window_label"] = window["label"]
         if len(items) < page_size or should_stop:
             break
 
-    counts_by_year = {year: 0 for year in target_years}
+    counts_by_window = {item["label"]: 0 for item in target_windows}
     for item in seen.values():
-        year = item.get("_market_growth_year")
-        if year in counts_by_year:
-            counts_by_year[year] += 1
-    return [{"year": year, "count": counts_by_year[year]} for year in target_years]
+        label = item.get("_market_growth_window_label")
+        if label in counts_by_window:
+            counts_by_window[label] += 1
+    return [
+        {
+            "label": item["label"],
+            "start_date": item["start_date"].isoformat(),
+            "end_date": item["end_date"].isoformat(),
+            "count": counts_by_window[item["label"]],
+        }
+        for item in target_windows
+    ]
 
-def recent_three_years(now: datetime | None = None) -> list[int]:
-    year = (now or datetime.now()).year
-    return [year - 3, year - 2, year - 1]
+
+def cpc_item_opening_date(item: dict[str, Any]) -> date | None:
+    return parse_kipris_date(first_present(item, "OpeningDate", "openDate", "openingDate"))
+
+
+def market_growth_reference_date(now: datetime | None = None) -> date:
+    current_date = (now or datetime.now()).date()
+    return shift_months(current_date, -18)
+
+
+def market_growth_windows(reference_date: date | None = None) -> list[dict[str, Any]]:
+    end_date = reference_date or market_growth_reference_date()
+    windows: list[dict[str, Any]] = []
+    for offset in (2, 1, 0):
+        window_end = shift_months(end_date, -(12 * offset))
+        previous_end = shift_months(window_end, -12)
+        window_start = previous_end + timedelta(days=1)
+        windows.append(
+            {
+                "label": f"{window_start.isoformat()}~{window_end.isoformat()}",
+                "start_date": window_start,
+                "end_date": window_end,
+            }
+        )
+    return windows
+
+
+def market_growth_window_for_date(opening_date: date, windows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for item in windows:
+        if item["start_date"] <= opening_date <= item["end_date"]:
+            return item
+    return None
 
 
 def score_cagr(cagr: float) -> int:
@@ -354,11 +408,30 @@ def grade_for_score(score: int) -> str:
     return "D"
 
 
-def extract_year(value: Any) -> int | None:
-    text = normalize_text(value)
-    if len(text) < 4 or not text[:4].isdigit():
+def parse_kipris_date(value: Any) -> date | None:
+    digits = "".join(ch for ch in normalize_text(value) if ch.isdigit())
+    if len(digits) < 8:
         return None
-    return int(text[:4])
+    try:
+        return date(int(digits[:4]), int(digits[4:6]), int(digits[6:8]))
+    except ValueError:
+        return None
+
+
+def shift_months(value: date, months: int) -> date:
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, days_in_month(year, month))
+    return date(year, month, day)
+
+
+def days_in_month(year: int, month: int) -> int:
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    return (next_month - date(year, month, 1)).days
 
 
 def patent_item_key(item: dict[str, Any]) -> str:
