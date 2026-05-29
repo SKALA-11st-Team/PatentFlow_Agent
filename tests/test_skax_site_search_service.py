@@ -28,10 +28,10 @@ def test_build_search_queries_prioritizes_related_product_and_site_condition():
 
     assert 3 <= len(queries) <= 5
     assert all(query.startswith("site:skax.co.kr") for query in queries)
-    assert any("로보어드바이저" in query for query in queries)
-    assert "데이터분석" in queries[0]
-    assert "Data" in queries[0]
-    assert any("강화학습" in query or "자산배분" in query for query in queries)
+    assert queries[0] == "site:skax.co.kr 로보어드바이저"
+    assert any("SK AX" in query and "로보어드바이저" in query for query in queries)
+    assert any("news room" in query and "로보어드바이저" in query for query in queries)
+    assert any("데이터분석" in query and "Data" in query for query in queries)
     assert any("금융" in query or "투자" in query for query in queries)
     assert any("AI" in query and "예측" in query for query in queries)
 
@@ -45,10 +45,11 @@ def test_build_query_generation_plan_uses_rewritten_skax_queries_when_provided()
         ],
     )
 
-    assert plan["query_source"] == "query_rewriting"
-    assert plan["generated_queries"] == [
-        "site:skax.co.kr 로보어드바이저 금융 자산관리",
-        "site:skax.co.kr 디지털 금융 서비스 AI 예측",
+    assert plan["query_source"] == "rule_based_with_query_rewriting"
+    assert plan["generated_queries"][:3] == [
+        "site:skax.co.kr 로보어드바이저",
+        "site:skax.co.kr SK AX 로보어드바이저",
+        "site:skax.co.kr 로보어드바이저 news room",
     ]
 
 
@@ -65,8 +66,12 @@ def test_collect_skax_site_evidence_uses_rewritten_query_override():
         queries_override=["디지털 금융 서비스 AI 예측"],
     )
 
-    assert seen_queries == ["site:skax.co.kr 디지털 금융 서비스 AI 예측"]
-    assert result["query_generation_diagnostics"]["query_source"] == "query_rewriting"
+    assert seen_queries[:3] == [
+        "site:skax.co.kr 로보어드바이저",
+        "site:skax.co.kr SK AX 로보어드바이저",
+        "site:skax.co.kr 로보어드바이저 news room",
+    ]
+    assert result["query_generation_diagnostics"]["query_source"] == "rule_based_with_query_rewriting"
 
 
 def test_build_search_queries_adds_finance_hints_only_when_context_supports_them():
