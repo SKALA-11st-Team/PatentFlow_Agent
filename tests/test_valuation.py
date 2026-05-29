@@ -26,32 +26,17 @@ def test_business_fit_prompt_matches_official_evidence_criteria():
     prompt = "prompts/valuation/valuation_business_fit.md"
     text = __import__("pathlib").Path(prompt).read_text(encoding="utf-8")
 
-    assert "공식 사업 근거 발견도 30점" in text
-    assert "사업 맥락 직접성 45점" in text
-    assert "적용 시나리오 구체성 25점" in text
-    assert "business_fit_context.patent_description" in text
-    assert "business_fit_context.skax_official_evidence" in text
+    assert "사업 문맥 적합성만 판단한다" in text
+    assert "전체 business_fit score를 산정하지 않는다" in text
+    assert "direct/plausible/broad/weak/none" in text
+    assert "context_fit_label" in text
+    assert "score, grade, subscores, confidence, risk_factors, missing_information은 출력하지 않는다" in text
     assert "사업 연결성 40" not in text
     assert "포트폴리오 필요성 35" not in text
     assert "실제 활용 가능성 15" not in text
     assert "근거 신뢰도 10" not in text
-    assert '"subscores": {' in text
-    assert '"official_business_evidence": {' in text
-    assert '"business_context_alignment": {' in text
-    assert '"application_scenario_specificity": {' in text
-    assert '"max_score": 30' in text
-    assert '"max_score": 45' in text
-    assert '"max_score": 25' in text
-    assert "score = official_business_evidence + business_context_alignment + application_scenario_specificity" in text
-    assert "`sub_scores` 필드는 사용하지 않는다" in text
-    assert "보수적 점수 부여 원칙" in text
-    assert "95~100점대는 아래 조건을 모두 만족할 때만 허용한다" in text
-    assert "만점 제한" in text
-    assert "risk_factors가 존재한다" in text
-    assert "missing_information이 존재한다" in text
-    assert "특허와 공식 사업 근거의 1:1 매핑이 확인되지 않는다" in text
     assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다" in text
-    assert "risk_factors에는 공식 근거 기반으로 확인되는 실제 한계만 작성한다" in text
+    assert "내부 진단 필드명을 출력하지 않는다" in text
 
 
 def test_run_valuation_agent_sets_result():
@@ -439,6 +424,12 @@ def test_business_fit_input_context_uses_summary_and_limited_official_evidence()
     assert [item["evidence_id"] for item in official] == ["skax_9", "skax_7", "skax_5"]
     assert all(len(item["content_excerpt"]) <= 1500 for item in official)
     assert official[0]["matched_keywords"] == ["로보어드바이저"]
+    assert official[0]["score_reasons"] == []
+    metrics = context["quantitative_metrics"]
+    assert metrics["official_evidence_count"] == 5
+    assert metrics["official_business_evidence"]["score"] == 30
+    assert metrics["official_business_evidence"]["max_score"] == 30
+    assert metrics["product_function_direct_match"]["max_score"] == 45
     assert "candidate_results" not in serialized
     assert "search_request_url" not in serialized
     assert "청구항 전체 원문은 들어가면 안 됨" not in serialized
@@ -460,6 +451,134 @@ def test_business_fit_patent_description_falls_back_to_sections_and_kipris():
     assert description["title_final"] == "fallback 특허"
     assert description["summary"] == "KIPRIS 초록"
     assert description["solution_or_core_technology"] == "섹션 해결수단"
+
+
+def test_business_fit_quantitative_metrics_scores_rule_based_subscores_from_official_evidence():
+    from agents.valuation_axes.business_fit import build_business_fit_quantitative_metrics
+
+    state = PatentWorkflowState(
+        patent_structured={
+            "title_final": "강화학습 자산배분 시스템",
+            "related_product": "로보어드바이저",
+            "business_area": "Data",
+            "technology_area": "데이터분석",
+        }
+    )
+    evidence = [
+        {
+            "evidence_id": "skax_finance_001",
+            "source": "sk_ax_official",
+            "source_type": "company_disclosure",
+            "title": "로보어드바이저 자산관리 금융 서비스",
+            "url": "https://www.skax.co.kr/finance/digital-based-financial-service",
+            "content": "로보어드바이저 데이터분석 기반 자산배분 서비스와 금융 고객 업무 적용 시나리오를 설명한다.",
+            "candidate_relevance_score": 0.72,
+        },
+        {
+            "evidence_id": "skax_insight_001",
+            "source": "sk_ax_official",
+            "source_type": "company_disclosure",
+            "title": "AI 트렌드",
+            "url": "https://www.skax.co.kr/insight/trend/23",
+            "content": "AI 데이터 서비스 트렌드",
+            "candidate_relevance_score": 0.2,
+        },
+    ]
+
+    metrics = build_business_fit_quantitative_metrics(state=state, evidence=evidence)
+
+    assert metrics["official_evidence_count"] == 2
+    assert metrics["best_relevance_score"] == 0.72
+    assert metrics["official_business_evidence"]["score"] == 24
+    assert metrics["product_function_direct_match"]["score"] == 36
+    assert metrics["product_function_direct_match"]["product_match_level"] == "direct"
+    assert "자산배분" in metrics["product_function_direct_match"]["matched_strong_core_terms"]
+
+
+def test_business_fit_quantitative_metrics_limits_match_when_core_terms_are_missing():
+    from agents.valuation_axes.business_fit import build_business_fit_quantitative_metrics, title_keyword_terms
+
+    title = "상품 트렌드 예측을 반영한 강화학습 모델을 적용한 자산배분 시스템 및 방법"
+
+    assert title_keyword_terms(title, limit=6) == ["강화학습", "자산배분", "트렌드 예측", "상품 트렌드", "트렌드", "예측"]
+
+    state = PatentWorkflowState(
+        patent_structured={
+            "title_final": title,
+            "related_product": "로보어드바이저",
+            "business_area": "Data",
+            "technology_area": "데이터분석",
+        }
+    )
+    evidence = [
+        {
+            "evidence_id": f"skax_finance_{index}",
+            "source": "sk_ax_official",
+            "source_type": "company_disclosure",
+            "title": "로보어드바이저 금융 서비스",
+            "url": f"https://www.skax.co.kr/finance/{index}",
+            "content": "로보어드바이저 고객 업무 자동화 플랫폼 서비스",
+            "candidate_relevance_score": 0.92,
+        }
+        for index in range(3)
+    ]
+
+    metrics = build_business_fit_quantitative_metrics(state=state, evidence=evidence)
+
+    assert metrics["product_function_direct_match"]["score"] == 24
+    assert metrics["product_function_direct_match"]["missing_core_terms"]
+    assert metrics["product_function_direct_match"]["strong_core_match_ratio"] == 0.0
+
+
+def test_business_fit_run_uses_llm_only_for_context_label(monkeypatch):
+    from agents.valuation import AxisRuntime
+    from agents.valuation_axes import business_fit
+
+    captured_payloads = []
+
+    def fake_build_prompt(**kwargs):
+        captured_payloads.append(kwargs["payload"])
+        return "saved artifact prompt"
+
+    def forbidden_run_llm_required(**kwargs):
+        raise AssertionError("business_fit must not ask LLM to produce final score JSON")
+
+    monkeypatch.setattr(
+        "agents.valuation_axes.business_fit.call_llm",
+        lambda prompt: '{"context_fit_label":"plausible","rationale":"사업 문맥이 자연스럽게 연결됨","confirmed_contexts":["금융 서비스"],"unconfirmed_contexts":["1:1 제품 적용"]}',
+    )
+    state = PatentWorkflowState(
+        patent_structured={
+            "title_final": "강화학습 자산배분 시스템",
+            "related_product": "로보어드바이저",
+            "business_area": "Data",
+            "technology_area": "데이터분석",
+        },
+        evidence_bundle=[
+            {
+                "evidence_id": "skax_finance_001",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "로보어드바이저 자산관리 금융 서비스",
+                "url": "https://www.skax.co.kr/finance/digital-based-financial-service",
+                "content": "로보어드바이저 데이터분석 기반 자산배분 서비스",
+                "candidate_relevance_score": 0.7,
+            }
+        ],
+    )
+
+    result = business_fit.run(
+        state,
+        AxisRuntime(build_prompt=fake_build_prompt, run_llm_required=forbidden_run_llm_required),
+    )
+
+    assert captured_payloads[0]["business_fit_context"]["quantitative_metrics"]
+    assert result["subscores"]["official_business_evidence"]["score"] == 16
+    assert result["subscores"]["product_function_direct_match"]["score"] == 36
+    assert result["subscores"]["business_context_fit"]["score"] == 18
+    assert result["subscores"]["business_context_fit"]["label_result"] == "plausible"
+    assert result["score"] == 70
+    assert result["grade"] == "C"
 
 
 def test_business_fit_patent_description_uses_metadata_and_agent_summary_fallbacks():
@@ -609,6 +728,8 @@ def test_business_fit_context_is_safe_with_minimal_empty_state():
     assert payload["business_fit_context"]["patent_description"]["title_final"] == ""
     assert payload["business_fit_context"]["patent_description"]["summary"] == ""
     assert payload["business_fit_context"]["skax_official_evidence"] == []
+    assert payload["business_fit_context"]["quantitative_metrics"]["official_evidence_count"] == 0
+    assert payload["business_fit_context"]["quantitative_metrics"]["official_business_evidence"]["score"] == 0
 
 
 def test_business_fit_rubric_is_externalized_to_prompt_md():
@@ -616,22 +737,15 @@ def test_business_fit_rubric_is_externalized_to_prompt_md():
 
     text = __import__("pathlib").Path("prompts/valuation/valuation_business_fit.md").read_text(encoding="utf-8")
 
-    assert "총점은 100점이며 반드시 아래 3개 하위 항목 점수를 합산한다." in text
-    assert "공식 사업 근거 발견도: 30점" in text
-    assert "사업 맥락 직접성: 45점" in text
-    assert "적용 시나리오 구체성: 25점" in text
-    assert '"official_business_evidence": {' in text
-    assert '"business_context_alignment": {' in text
-    assert '"application_scenario_specificity": {' in text
-    assert '"max_score": 30' in text
-    assert '"max_score": 45' in text
-    assert '"max_score": 25' in text
+    assert "사업 문맥 적합성만 판단한다" in text
+    assert "전체 business_fit score를 산정하지 않는다" in text
+    assert "공식 근거 존재성 점수와 제품·기능 직접 매칭도 점수를 변경하지 않는다" in text
+    assert "context_fit_label" in text
+    assert "score, grade, subscores, confidence, risk_factors, missing_information은 출력하지 않는다" in text
     assert "business_connection" not in text
     assert "portfolio_necessity" not in text
     assert "practical_applicability" not in text
     assert "evidence_reliability" not in text
-    assert "검색 결과 개수만으로 높은 점수를 주지 않는다." in text
-    assert "공식 근거가 없다고 특허 가치가 낮다고 단정하지 않는다." in text
     assert "SK AX가 해당 특허를 실제 사용 중이라고 단정하지 않는다." in text
 
     result = normalize_axis_llm_result(
@@ -1337,7 +1451,7 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     run_final_report_agent(state)
 
     axis_prompts = [prompt for prompt in captured_prompts if "Return ONLY one JSON object" in prompt]
-    assert len(axis_prompts) == 4
+    assert len(axis_prompts) == 3
     assert all(prompt.index("# Common Valuation Axis Rules") < prompt.index("# Valuation") for prompt in axis_prompts)
 
 

@@ -4,6 +4,7 @@ from services.evidence.skax_site_search_service import (
     GoogleCustomSearchClient,
     GoogleHtmlSearchClient,
     TavilySearchClient,
+    build_query_generation_plan,
     build_search_queries,
     collect_skax_site_evidence,
     default_search_client,
@@ -33,6 +34,39 @@ def test_build_search_queries_prioritizes_related_product_and_site_condition():
     assert any("강화학습" in query or "자산배분" in query for query in queries)
     assert any("금융" in query or "투자" in query for query in queries)
     assert any("AI" in query and "예측" in query for query in queries)
+
+
+def test_build_query_generation_plan_uses_rewritten_skax_queries_when_provided():
+    plan = build_query_generation_plan(
+        PATENT_CONTEXT,
+        queries_override=[
+            "로보어드바이저 금융 자산관리",
+            "site:skax.co.kr 디지털 금융 서비스 AI 예측",
+        ],
+    )
+
+    assert plan["query_source"] == "query_rewriting"
+    assert plan["generated_queries"] == [
+        "site:skax.co.kr 로보어드바이저 금융 자산관리",
+        "site:skax.co.kr 디지털 금융 서비스 AI 예측",
+    ]
+
+
+def test_collect_skax_site_evidence_uses_rewritten_query_override():
+    seen_queries = []
+
+    def fake_searcher(query):
+        seen_queries.append(query)
+        return []
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        searcher=fake_searcher,
+        queries_override=["디지털 금융 서비스 AI 예측"],
+    )
+
+    assert seen_queries == ["site:skax.co.kr 디지털 금융 서비스 AI 예측"]
+    assert result["query_generation_diagnostics"]["query_source"] == "query_rewriting"
 
 
 def test_build_search_queries_adds_finance_hints_only_when_context_supports_them():
@@ -109,10 +143,9 @@ def test_filter_search_results_keeps_skax_non_file_urls_and_sorts_by_relevance()
 
     assert [item["url"] for item in filtered] == [
         "https://www.skax.co.kr/financial/robo-advisor",
-        "https://www.skax.co.kr/data/analytics",
     ]
-    assert filtered[0]["relevance_score"] > filtered[1]["relevance_score"]
     assert "로보어드바이저" in filtered[0]["matched_keywords"]
+    assert "matched_related_product" in filtered[0]["score_reasons"]
 
 
 def test_collect_skax_site_evidence_fetches_relevant_results_and_normalizes_evidence():
@@ -184,10 +217,10 @@ def test_collect_skax_site_evidence_fetches_relevant_results_and_normalizes_evid
     assert "로보어드바이저" in evidence["matched_keywords"]
     assert result["stats"]["generated_query_count"] == 1
     assert result["stats"]["searched_result_count"] == 4
-    assert result["stats"]["filtered_result_count"] == 2
+    assert result["stats"]["filtered_result_count"] == 1
     assert result["stats"]["fetched_url_count"] == 1
     assert result["stats"]["collected_evidence_count"] == 1
-    assert result["stats"]["skipped_url_count"] == 2
+    assert result["stats"]["skipped_url_count"] == 3
     assert result["stats"]["failed_url_count"] == 0
 
 
@@ -1055,7 +1088,7 @@ def test_tavily_search_client_extracts_only_skax_results(monkeypatch):
     assert captured["json"]["api_key"] == "tavily-key"
     assert captured["json"]["query"] == "site:skax.co.kr 로보어드바이저"
     assert captured["json"]["include_domains"] == ["skax.co.kr"]
-    assert captured["json"]["include_raw_content"] is False
+    assert captured["json"]["include_raw_content"] is True
     assert captured["json"]["search_depth"] == "basic"
     assert captured["json"]["max_results"] == 3
     assert result["results"] == [
@@ -1067,7 +1100,7 @@ def test_tavily_search_client_extracts_only_skax_results(monkeypatch):
         }
     ]
     assert result["diagnostics"]["search_provider"] == "tavily_search"
-    assert result["diagnostics"]["raw_content_included"] is False
+    assert result["diagnostics"]["raw_content_included"] is True
     assert result["diagnostics"]["parsed_link_count"] == 3
     assert result["diagnostics"]["parsed_result_count"] == 1
     assert result["diagnostics"]["candidate_results"] == [
@@ -1216,6 +1249,44 @@ def test_collect_uses_tavily_content_without_fetching_page(monkeypatch):
     assert candidate["final_skip_reason"] is None
     assert candidate["candidate_relevance_score"] > 0
     assert "matched_related_product" in candidate["score_reasons"]
+
+
+def test_collect_prefers_tavily_raw_content_and_truncates_before_evidence(monkeypatch):
+    class FakeResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "results": [
+                    {
+                        "title": "SK AX 로보어드바이저",
+                        "url": "https://www.skax.co.kr/finance/digital-based-financial-service",
+                        "content": "짧은 스니펫",
+                        "raw_content": "원문본문" * 20,
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("services.evidence.skax_site_search_service.requests.post", lambda url, *, json, timeout: FakeResponse())
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=TavilySearchClient(api_key="tavily-key", max_content_chars=5000),
+        max_queries=1,
+        max_content_chars=24,
+    )
+
+    evidence = result["items"][0]
+    diagnostics = result["search_diagnostics"][0]
+    assert evidence["content"] == ("원문본문" * 20)[:24]
+    assert "짧은 스니펫" not in evidence["content"]
+    assert result["stats"]["truncated_content_count"] == 1
+    assert diagnostics["raw_content_included"] is True
+    assert "raw_content" not in diagnostics["candidate_results"][0]
+    assert "content" not in diagnostics["candidate_results"][0]
 
 
 def test_collect_truncates_tavily_content(monkeypatch):
@@ -1402,6 +1473,53 @@ def test_aicc_scores_lower_than_finance_ai_candidate():
     assert aicc is None or aicc["relevance_score"] < filtered[0]["relevance_score"]
     assert aicc is None or "penalty_unrelated_keyword:AICC" in aicc["score_reasons"]
     assert "matched_preferred_path:/finance" in filtered[0]["score_reasons"]
+
+
+def test_blockchain_broad_hints_alone_do_not_select_unrelated_finance_pages():
+    context = {
+        "management_number": "P202307002-KR0",
+        "title_final": "블록체인 합의 과정에서의 서명 검증 방법 및 시스템",
+        "business_area": "Blockchain",
+        "technology_area": "Blockchain",
+        "related_product": "ChainZ",
+    }
+
+    filtered = filter_search_results(
+        [
+            {
+                "title": "고객 결제 편의 개선",
+                "snippet": "블록체인 인증 보안 디지털 자산 문구가 일부 포함된 금융 결제 서비스",
+                "url": "https://www.skax.co.kr/finance/payment-convenience-improvement",
+            },
+            {
+                "title": "ChainZ 블록체인 서명 검증",
+                "snippet": "ChainZ 블록체인 합의 서명 검증 서비스",
+                "url": "https://www.skax.co.kr/security/chainz",
+            },
+        ],
+        context,
+    )
+
+    assert [item["url"] for item in filtered] == ["https://www.skax.co.kr/security/chainz"]
+    assert "matched_related_product" in filtered[0]["score_reasons"]
+    assert "matched_strong_term:블록체인" in filtered[0]["score_reasons"]
+
+
+def test_manufacturing_query_generation_includes_mcs_hint_without_finance_terms():
+    queries = build_search_queries(
+        {
+            "title_final": "CMP Pad의 물류 관리 시스템",
+            "business_area": "제조",
+            "technology_area": "CMP Pad 물류 기술",
+            "related_product": "CMP Pad 물류 시스템",
+        }
+    )
+
+    joined = " ".join(queries)
+    assert "MCS" in joined
+    assert "스마트팩토리" in joined
+    assert "금융" not in joined
+    assert "투자" not in joined
 
 
 def test_default_search_client_prefers_tavily_when_config_exists(monkeypatch):
