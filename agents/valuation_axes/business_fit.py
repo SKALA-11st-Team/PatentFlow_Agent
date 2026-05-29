@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from agents.valuation_axes.common import normalize_text
 from agents.valuation_axes.payload_common import build_base_input_payload
-from services.evidence.compression_service import parse_json_object
-from services.llm.client_service import call_llm
-from services.llm.prompt_service import load_prompt
 from workflow.state import PatentWorkflowState
 
 
@@ -45,14 +41,13 @@ WEAK_TERMS = {"예측", "분석", "관리", "서비스", "플랫폼", "솔루션
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = build_input_payload(state=state, evidence=evidence)
-    runtime.build_prompt(
+    prompt = runtime.build_prompt(
         prompt_name=PROMPT_PATH,
         state=state,
         payload=payload,
         artifact_name=f"{AXIS}_input",
     )
-    context_fit = classify_business_context_fit(payload)
-    return build_rule_based_business_fit_result(evidence=evidence, payload=payload, context_fit=context_fit)
+    return runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
@@ -188,47 +183,6 @@ def build_business_fit_quantitative_metrics(
         "best_relevance_score": max((evidence_relevance_score(item) for item in official_items), default=0.0),
         "official_business_evidence": official_score,
         "product_function_direct_match": product_score,
-    }
-
-
-def build_rule_based_business_fit_result(
-    *,
-    evidence: list[dict[str, Any]],
-    payload: dict[str, Any],
-    context_fit: dict[str, Any],
-) -> dict[str, Any]:
-    context = payload.get("business_fit_context") or {}
-    metrics = context.get("quantitative_metrics") or {}
-    official = metrics.get("official_business_evidence") or score_official_evidence_presence([])
-    product = metrics.get("product_function_direct_match") or score_product_function_direct_match({}, [])
-    context_subscore = build_business_context_fit_subscore(context_fit)
-    score = int(official["score"]) + int(product["score"]) + int(context_subscore["score"])
-    subscores = {
-        "official_business_evidence": {
-            "label": "공식 근거 존재성",
-            "score": int(official["score"]),
-            "max_score": 30,
-            "rationale": official["rationale"],
-        },
-        "product_function_direct_match": {
-            "label": "제품·기능 직접 매칭도",
-            "score": int(product["score"]),
-            "max_score": 45,
-            "rationale": product["rationale"],
-        },
-        "business_context_fit": context_subscore,
-    }
-    return {
-        "axis": AXIS,
-        "label": LABEL,
-        "score": score,
-        "grade": grade_from_score(score),
-        "rationale": build_rule_based_rationale(official, product, context_subscore),
-        "evidence_ids": [item["evidence_id"] for item in evidence if item.get("evidence_id")],
-        "risk_factors": build_rule_based_risk_factors(official, product, context_subscore),
-        "missing_information": build_rule_based_missing_information(official, product, context_subscore),
-        "confidence": calculate_business_fit_confidence(official, product, context_subscore),
-        "subscores": subscores,
     }
 
 
@@ -397,149 +351,6 @@ def extract_business_fit_core_terms(description: dict[str, Any]) -> dict[str, An
     }
 
 
-def classify_business_context_fit(payload: dict[str, Any]) -> dict[str, Any]:
-    context = payload.get("business_fit_context") or {}
-    official = context.get("skax_official_evidence") or []
-    if not official:
-        return {
-            "context_fit_label": "none",
-            "rationale": "SK AX 공식 evidence가 없어 사업 문맥 적합성을 판단할 근거가 없다.",
-            "confirmed_contexts": [],
-            "unconfirmed_contexts": ["SK AX 공식 사업/서비스 근거"],
-        }
-    prompt_payload = {
-        "patent_description": context.get("patent_description"),
-        "skax_official_evidence": official,
-        "rule_based_summary": context.get("quantitative_metrics"),
-    }
-    prompt = f"{load_prompt(PROMPT_PATH).strip()}\n\nInput JSON:\n{json.dumps(prompt_payload, ensure_ascii=False, indent=2)}"
-    try:
-        parsed = parse_json_object(call_llm(prompt))
-    except Exception:
-        parsed = {}
-    label = normalize_context_fit_label(parsed.get("context_fit_label"))
-    return {
-        "context_fit_label": label,
-        "rationale": normalize_text(parsed.get("rationale")) or context_fit_default_rationale(label),
-        "confirmed_contexts": normalize_list_local(parsed.get("confirmed_contexts")),
-        "unconfirmed_contexts": normalize_list_local(parsed.get("unconfirmed_contexts")),
-    }
-
-
-def build_business_context_fit_subscore(context_fit: dict[str, Any]) -> dict[str, Any]:
-    label = normalize_context_fit_label(context_fit.get("context_fit_label"))
-    return {
-        "label": "사업 문맥 적합성",
-        "score": score_business_context_fit_label(label),
-        "max_score": 25,
-        "rationale": normalize_text(context_fit.get("rationale")) or context_fit_default_rationale(label),
-        "label_result": label,
-    }
-
-
-def score_business_context_fit_label(label: Any) -> int:
-    return {
-        "direct": 25,
-        "plausible": 18,
-        "broad": 10,
-        "weak": 4,
-        "none": 0,
-    }.get(normalize_context_fit_label(label), 0)
-
-
-def normalize_context_fit_label(label: Any) -> str:
-    text = normalize_text(label).lower()
-    return text if text in {"direct", "plausible", "broad", "weak", "none"} else "none"
-
-
-def grade_from_score(score: int) -> str:
-    if score >= 90:
-        return "A"
-    if score >= 75:
-        return "B"
-    if score >= 60:
-        return "C"
-    return "D"
-
-
-def calculate_business_fit_confidence(
-    official: dict[str, Any],
-    product: dict[str, Any],
-    context_fit: dict[str, Any],
-) -> float:
-    value = 0.5
-    if official["evidence_count"] > 0:
-        value += 0.1
-    if official["evidence_count"] >= 3:
-        value += 0.05
-    if product["product_match_level"] == "direct":
-        value += 0.1
-    if product["strong_core_match_ratio"] > 0:
-        value += 0.1
-    if context_fit["label_result"] in {"direct", "plausible"}:
-        value += 0.1
-    if official["evidence_count"] == 0:
-        value -= 0.2
-    if product["score"] == 0:
-        value -= 0.15
-    if context_fit["label_result"] in {"weak", "none"}:
-        value -= 0.1
-    return round(max(0.3, min(0.9, value)), 2)
-
-
-def build_rule_based_rationale(official: dict[str, Any], product: dict[str, Any], context_fit: dict[str, Any]) -> str:
-    return " ".join(
-        [
-            official["rationale"],
-            product["rationale"],
-            f"사업 문맥 적합성은 {context_fit['label_result']}로 판단되어 {context_fit['score']}점으로 반영했다.",
-        ]
-    )
-
-
-def build_rule_based_risk_factors(
-    official: dict[str, Any],
-    product: dict[str, Any],
-    context_fit: dict[str, Any],
-) -> list[str]:
-    risks = []
-    if official["evidence_count"] == 0:
-        risks.append("SK AX 공식 사이트에서 특허와 연결되는 사업/서비스 근거가 확인되지 않음")
-    if product["product_match_level"] not in {"direct", "partial"}:
-        risks.append("공식 사업 근거에서 관련제품명이 직접 확인되지 않음")
-    concise_missing = [term for term in product["missing_core_terms"] if len(term) <= 30][:5]
-    if concise_missing:
-        risks.append(f"공식 사업 근거에서 특허 핵심 기능의 직접 언급이 제한적임: {', '.join(concise_missing)}")
-    if context_fit["label_result"] in {"weak", "none"}:
-        risks.append("공식 근거와 특허 문맥의 연결이 약하거나 확인되지 않음")
-    return unique_texts(risks)[:4]
-
-
-def build_rule_based_missing_information(
-    official: dict[str, Any],
-    product: dict[str, Any],
-    context_fit: dict[str, Any],
-) -> list[str]:
-    missing = []
-    if official["evidence_count"] == 0:
-        missing.append("특허 관련 SK AX 공식 사업/서비스 페이지")
-    if product["product_match_level"] != "direct":
-        missing.append("관련제품이 SK AX 공식 서비스 또는 오퍼링에 명시되어 있는지 확인할 수 있는 자료")
-    if product["missing_core_terms"] or context_fit["label_result"] in {"weak", "none"}:
-        missing.append("특허 핵심 기능과 SK AX 공식 서비스 간 직접 매핑을 확인할 수 있는 공식 자료")
-    return unique_texts(missing)[:3]
-
-
-def context_fit_default_rationale(label: str) -> str:
-    return {
-        "direct": "특허 문맥과 SK AX 공식 사업/서비스 문맥이 직접 연결된다.",
-        "plausible": "특허 문맥과 SK AX 공식 사업/서비스 문맥이 자연스럽게 연결되지만 직접 매핑은 제한적이다.",
-        "broad": "같은 산업 또는 사업군 수준의 연결은 있으나 적용 문맥은 넓거나 간접적이다.",
-        "weak": "공식 근거와 특허 문맥의 연결이 약하다.",
-        "none": "공식 근거와 특허 문맥의 연결 근거가 확인되지 않는다.",
-    }[label]
-
-
 def product_match_level_for(related_product: str, evidence_text_value: str) -> str:
     if not related_product:
         return "none"
@@ -564,13 +375,6 @@ def ratio(numerator: int, denominator: int) -> float:
 def normalize_core_term(value: Any) -> str:
     text = strip_korean_particle(normalize_text(value).strip("()[]{}.,;:·"))
     return "" if text in STOPWORDS else text
-
-
-def normalize_list_local(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [normalize_text(item) for item in value if normalize_text(item)][:5]
-    text = normalize_text(value)
-    return [text] if text else []
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
