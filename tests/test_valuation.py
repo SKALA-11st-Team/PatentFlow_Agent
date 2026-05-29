@@ -1759,9 +1759,8 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
     assert technology_payload["patent"]["citation_evidence"] == {}
 
 
-def test_apply_legal_scores_uses_labels_and_deterministic_metrics(tmp_path):
-    from agents.valuation_axes.legal import build_input_payload
-    from agents.valuation_axes.legal_scoring import apply_legal_scores
+def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp_path):
+    from agents.valuation_axes.legal import attach_legal_context, build_input_payload
 
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
@@ -1782,8 +1781,8 @@ def test_apply_legal_scores_uses_labels_and_deterministic_metrics(tmp_path):
     result = {
         "axis": "legal",
         "label": "권리성",
-        "score": 0,
-        "grade": "D",
+        "score": 87,
+        "grade": "B",
         "rationale": "권리성 평가",
         "evidence_ids": [],
         "risk_factors": [],
@@ -1791,6 +1790,8 @@ def test_apply_legal_scores_uses_labels_and_deterministic_metrics(tmp_path):
         "confidence": 0.9,
         "subscores": {
             "right_stability": {
+                "score": 34,
+                "max_score": 40,
                 "rationale": "차별 구성이 확인됩니다.",
                 "metrics": {
                     "prior_art_overlap": {"score": 30, "rationale": "직접 중복이 낮습니다."},
@@ -1798,6 +1799,8 @@ def test_apply_legal_scores_uses_labels_and_deterministic_metrics(tmp_path):
                 },
             },
             "claim_protection": {
+                "score": 36,
+                "max_score": 40,
                 "rationale": "핵심 해결수단이 청구항에 반영됩니다.",
                 "metrics": {
                     "core_solution_coverage": {"score": 12, "rationale": "핵심 구성이 반영됩니다."},
@@ -1807,6 +1810,8 @@ def test_apply_legal_scores_uses_labels_and_deterministic_metrics(tmp_path):
                 },
             },
             "portfolio_defensive_value": {
+                "score": 17,
+                "max_score": 20,
                 "rationale": "관련 특허군과 보완 관계가 있습니다.",
                 "metrics": {
                     "portfolio_connection": {"score": 6, "rationale": "구체적 연결성이 있습니다."},
@@ -1817,16 +1822,16 @@ def test_apply_legal_scores_uses_labels_and_deterministic_metrics(tmp_path):
         },
     }
 
-    scored = apply_legal_scores(result, payload=payload, state=state)
+    scored = attach_legal_context(result, payload=payload, state=state)
 
     assert scored["score"] == 87
     assert scored["grade"] == "B"
     assert scored["subscores"]["right_stability"]["score"] == 34
-    assert "current_right_status" not in scored["subscores"]["right_stability"]["metrics"]
-    assert scored["legal_scoring_metrics"]["right_status_gate"]["label"] == "registered_or_active"
+    assert scored["legal_context"]["right_status_gate"]["label"] == "registered_or_active"
     assert scored["subscores"]["claim_protection"]["score"] == 36
     assert scored["subscores"]["portfolio_defensive_value"]["score"] == 17
     assert scored["subscores"]["portfolio_defensive_value"]["metrics"]["follow_on_right_signal"]["score"] == 4
+    assert scored["sub_scores"]["portfolio_defensive_value_score"] == 17
 
 
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):

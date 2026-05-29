@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any
 
 from agents.valuation_axes.common import normalize_text, select_by_types_or_axes
-from agents.valuation_axes.legal_scoring import apply_legal_scores, build_legal_scoring_metrics
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context, unique_texts
 from workflow.state import PatentWorkflowState
 
@@ -23,7 +22,7 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         artifact_name=f"{AXIS}_input",
     )
     result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
-    return apply_legal_scores(result, payload=payload, state=state)
+    return attach_legal_context(result, payload=payload, state=state)
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
@@ -43,8 +42,147 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
         prior_art_candidates=valuation_prior_art_candidates(state),
         citation_evidence=valuation_citation_evidence(state),
     )
-    payload["legal_scoring_context"] = build_legal_scoring_metrics(payload=payload, state=state, labels={})
+    payload["legal_context"] = build_legal_context(payload=payload, state=state, labels={})
     return payload
+
+
+def attach_legal_context(
+    result: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+    state: PatentWorkflowState,
+) -> dict[str, Any]:
+    return {
+        **result,
+        "sub_scores": {
+            **(result.get("sub_scores") if isinstance(result.get("sub_scores"), dict) else {}),
+            **build_legacy_sub_scores(result.get("subscores")),
+        },
+        "legal_context": build_legal_context(state=state, payload=payload),
+    }
+
+
+def build_legal_context(
+    *,
+    state: PatentWorkflowState,
+    payload: dict[str, Any] | None = None,
+    labels: dict[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
+    del labels
+    patent = payload.get("patent") if isinstance(payload, dict) and isinstance(payload.get("patent"), dict) else {}
+    claim_context = patent.get("claim_context") if isinstance(patent.get("claim_context"), dict) else {}
+    citation_evidence = patent.get("citation_evidence") if isinstance(patent.get("citation_evidence"), dict) else {}
+    if not claim_context:
+        preprocessed = state.preprocessed_patent or {}
+        claim_context = {
+            "independent_claim_count": count_claims(preprocessed, independent=True),
+            "dependent_claim_count": count_claims(preprocessed, independent=False),
+            "total_claim_count": len(preprocessed.get("claims") or []),
+        }
+    if not citation_evidence:
+        citation_evidence = state.citation_evidence or {}
+    return {
+        "right_status_gate": legal_context_metric(
+            "right_status_gate",
+            label=right_status_gate_label(state, patent),
+            evidence=right_status_gate_evidence(state, patent),
+        ),
+        "claim_count_context": legal_context_metric(
+            "claim_count_context",
+            label="context_only",
+            evidence={
+                "independent_claim_count": int(claim_context.get("independent_claim_count") or 0),
+                "dependent_claim_count": int(claim_context.get("dependent_claim_count") or 0),
+                "total_claim_count": int(claim_context.get("total_claim_count") or 0),
+            },
+        ),
+        "citing_reference_context": legal_context_metric(
+            "citing_reference_context",
+            label="context_only",
+            evidence=(citation_evidence.get("citing_signal") if isinstance(citation_evidence, dict) else {}) or {},
+        ),
+    }
+
+
+def build_legacy_sub_scores(subscores: Any) -> dict[str, int]:
+    subscores = subscores if isinstance(subscores, dict) else {}
+    values = {
+        "right_stability_score": "right_stability",
+        "claim_protection_score": "claim_protection",
+        "portfolio_defensive_value_score": "portfolio_defensive_value",
+    }
+    return {
+        score_key: score
+        for score_key, subscore_key in values.items()
+        if (score := subscore_value(subscores, subscore_key)) is not None
+    }
+
+
+def subscore_value(subscores: dict[str, Any], key: str) -> int | None:
+    item = subscores.get(key)
+    if not isinstance(item, dict):
+        return None
+    try:
+        return int(item.get("score"))
+    except (TypeError, ValueError):
+        return None
+
+
+def right_status_gate_label(state: PatentWorkflowState, patent: dict[str, Any]) -> str:
+    status = right_status_text(state, patent)
+    if not status:
+        return "unknown"
+    if any(token in status for token in ("소멸", "거절", "취하", "포기")):
+        return "inactive"
+    if any(token in status for token in ("등록", "유효")):
+        return "registered_or_active"
+    return "unclear"
+
+
+def right_status_gate_evidence(state: PatentWorkflowState, patent: dict[str, Any]) -> str:
+    return right_status_text(state, patent) or "등록상태 정보 없음"
+
+
+def right_status_text(state: PatentWorkflowState, patent: dict[str, Any]) -> str:
+    metadata = patent.get("metadata") if isinstance(patent.get("metadata"), dict) else {}
+    kipris_metadata = patent.get("kipris_metadata") if isinstance(patent.get("kipris_metadata"), dict) else {}
+    structured = state.patent_structured or {}
+    return first_text(
+        metadata.get("status"),
+        metadata.get("register_status"),
+        metadata.get("registration_status"),
+        kipris_metadata.get("status"),
+        kipris_metadata.get("register_status"),
+        kipris_metadata.get("registration_status"),
+        structured.get("status"),
+    )
+
+
+def count_claims(preprocessed: dict[str, Any], *, independent: bool) -> int:
+    return sum(
+        1
+        for claim in preprocessed.get("claims") or []
+        if isinstance(claim, dict) and bool(claim.get("is_independent")) is independent
+    )
+
+
+def legal_context_metric(key: str, *, label: str, evidence: Any = None) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "score": None,
+        "max_score": 0,
+        "rationale": "",
+        "evidence": evidence,
+    }
+
+
+def first_text(*values: Any) -> str:
+    for value in values:
+        text = normalize_text(value)
+        if text:
+            return text
+    return ""
 
 
 def valuation_prior_art_candidates(state: PatentWorkflowState) -> list[str]:
