@@ -32,6 +32,7 @@ class PatentEvaluationRequest(BaseModel):
 class PatentEvaluationScore(BaseModel):
     category: str
     score: int | None = None
+    grade: str | None = None
     evidence: str
 
 
@@ -43,6 +44,9 @@ class PatentEvaluationResponse(BaseModel):
     valuationReportMarkdown: str | None = None
     artifactDir: str | None = None
     totalScore: int | None = None
+    averageScore: float | None = None
+    finalGrade: str | None = None
+    finalIndicator: str | None = None
     generatedAt: datetime
 
 
@@ -84,6 +88,9 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         valuationReportMarkdown=valuation_markdown or None,
         artifactDir=str(final_state.user_input.get("artifact_dir") or "") or None,
         totalScore=valuation_result.get("total_score"),
+        averageScore=valuation_average_score(valuation_result),
+        finalGrade=final_grade_for_average(valuation_average_score(valuation_result)),
+        finalIndicator=valuation_result.get("final_indicator"),
         generatedAt=datetime.now(timezone.utc),
     )
 
@@ -146,7 +153,30 @@ def valuation_scores(valuation_result: dict[str, Any]) -> list[PatentEvaluationS
             PatentEvaluationScore(
                 category=axis_result.get("label") or axis,
                 score=axis_result.get("score"),
+                grade=axis_result.get("grade"),
                 evidence=axis_result.get("rationale") or "평가 근거가 생성되지 않았습니다.",
             )
         )
     return scores
+
+
+def valuation_average_score(valuation_result: dict[str, Any]) -> float | None:
+    average_score = valuation_result.get("average_score")
+    if isinstance(average_score, (int, float)):
+        return round(float(average_score), 1)
+    total_score = valuation_result.get("total_score")
+    if isinstance(total_score, (int, float)):
+        return round(float(total_score) / 4, 1)
+    return None
+
+
+def final_grade_for_average(average_score: float | None) -> str | None:
+    if average_score is None:
+        return None
+    if average_score >= 80:
+        return "A"
+    if average_score >= 60:
+        return "B"
+    if average_score >= 40:
+        return "C"
+    return "D"

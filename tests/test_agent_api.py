@@ -27,11 +27,13 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
         state.valuation_result = {
             "recommendation": "유지 권고",
             "total_score": 280,
+            "average_score": 70.0,
+            "final_indicator": "조건부 유지",
             "axes": {
-                "legal": {"label": "권리성", "score": 70, "rationale": "권리성 근거"},
-                "technology": {"label": "기술성", "score": 75, "rationale": "기술성 근거"},
-                "market": {"label": "시장성", "score": 65, "rationale": "시장성 근거"},
-                "business_fit": {"label": "사업 연계성", "score": 70, "rationale": "사업 연계성 근거"},
+                "legal": {"label": "권리성", "score": 70, "grade": "B", "rationale": "권리성 근거"},
+                "technology": {"label": "기술성", "score": 75, "grade": "B", "rationale": "기술성 근거"},
+                "market": {"label": "시장성", "score": 65, "grade": "B", "rationale": "시장성 근거"},
+                "business_fit": {"label": "사업 연계성", "score": 70, "grade": "B", "rationale": "사업 연계성 근거"},
             },
             "final_report_markdown": "# 특허 가치판단 종합 보고서\n\n본문",
         }
@@ -57,7 +59,11 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     assert "summary" not in body
     assert len(body["scores"]) == 4
     assert body["scores"][3]["category"] == "사업 연계성"
+    assert body["scores"][0]["grade"] == "B"
     assert body["totalScore"] == 280
+    assert body["averageScore"] == 70.0
+    assert body["finalGrade"] == "B"
+    assert body["finalIndicator"] == "조건부 유지"
     assert body["summaryMarkdown"].startswith("# 요약")
     assert body["valuationReportMarkdown"].startswith("# 특허 가치판단 종합 보고서")
     assert "rawMarkdown" not in body
