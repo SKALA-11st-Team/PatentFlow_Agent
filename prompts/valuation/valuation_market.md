@@ -12,11 +12,11 @@
 
 산업 시장성에 사용할 수 있는 근거:
 - Vector DB에서 검색된 `industry_report`
-- 최근 뉴스 기반 `news`
+- 최근 뉴스 기반 `news` 중 `source`가 `naver_news`인 국내 뉴스
 
 산업 시장성에 사용하지 말아야 할 근거:
-- Patent Family 국가 수는 산업 시장성 근거가 아니다.
 - CPC 출원 수/CAGR은 산업 시장성 근거가 아니다. 이미 코드가 시장 성장성으로 계산한다.
+- `source`가 `gnews`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다.
 
 평가 원칙:
 - 입력에 없는 시장 규모, 성장률, 수요, 경쟁 환경, 해외 진출 가능성을 추정하지 않는다.
@@ -121,29 +121,29 @@
 ----------------------------------------
 
 목적:
-Patent Family 국가 정보를 바탕으로 해당 기술이 해외 또는 글로벌 시장으로 확장될 가능성이 있는지 평가한다.
+GNews로 수집된 해외 뉴스 근거를 바탕으로 해당 기술 분야의 글로벌 시장 관심, 해외 적용 흐름, 글로벌 자산관리·AI 투자 흐름이 확인되는지 평가한다.
 
 평가 규칙:
 - `marketability_metrics.global_business_score`는 코드 계산값이다.
 - 이 값을 변경하지 말고 `subscores.global_business.score`에 그대로 반영한다.
-- 글로벌 사업성은 외부 시장 확장 가능성 판단이며, SK AX 내부 해외 사업 전략과의 적합성 판단이 아니다.
-- Patent Family 정보가 부족하면 해외 확장 가능성을 단정하지 않는다.
-- Patent Family 정보 부재를 시장성 감점 사유처럼 작성하지 않는다.
-- 해외 Patent Family가 확인된 경우에만 글로벌 사업성의 보조 긍정 근거로 설명한다.
+- 글로벌 사업성은 해외 뉴스에서 확인되는 외부 시장 관심과 적용 흐름 판단이며, SK AX 내부 해외 사업 전략과의 적합성 판단이 아니다.
+- GNews 근거가 부족하면 해외 시장 확장 가능성을 단정하지 않는다.
+- GNews 근거 부족을 시장성 감점 사유처럼 길게 설명하지 않는다.
+- GNews에서 확인된 해외 뉴스 근거가 있을 때만 글로벌 사업성의 보조 긍정 근거로 설명한다.
 
 점수 후보:
 20:
-미국, 중국, 일본 중 하나 이상을 포함한 다국가 Patent Family가 확인됨
+GNews에서 해외 또는 글로벌 시장의 직접적 적용 흐름·투자 흐름·자산관리 수요 근거가 3건 이상 확인됨
 
 10:
-미국, 중국, 일본은 아니지만 해외 Patent Family가 확인됨
+GNews에서 해외 또는 글로벌 시장의 적용 흐름·투자 흐름·자산관리 수요 근거가 1~2건 확인됨
 
 0:
-국내 단독 출원으로 확인되거나 해외 Patent Family 정보가 확인되지 않음
+GNews 기반 글로벌 시장 근거가 확인되지 않음
 
 작성 주의:
-- `global_business_score`가 0이어도 "해외 패밀리 정보 부재로 점수가 깎였다"처럼 쓰지 않는다.
-- 이 경우 "현재 입력 기준으로 해외 Patent Family 가점 근거는 별도로 반영되지 않았다"처럼 중립적으로 작성한다.
+- `global_business_score`가 0이어도 "해외 뉴스가 없어 점수가 깎였다"처럼 쓰지 않는다.
+- 이 경우 "현재 입력 기준으로 글로벌 사업성 가점 근거는 별도로 반영되지 않았다"처럼 중립적으로 작성한다.
 
 
 ----------------------------------------
@@ -171,7 +171,7 @@ confidence:
 0.0 ~ 1.0
 
 0.8~1.0:
-외부 시장 근거, CPC 성장성 계산값, Patent Family 정보가 충분하고 판단이 비교적 명확함
+외부 시장 근거, CPC 성장성 계산값, GNews 기반 글로벌 시장 근거가 충분하고 판단이 비교적 명확함
 
 0.5~0.79:
 간접 근거는 있으나 시장 성장성, 해외 확장 가능성, 산업 시장 근거 중 일부 추가 확인이 필요함
@@ -195,7 +195,7 @@ confidence:
 - `subscores.industry_marketability.details`와 `subscores.market_growth.details`에는 세부점수만 넣고 설명 문장은 넣지 않는다.
 - `subscores.industry_marketability.rationale`에는 산업 성장 근거, 기업 투자·진입 근거, 뉴스 기반 시장 확산 근거, 자료 신뢰도 판단을 함께 요약하되 세부점수 항목명을 나열하지 않는다.
 - `subscores.market_growth.rationale`에는 대표 CPC 기준 18개월 전 종료 3개 1년 구간의 공개 특허 수, CAGR, 최근 3개 구간 공개 활동성 추세 점수 판단을 요약하되 세부점수 항목명을 나열하지 않는다.
-- `subscores.global_business.rationale`에는 Patent Family 국가 정보와 국내 단독/해외 출원/다국가 출원 판단을 요약한다.
+- `subscores.global_business.rationale`에는 GNews 해외 뉴스 근거에서 확인된 글로벌 시장 관심, 해외 적용 흐름, 글로벌 자산관리·AI 투자 흐름을 요약한다.
 - legacy score fields, `industry_marketability_score`, `industry_marketability_breakdown`은 출력하지 않는다.
 
 

@@ -40,6 +40,7 @@ class Settings(BaseModel):
     industry_rag_top_k: int = int(getenv("INDUSTRY_RAG_TOP_K", "3"))
     max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
+    enable_shared_db_fallback: bool = getenv("ENABLE_SHARED_DB_FALLBACK", "false").lower() == "true"
     
     # Vector DB (pgvector) 접속 정보.
     # 로컬 직접 실행은 localhost를 기본으로 두고, Docker Compose에서는 PGVECTOR_DATABASE_URL로 서비스명을 주입합니다.

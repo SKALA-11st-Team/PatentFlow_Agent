@@ -42,7 +42,7 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
 - industry_rag는 원칙적으로 4~8개 어절의 키워드 묶음으로 작성한다.
 - industry_rag 배열은 {{industry_rag_query_count}}개의 검색어를 포함한다.
 - skax_site는 SK AX 공식 사이트 검색용 한국어/영문 혼합 검색어로 작성한다.
-- skax_site의 모든 검색어는 반드시 `site:skax.co.kr`로 시작한다.
+- skax_site의 모든 검색어는 반드시 `site:skax.co.kr SK AX`로 시작한다.
 - skax_site는 외부 뉴스, 블로그, SK그룹 다른 도메인, 미러링 사이트를 찾기 위한 검색어를 만들지 않는다.
 - skax_site는 입력의 related_product, business_area, technology_area, title, abstract, problem, solution을 보고 SK AX 공식 사업/서비스 페이지에서 쓰일 법한 제품·서비스·사업 표현으로 작성한다.
 - skax_site는 제품명/서비스명을 가장 우선하고, 관련사업/관련기술과 특허명 핵심어를 보조로 사용한다.
@@ -76,11 +76,11 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
 - AI 의료영상 진단 솔루션 시장
 
 좋은 skax_site 검색어 예시:
-- site:skax.co.kr 로보어드바이저 금융 자산관리
-- site:skax.co.kr 디지털 금융 서비스 AI 예측
-- site:skax.co.kr ChainZ 블록체인 인증 보안
-- site:skax.co.kr CMP 패드 제조 자동화
-- site:skax.co.kr 스마트팩토리 물류 자동화
+- site:skax.co.kr SK AX 로보어드바이저 금융 자산관리
+- site:skax.co.kr SK AX 디지털 금융 서비스 AI 예측
+- site:skax.co.kr SK AX ChainZ 블록체인 인증 보안
+- site:skax.co.kr SK AX CMP 패드 제조 자동화
+- site:skax.co.kr SK AX 스마트팩토리 물류 자동화
 
 출력 형식:
 {

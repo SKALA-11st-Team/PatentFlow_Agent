@@ -91,6 +91,57 @@ def test_evaluate_patent_builds_patent_id_input(monkeypatch):
     assert captured["no_save"] is True
 
 
+def test_evaluate_patent_does_not_use_shared_db_fallback_by_default(monkeypatch):
+    captured = {}
+
+    def fake_run_workflow(state: PatentWorkflowState):
+        captured.update(state.user_input)
+        state.summary_result = {"plain_summary": "요약"}
+        state.valuation_result = {"axes": {}, "final_report_markdown": "보고서"}
+        return state
+
+    def fake_get_patent_identifiers(patent_id):
+        raise AssertionError("shared DB fallback should be disabled by default")
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", lambda state: {})
+    monkeypatch.setattr("app.api.get_patent_identifiers", fake_get_patent_identifiers)
+    monkeypatch.setattr("app.api.settings.enable_shared_db_fallback", False)
+
+    response = client.post("/api/v1/ai/patents/1/evaluate", json={"noSave": True})
+
+    assert response.status_code == 200
+    assert captured["patent_id"] == 1
+
+
+def test_evaluate_patent_can_use_shared_db_fallback_when_enabled(monkeypatch):
+    captured = {}
+
+    def fake_run_workflow(state: PatentWorkflowState):
+        captured.update(state.user_input)
+        state.summary_result = {"plain_summary": "요약"}
+        state.valuation_result = {"axes": {}, "final_report_markdown": "보고서"}
+        return state
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", lambda state: {})
+    monkeypatch.setattr("app.api.settings.enable_shared_db_fallback", True)
+    monkeypatch.setattr(
+        "app.api.get_patent_identifiers",
+        lambda patent_id: {
+            "management_number": "P202405001-KR0",
+            "application_number": "10-2024-0115774",
+            "registration_number": "10-2932891",
+        },
+    )
+
+    response = client.post("/api/v1/ai/patents/123/evaluate", json={"noSave": True})
+
+    assert response.status_code == 200
+    assert captured["management_number"] == "P202405001-KR0"
+    assert "patent_id" not in captured
+
+
 def test_evaluate_patent_can_disable_llm_supervisor(monkeypatch):
     captured = {}
 
@@ -140,3 +191,36 @@ def test_evaluate_patent_ignores_swagger_placeholder_identifiers(monkeypatch):
     assert captured["management_number"] == "P202405001-KR0"
     assert "application_number" not in captured
     assert "registration_number" not in captured
+
+
+def test_recommend_fields_endpoint_returns_business_and_technology_only(monkeypatch):
+    monkeypatch.setattr(
+        "app.api.recommend_fields",
+        lambda **kwargs: {
+            "businessArea": "Data",
+            "technologyArea": "데이터분석",
+            "confidence": 0.82,
+            "confidenceText": "높음",
+            "reason": "특허명과 기술 내용이 데이터 분석 분류와 가장 가깝습니다.",
+        },
+    )
+
+    response = client.post(
+        "/api/v1/ai/patents/PAT-TEST/recommend-fields",
+        json={
+            "title": "강화학습 기반 자산배분 시스템",
+            "businessArea": "",
+            "technologyArea": "",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "businessArea": "Data",
+        "technologyArea": "데이터분석",
+        "confidence": 0.82,
+        "confidenceText": "높음",
+        "reason": "특허명과 기술 내용이 데이터 분석 분류와 가장 가깝습니다.",
+    }
+    assert "productName" not in body

@@ -144,15 +144,15 @@ SK AX 공식 evidence가 대상 특허의 사업 연계성 판단에 사용할 �
 - 특허의 문제·해결수단·적용 대상과 공식 evidence의 서비스/업무 문맥을 비교한다.
 - 적용 문맥이 직접 연결되면 높게 평가한다.
 - 사업 영역과 적용 방향은 자연스럽지만 1:1 구현 매핑이 부족하면 중간 점수를 선택한다.
-- 같은 산업 또는 기술군 수준의 연결만 있으면 broad 수준으로 평가한다.
-- 추정에 가까운 연결은 weak 또는 none으로 평가한다.
+- 같은 산업 또는 기술군 수준의 연결만 있으면 낮은 점수 후보를 선택한다.
+- 추정에 가까운 연결이거나 문맥상 연결 근거가 없으면 4점 또는 0점을 선택한다.
 
 점수 후보:
-- 25점: direct. 특허의 문제, 해결수단, 적용 대상이 SK AX 공식 evidence의 서비스/업무 문맥과 직접 연결됨
-- 18점: plausible. 사업 영역과 적용 방향은 자연스럽게 연결되지만 핵심 구현의 1:1 매핑은 부족함
-- 10점: broad. 같은 산업 또는 기술군 수준의 연결은 있으나 적용 문맥은 넓거나 간접적임
-- 4점: weak. 공식 evidence와 특허 문맥의 연결이 약하거나 추정에 가까움
-- 0점: none. 문맥상 연결 근거가 확인되지 않음
+- 25점: 특허의 문제, 해결수단, 적용 대상이 SK AX 공식 evidence의 서비스/업무 문맥과 직접 연결됨
+- 18점: 사업 영역과 적용 방향은 자연스럽게 연결되지만 핵심 구현의 1:1 매핑은 부족함
+- 10점: 같은 산업 또는 기술군 수준의 연결은 있으나 적용 문맥은 넓거나 간접적임
+- 4점: 공식 evidence와 특허 문맥의 연결이 약하거나 추정에 가까움
+- 0점: 문맥상 연결 근거가 확인되지 않음
 
 
 ----------------------------------------
@@ -186,7 +186,6 @@ confidence:
 - `subscores.official_business_evidence.score`는 0, 8, 16, 24, 30 중 하나만 사용한다.
 - `subscores.product_function_direct_match.score`는 0, 12, 24, 36, 45 중 하나만 사용한다.
 - `subscores.business_context_fit.score`는 0, 4, 10, 18, 25 중 하나만 사용한다.
-- `subscores.business_context_fit.details.context_fit_label`은 direct/plausible/broad/weak/none 중 하나만 사용한다.
 - `evidence_ids`에는 출력 근거로 실제 사용한 evidence_id만 작성한다.
 - 점수 감점 사유와 자료 부족 사유를 구분한다.
 - 관련제품 또는 핵심 기능이 공식 evidence에서 확인되지 않으면 그 한계를 구체적으로 작성한다.
@@ -217,9 +216,6 @@ Return ONLY JSON:
       "label": "사업 문맥 적합성",
       "score": 0,
       "max_score": 25,
-      "details": {
-        "context_fit_label": "direct/plausible/broad/weak/none"
-      },
       "rationale": "..."
     }
   },

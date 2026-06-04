@@ -6,8 +6,10 @@ from typing import Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from agents.field_recommendation import recommend_fields
 from app.config import settings
 from app.main import save_outputs
+from services.patent.shared_db_service import get_patent_identifiers
 from workflow.graph import run_workflow
 from workflow.state import PatentWorkflowState
 
@@ -48,6 +50,38 @@ class PatentEvaluationResponse(BaseModel):
     finalGrade: str | None = None
     finalIndicator: str | None = None
     generatedAt: datetime
+
+
+class FieldRecommendationRequest(BaseModel):
+    title: str | None = None
+    managementNumber: str | None = None
+    applicationNumber: str | None = None
+    technologyArea: str | None = None
+    businessArea: str | None = None
+
+
+class FieldRecommendationResponse(BaseModel):
+    businessArea: str
+    technologyArea: str
+    confidence: float
+    confidenceText: str
+    reason: str
+
+
+@app.post("/api/v1/ai/patents/{patent_id}/recommend-fields", response_model=FieldRecommendationResponse)
+def recommend_patent_fields(patent_id: str, request: FieldRecommendationRequest) -> FieldRecommendationResponse:
+    del patent_id
+    try:
+        result = recommend_fields(
+            title=request.title,
+            management_number=request.managementNumber,
+            application_number=request.applicationNumber,
+            technology_area=request.technologyArea,
+            business_area=request.businessArea,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Field recommendation failed: {exc.__class__.__name__}") from exc
+    return FieldRecommendationResponse(**result)
 
 
 @app.get("/health")
@@ -99,6 +133,11 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
     management_number = normalize_optional_identifier(request.managementNumber)
     application_number = normalize_optional_identifier(request.applicationNumber)
     registration_number = normalize_optional_identifier(request.registrationNumber)
+    if not management_number and not application_number and not registration_number and settings.enable_shared_db_fallback:
+        db_identifiers = get_patent_identifiers(patent_id) or {}
+        management_number = normalize_optional_identifier(db_identifiers.get("management_number"))
+        application_number = normalize_optional_identifier(db_identifiers.get("application_number"))
+        registration_number = normalize_optional_identifier(db_identifiers.get("registration_number"))
     identifier = (
         management_number
         or application_number

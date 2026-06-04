@@ -24,8 +24,9 @@ INDUSTRY_MARKETABILITY_BREAKDOWN_LIMITS = {
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = build_input_payload(state=state, evidence=evidence)
-    metrics = build_marketability_metrics(state)
+    metrics = build_marketability_metrics(state, evidence=evidence)
     payload["marketability_metrics"] = metrics
+    payload["market_evidence_groups"] = build_market_evidence_groups(evidence)
     prompt = runtime.build_prompt(
         prompt_name=PROMPT_PATH,
         state=state,
@@ -40,7 +41,7 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
     del state
     return select_by_types_or_axes(
         items,
-        source_types={"industry_report", "company_disclosure", "news"},
+        source_types={"industry_report", "news"},
         axes={AXIS},
         limit=None,
     )
@@ -50,15 +51,36 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
     return build_base_input_payload(state=state, evidence=evidence)
 
 
-def build_marketability_metrics(state: PatentWorkflowState) -> dict[str, Any]:
+def build_marketability_metrics(state: PatentWorkflowState, *, evidence: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     representative_cpc = extract_representative_cpc(state)
     growth = build_market_growth_metrics(representative_cpc)
-    global_business = build_global_business_metrics(state.kipris_family_patents or [])
+    global_business = build_global_business_metrics(evidence or [])
     return {
         "representative_cpc": representative_cpc,
         **growth,
         **global_business,
     }
+
+
+def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, list[str]]:
+    groups = {
+        "industry_report_evidence_ids": [],
+        "naver_news_evidence_ids": [],
+        "gnews_evidence_ids": [],
+    }
+    for item in evidence:
+        evidence_id = normalize_text(item.get("evidence_id"))
+        if not evidence_id:
+            continue
+        source = normalize_text(item.get("source")).lower()
+        source_type = normalize_text(item.get("source_type")).lower()
+        if source_type == "industry_report":
+            groups["industry_report_evidence_ids"].append(evidence_id)
+        elif source == "naver_news":
+            groups["naver_news_evidence_ids"].append(evidence_id)
+        elif source == "gnews":
+            groups["gnews_evidence_ids"].append(evidence_id)
+    return groups
 
 
 def extract_representative_cpc(state: PatentWorkflowState) -> str | None:
@@ -256,35 +278,33 @@ def score_recent_trend(counts: list[int]) -> tuple[str, int]:
     return "flat_or_mixed", 8
 
 
-def build_global_business_metrics(family_patents: list[dict[str, Any]]) -> dict[str, Any]:
-    countries = sorted({country for item in family_patents for country in [extract_country_code(item)] if country})
-    foreign_countries = [country for country in countries if country != "KR"]
-    priority_countries = {"US", "CN", "JP"}
-    if set(foreign_countries).intersection(priority_countries):
+def build_global_business_metrics(evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "gnews"]
+    quality_items = [item for item in gnews_items if has_market_signal_content(item)]
+    quality_count = len(quality_items)
+    if quality_count >= 3:
         score = 20
-        status = "priority_country_family"
-    elif foreign_countries:
+        status = "strong_gnews_global_signal"
+    elif quality_count >= 1:
         score = 10
-        status = "foreign_family"
+        status = "limited_gnews_global_signal"
     else:
         score = 0
-        status = "domestic_only"
+        status = "no_gnews_global_signal"
     return {
-        "family_countries": countries,
-        "foreign_family_countries": foreign_countries,
+        "gnews_evidence_count": len(gnews_items),
+        "gnews_quality_evidence_count": quality_count,
+        "gnews_evidence_ids": [item.get("evidence_id") for item in quality_items if item.get("evidence_id")],
         "global_business_status": status,
         "global_business_score": score,
     }
 
 
-def extract_country_code(item: dict[str, Any]) -> str | None:
-    raw = item.get("raw") if isinstance(item.get("raw"), dict) else {}
-    for key in ("country_code", "countryCode", "publicationCountryCode", "applicationCountryCode", "country"):
-        value = item.get(key) or raw.get(key)
-        text = normalize_text(value).upper()
-        if text:
-            return text
-    return None
+def has_market_signal_content(item: dict[str, Any]) -> bool:
+    if normalize_text(item.get("compressed_summary")):
+        return True
+    key_facts = item.get("key_facts")
+    return isinstance(key_facts, list) and any(normalize_text(fact) for fact in key_facts)
 
 
 def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
@@ -364,7 +384,7 @@ def build_market_subscores(
             "score": global_business_score,
             "max_score": 20,
             "rationale": normalize_text(global_business.get("rationale"))
-            or "Patent Family 국가 정보로 산정된 코드 계산값입니다.",
+            or "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
         },
     }
 

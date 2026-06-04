@@ -31,8 +31,8 @@ def test_business_fit_prompt_matches_official_evidence_criteria():
     assert "공식 근거 존재성: 30점" in text
     assert "제품·기능 직접 매칭도: 45점" in text
     assert "사업 문맥 적합성: 25점" in text
-    assert "direct/plausible/broad/weak/none" in text
-    assert "context_fit_label" in text
+    assert "direct/plausible/broad/weak/none" not in text
+    assert "context_fit_label" not in text
     assert '"axis": "business_fit"' in text
     assert '"score": 0' in text
     assert '"subscores"' in text
@@ -122,17 +122,17 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
         captured_prompts.append(prompt)
         return json.dumps(
             {
-                "score": 58,
+                "score": 54,
                 "subscores": {
                     "right_stability": {
                         "label": "권리안정성",
-                        "score": 26,
-                        "max_score": 40,
+                        "score": 22,
+                        "max_score": 35,
                         "details": {
                             "prior_art_overlap": {
                                 "label": "선행문헌 대비 청구항 중복도",
-                                "score": 22,
-                                "max_score": 30,
+                                "score": 18,
+                                "max_score": 25,
                                 "rationale": "일부 핵심 구성이 겹치지만 차별 구성이 남아 있다.",
                             },
                             "claim_structure_stability": {
@@ -177,21 +177,21 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
                         "rationale": "핵심 기능은 보호하지만 일부 구현 한정이 있다.",
                     },
                     "portfolio_defensive_value": {
-                        "label": "포트폴리오·방어가치",
+                        "label": "포트폴리오·해외 권리 가치",
                         "score": 11,
-                        "max_score": 20,
+                        "max_score": 25,
                         "details": {
-                            "portfolio_connection": {
-                                "label": "관련 특허군 연결성",
-                                "score": 4,
-                                "max_score": 6,
-                                "rationale": "인접 기능의 관련 특허가 확인된다.",
+                            "portfolio_connection_coverage": {
+                                "label": "관련 특허군 연계·커버리지",
+                                "score": 11,
+                                "max_score": 15,
+                                "rationale": "관련 특허군과 연결되고 새로운 보호 포인트가 일부 확인된다.",
                             },
-                            "portfolio_coverage_extension": {
-                                "label": "포트폴리오 커버리지 확장성",
-                                "score": 7,
-                                "max_score": 10,
-                                "rationale": "새로운 보호 포인트가 일부 확인된다.",
+                            "overseas_right_coverage": {
+                                "label": "해외 권리 확보 범위",
+                                "score": 0,
+                                "max_score": 6,
+                                "rationale": "현재 입력 기준에서 해외 권리 확보 가점 근거는 확인되지 않는다.",
                             },
                             "follow_on_right_signal": {
                                 "label": "후속 권리화 신호",
@@ -203,7 +203,7 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
                         "rationale": "동일 관리번호 패밀리와 보완 관계가 있다.",
                     },
                 },
-                "grade": "D",
+                "grade": "C",
                 "rationale": "권리성 단독 평가",
                 "evidence_ids": ["portfolio_001"],
                 "risk_factors": ["유사 인용문헌 비교 필요"],
@@ -245,8 +245,8 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
 
     axes = result.valuation_result["axes"]
     assert list(axes) == ["legal"]
-    assert axes["legal"]["subscores"]["right_stability"]["score"] == 26
-    assert axes["legal"]["score"] == 58
+    assert axes["legal"]["subscores"]["right_stability"]["score"] == 22
+    assert axes["legal"]["score"] == 54
     assert axes["legal"]["evidence_ids"] == ["portfolio_001"]
     assert axes["legal"]["legal_context"]["claim_count_context"]["evidence"]["total_claim_count"] == 2
     assert "Valuation Legal Axis Prompt" in captured_prompts[0]
@@ -643,7 +643,6 @@ def test_business_fit_run_uses_llm_for_final_axis_json():
                     "label": "사업 문맥 적합성",
                     "score": 18,
                     "max_score": 25,
-                    "details": {"context_fit_label": "plausible"},
                     "rationale": "사업 문맥이 자연스럽게 연결된다.",
                 },
             },
@@ -681,7 +680,7 @@ def test_business_fit_run_uses_llm_for_final_axis_json():
     assert result["subscores"]["official_business_evidence"]["score"] == 16
     assert result["subscores"]["product_function_direct_match"]["score"] == 36
     assert result["subscores"]["business_context_fit"]["score"] == 18
-    assert result["subscores"]["business_context_fit"]["details"]["context_fit_label"] == "plausible"
+    assert "details" not in result["subscores"]["business_context_fit"]
     assert result["score"] == 70
     assert result["grade"] == "C"
 
@@ -848,7 +847,7 @@ def test_business_fit_rubric_is_externalized_to_prompt_md():
     assert "사업 문맥 적합성: 25점" in text
     assert '"axis": "business_fit"' in text
     assert '"subscores"' in text
-    assert "context_fit_label" in text
+    assert "context_fit_label" not in text
     assert "business_connection" not in text
     assert "portfolio_necessity" not in text
     assert "practical_applicability" not in text
@@ -897,6 +896,7 @@ def test_market_score_helpers_apply_40_40_20_structure():
 
     from agents.valuation_axes.market import (
         apply_marketability_scores,
+        build_global_business_metrics,
         market_growth_reference_date,
         market_growth_windows,
         score_cagr,
@@ -951,7 +951,7 @@ def test_market_score_helpers_apply_40_40_20_structure():
             "label": "글로벌 사업성",
             "score": 20,
             "max_score": 20,
-            "rationale": "Patent Family 국가 정보로 산정된 코드 계산값입니다.",
+            "rationale": "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
         },
     }
 
@@ -983,20 +983,34 @@ def test_market_score_helpers_apply_40_40_20_structure():
     assert "industry_marketability_breakdown" not in result
     assert result["score"] == 60
 
+    assert build_global_business_metrics(
+        [
+            {"evidence_id": "g1", "source": "gnews", "compressed_summary": "글로벌 자산관리 AI 수요"},
+            {"evidence_id": "g2", "source": "gnews", "key_facts": ["해외 투자 흐름"]},
+            {"evidence_id": "n1", "source": "naver_news", "compressed_summary": "국내 뉴스"},
+        ]
+    ) == {
+        "gnews_evidence_count": 2,
+        "gnews_quality_evidence_count": 2,
+        "gnews_evidence_ids": ["g1", "g2"],
+        "global_business_status": "limited_gnews_global_signal",
+        "global_business_score": 10,
+    }
+
 
 def test_market_prompt_uses_18_month_lagged_three_window_activity():
     prompt = Path("prompts/valuation/valuation_market.md").read_text(encoding="utf-8")
 
     assert "18개월 전을 마지막 시점으로 하는 3개 1년 구간" in prompt
     assert "최근 3개년 공개 활동성" not in prompt
-    assert "Patent Family 정보 부재를 시장성 감점 사유처럼 작성하지 않는다." in prompt
+    assert "`source`가 `gnews`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다." in prompt
 
 
-def test_final_report_prompt_does_not_frame_missing_family_as_market_penalty():
+def test_final_report_prompt_uses_gnews_for_global_business():
     prompt = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
-    assert "Patent Family 정보 부재를 시장성 감점 사유처럼 작성하지 마세요." in prompt
-    assert "해외 Patent Family가 확인되면 글로벌 사업성의 긍정 근거로 설명하세요." in prompt
+    assert "글로벌 사업성은 GNews 등 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 중심으로 설명하세요." in prompt
+    assert "GNews 기반 글로벌 시장 근거가 없다는 사실만으로 시장성이 낮다고 단정하지 마세요." in prompt
     assert "해외 Patent Family가 확인되지 않아 글로벌 사업성은 국내 단독 출원 기준으로 낮게 반영되었습니다." not in prompt
 
 
@@ -2069,7 +2083,7 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
     result = {
         "axis": "legal",
         "label": "권리성",
-        "score": 87,
+        "score": 90,
         "grade": "B",
         "rationale": "권리성 평가",
         "evidence_ids": [],
@@ -2078,11 +2092,11 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
         "confidence": 0.9,
         "subscores": {
             "right_stability": {
-                "score": 34,
-                "max_score": 40,
+                "score": 29,
+                "max_score": 35,
                 "rationale": "차별 구성이 확인됩니다.",
                 "details": {
-                    "prior_art_overlap": {"score": 30, "rationale": "직접 중복이 낮습니다."},
+                    "prior_art_overlap": {"score": 25, "rationale": "직접 중복이 낮습니다."},
                     "claim_structure_stability": {"score": 4, "rationale": "독립항과 종속항 1개가 확인됩니다."},
                 },
             },
@@ -2098,12 +2112,12 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
                 },
             },
             "portfolio_defensive_value": {
-                "score": 17,
-                "max_score": 20,
+                "score": 25,
+                "max_score": 25,
                 "rationale": "관련 특허군과 보완 관계가 있습니다.",
                 "details": {
-                    "portfolio_connection": {"score": 6, "rationale": "구체적 연결성이 있습니다."},
-                    "portfolio_coverage_extension": {"score": 7, "rationale": "새 보호 포인트가 있습니다."},
+                    "portfolio_connection_coverage": {"score": 15, "rationale": "구체적 연결성과 별도 보호 포인트가 있습니다."},
+                    "overseas_right_coverage": {"score": 6, "rationale": "주요 권역 해외 등록이 확인됩니다."},
                     "follow_on_right_signal": {"score": 4, "rationale": "피인용 3건 이상입니다."},
                 },
             },
@@ -2112,12 +2126,12 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
 
     scored = attach_legal_context(result, payload=payload, state=state)
 
-    assert scored["score"] == 87
+    assert scored["score"] == 90
     assert scored["grade"] == "B"
-    assert scored["subscores"]["right_stability"]["score"] == 34
+    assert scored["subscores"]["right_stability"]["score"] == 29
     assert scored["legal_context"]["right_status_gate"]["label"] == "registered_or_active"
     assert scored["subscores"]["claim_protection"]["score"] == 36
-    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 17
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 25
     assert scored["subscores"]["portfolio_defensive_value"]["details"]["follow_on_right_signal"]["score"] == 4
 
 
