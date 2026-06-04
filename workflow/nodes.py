@@ -3,6 +3,7 @@ from pathlib import Path
 from app.config import settings
 from services.patent.kipris_patent_service import (
     download_and_parse_patent_pdf,
+    fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
     get_patent,
 )
@@ -41,7 +42,19 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
     )
     state.patent_structured = patent
     if patent and (state.user_input.get("collect_kipris_api") or state.user_input.get("collect_pdf")):
-        state.kipris_api_data = fetch_kipris_bibliography(patent["application_number"])
+        country = str(patent.get("country") or "").strip().upper()
+        if country and country != "KR":
+            state.kipris_api_data = fetch_foreign_patent_rights_data(
+                patent,
+                output_dir=artifact_subdir(state, "patent_markdown"),
+                collect_pdf=bool(state.user_input.get("collect_pdf")),
+            )
+            parsed_pdf = state.kipris_api_data.get("parsed_pdf") or {}
+            if parsed_pdf:
+                state.parsed_pdf = parsed_pdf
+                state.pdf_paths = [parsed_pdf["pdf_path"]]
+        else:
+            state.kipris_api_data = fetch_kipris_bibliography(patent["application_number"])
         state.kipris_family_patents = state.kipris_api_data.get("family_patents", [])
         state.citation_evidence = state.kipris_api_data.get("citation_evidence", {})
         state.patent_structured = {
@@ -55,7 +68,8 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 "citing_stats": state.kipris_api_data.get("citing_stats", {}),
             },
         }
-    if patent and state.user_input.get("collect_pdf"):
+    patent_country = str((patent or {}).get("country") or "").strip().upper()
+    if patent and state.user_input.get("collect_pdf") and not state.parsed_pdf and patent_country in {"", "KR"}:
         try:
             parsed_pdf = download_and_parse_patent_pdf(
                 patent["application_number"],

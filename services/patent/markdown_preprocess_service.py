@@ -221,8 +221,9 @@ def build_preprocessed_patent(
         source.get("application_number") if source else None,
     )
 
+    country_prefix = str(metadata.get("country") or db_metadata.get("country") or "KR").upper()
     result = {
-        "patent_id": f"KR{patent_id}" if patent_id else None,
+        "patent_id": f"{country_prefix}{patent_id}" if patent_id else None,
         "source": {
             "source_type": "kipris_api_plus_pdf_markdown" if api_data else "kipris_pdf_markdown",
             **(source or {}),

@@ -1,6 +1,11 @@
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
+    fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
+    extract_foreign_claims_from_text,
+    foreign_target_literature_candidates,
+    google_patents_pdf_url,
+    google_patents_publication_id,
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
     resolve_citation_evidence,
@@ -35,8 +40,16 @@ class FulltextClient:
 
 class Response:
     text = "<response><body /></response>"
+    headers = {}
+    content = b""
 
     def raise_for_status(self):
+        return None
+
+    def iter_content(self, chunk_size=1):
+        yield self.content[:chunk_size]
+
+    def close(self):
         return None
 
 
@@ -47,6 +60,51 @@ class Session:
     def get(self, url, params=None, timeout=None):
         self.calls.append({"url": url, "params": params, "timeout": timeout})
         return Response()
+
+
+class ForeignClient:
+    def __init__(self):
+        self.claim_calls = []
+
+    def overseas_demand_paragraph(self, literature_number, country_code):
+        self.claim_calls.append((literature_number, country_code))
+        if literature_number == "000012417849B2":
+            return {
+                "response": {
+                    "body": {
+                        "items": {
+                            "demandParagraphInfo": [
+                                {"claimText": "A system comprising a processor configured to identify associations."}
+                            ]
+                        }
+                    }
+                }
+            }
+        return {"response": {"body": {"items": {}}}}
+
+    def overseas_registration_fulltext(self, literature_number, country_code):
+        return {"response": {"body": {"items": {"item": {}}}}}
+
+    def overseas_open_fulltext(self, literature_number, country_code):
+        return {"response": {"body": {"items": {"item": {}}}}}
+
+
+class GooglePatentsResponse:
+    def __init__(self, text):
+        self.text = text
+
+    def raise_for_status(self):
+        return None
+
+
+class GooglePatentsSession:
+    def __init__(self, text):
+        self.text = text
+        self.calls = []
+
+    def get(self, url, timeout=None, **kwargs):
+        self.calls.append(url)
+        return GooglePatentsResponse(self.text)
 
 
 def test_citation_info_v3_uses_access_key_auth_param():
@@ -115,6 +173,95 @@ def test_overseas_registration_fulltext_uses_foreign_image_fulltext_access_key()
     assert "ServiceKey" not in call["params"]
     assert call["params"]["literatureNumber"] == "000004002589B2"
     assert call["params"]["countryCode"] == "JP"
+
+
+def test_foreign_target_literature_candidates_defaults_us_registration_to_b2():
+    candidates = foreign_target_literature_candidates(
+        {
+            "country": "US",
+            "registration_number": "12,417,849",
+            "application_number": "18/020,829",
+            "registration_date": "2026-01-01",
+        }
+    )
+
+    assert candidates[0]["country_code"] == "US"
+    assert candidates[0]["document_number"] == "12417849"
+    assert candidates[0]["kind_code"] == "B2"
+
+
+def test_fetch_foreign_patent_rights_data_uses_overseas_claims_for_us(monkeypatch):
+    client = ForeignClient()
+    monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: client)
+
+    result = fetch_foreign_patent_rights_data(
+        {
+            "country": "US",
+            "application_number": "18/020,829",
+            "registration_number": "12,417,849",
+            "title_final": "US title",
+            "status": "등록",
+        },
+        collect_pdf=False,
+    )
+
+    assert result["metadata"]["country"] == "US"
+    assert result["claims"][0]["source"] == "kipris_foreign_bibliographic_claims"
+    assert result["foreign_claim_literature_number"] == "000012417849B2"
+    assert ("000012417849B2", "US") in client.claim_calls
+
+
+def test_fetch_foreign_patent_rights_data_marks_unsupported_claim_api_without_kr_metadata(monkeypatch):
+    monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: ForeignClient())
+
+    result = fetch_foreign_patent_rights_data(
+        {
+            "country": "TW",
+            "application_number": "106132082",
+            "registration_number": "I669767",
+            "title_final": "TW title",
+            "status": "등록",
+        },
+        collect_pdf=False,
+    )
+
+    assert result["source_type"] == "kipris_foreign_patent"
+    assert result["metadata"]["country"] == "TW"
+    assert result["claims"] == []
+    assert result["warnings"] == ["kipris_foreign_claims_not_supported:TW", "kipris_foreign_claims_not_found"]
+
+
+def test_google_patents_publication_id_normalizes_cn_registration_number():
+    assert (
+        google_patents_publication_id({"country": "CN", "registration_number": "CN 110770661 B"})
+        == "CN110770661B"
+    )
+
+
+def test_google_patents_pdf_url_reads_citation_pdf_meta():
+    session = GooglePatentsSession(
+        '<html><meta name="citation_pdf_url" content="https://patentimages.storage.googleapis.com/x/CN110770661B.pdf"></html>'
+    )
+
+    result = google_patents_pdf_url(
+        {"country": "CN", "registration_number": "CN 110770661 B"},
+        session=session,
+    )
+
+    assert result == "https://patentimages.storage.googleapis.com/x/CN110770661B.pdf"
+    assert session.calls[0] == "https://patents.google.com/patent/CN110770661B/en"
+
+
+def test_extract_foreign_claims_from_text_supports_chinese_numbered_claims():
+    claims = extract_foreign_claims_from_text(
+        "1.一种测量控制方法，包括：计算设备可靠性指数并确定测量时机。\n"
+        "- 2.根据权利要求1所述的方法，其中，计算设备可靠性指数包括计算设备稳定性。"
+    )
+
+    assert len(claims) == 2
+    assert claims[0]["claim_no"] == 1
+    assert claims[0]["is_independent"] is True
+    assert claims[1]["dependency"] == 1
 
 
 def test_fulltext_application_number_candidates_include_normalized_and_original():
