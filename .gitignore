@@ -44,3 +44,5 @@ data/vector_db/*.db
 
 # Logs
 *.log
+
+edit_claude.md
