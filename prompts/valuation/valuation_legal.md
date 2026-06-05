@@ -99,6 +99,8 @@
 - overlap_basis는 대상 청구항의 어떤 핵심 구성요소가 어떤 선행문헌의 청구항·초록·기술내용과 겹친다고 보았는지 작성한다.
 - overlap_basis에는 대상 청구항 번호, 겹치는 구성요소, 비교 문헌 식별값을 포함한다.
 - 겹침이 없으면 overlap_basis에 "핵심 구성의 실질적 중복은 확인되지 않음"처럼 작성한다.
+- 선행문헌을 인용할 때는 입력 citation_evidence(kr_citation_documents/foreign_citation_documents)의 식별값(application_number/registration_number/publication_number) 또는 prior_art_candidates에 실제로 존재하는 문헌만 사용한다. 입력에 없는 문헌 번호를 새로 만들지 않는다.
+- 평가에 실제로 사용한 선행문헌 식별값은 출력의 prior_art_references에 모두 나열한다. overlap_basis나 rationale에서 인용한 문헌은 반드시 prior_art_references에 포함되어야 한다.
 
 점수화 기준:
 - prior_art_overlap:
@@ -248,6 +250,7 @@ confidence:
 - 각 detail score는 위 점수화 기준에 명시된 점수 중 하나만 사용한다.
 - 출력 score, grade, subscores.score는 시스템 코드가 재계산하지 않으므로 위 합계와 반드시 일치시킨다.
 - 입력의 legal_context 값은 판단 근거로 사용하되, 출력 details에는 평가에 사용한 detail score와 rationale을 그대로 작성한다.
+- prior_art_references에는 평가에 사용한 선행문헌 식별값만 입력에서 가져와 나열하고, 입력에 없는 번호는 만들지 않는다. 사용한 선행문헌이 없으면 빈 배열로 둔다.
 
 
 Return ONLY JSON:
@@ -316,6 +319,7 @@ Return ONLY JSON:
   "grade": "A/B/C/D",
   "rationale": "...",
   "evidence_ids": [],
+  "prior_art_references": [],
   "risk_factors": [],
   "missing_information": [],
   "confidence": 0.0

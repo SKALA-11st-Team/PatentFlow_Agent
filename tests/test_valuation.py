@@ -2371,3 +2371,33 @@ def test_market_growth_zero_base_with_later_data_preserves_counts(monkeypatch):
     assert metrics["missing_reason"] == "cagr_start_count_zero"
     # Counts are no longer nulled out when CAGR can't be computed.
     assert [w["count"] for w in metrics["cpc_application_counts"]] == [0, 179, 234]
+
+
+def test_normalize_axis_result_passes_through_prior_art_references():
+    from agents.valuation import normalize_axis_llm_result
+
+    parsed = {
+        "axis": "legal",
+        "label": "권리성",
+        "score": 67,
+        "grade": "B",
+        "rationale": "근거 기반 평가",
+        "evidence_ids": [],
+        "risk_factors": ["리스크"],
+        "confidence": 0.68,
+        "prior_art_references": ["KR10-0948760", "KR10-2014-0072547", ""],
+    }
+
+    result = normalize_axis_llm_result("legal", parsed, evidence=[])
+
+    # Empty/whitespace entries are dropped; identifiers survive normalization.
+    assert result["prior_art_references"] == ["KR10-0948760", "KR10-2014-0072547"]
+
+
+def test_legal_prompt_grounds_and_surfaces_prior_art_references():
+    from pathlib import Path
+
+    text = Path("prompts/valuation/valuation_legal.md").read_text(encoding="utf-8")
+    assert '"prior_art_references": []' in text
+    assert "입력에 없는 문헌 번호를 새로 만들지 않는다" in text
+    assert "prior_art_references에 모두 나열한다" in text

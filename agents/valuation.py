@@ -173,6 +173,8 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
     ):
         if optional_field in parsed:
             result[optional_field] = parsed[optional_field]
+    if "prior_art_references" in parsed:
+        result["prior_art_references"] = normalize_list(parsed.get("prior_art_references"))
     subscores = normalize_subscores(parsed.get("subscores"))
     if subscores:
         result["subscores"] = subscores
