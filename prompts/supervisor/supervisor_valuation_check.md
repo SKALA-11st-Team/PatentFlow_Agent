@@ -27,13 +27,12 @@
    - 시장성
    - 사업 연계성
 
-2. 각 평가축에 다음 필드가 있는가?
-   - score
-   - grade
-   - rationale
-   - evidence_ids
-   - risk_factors
-   - confidence
+2. 각 평가축의 핵심 필드가 채워져 있는가? (이 점검표는 요약본이므로 아래 요약 필드로 판단한다)
+   - score, grade, confidence 값이 존재
+   - has_rationale=true (또는 rationale_preview 존재)
+   - evidence_ids 제공
+   - risk_factor_count로 risk_factors 유무 판단
+   - 주의: 점검표에는 rationale 전체 텍스트나 risk_factors 전체 리스트가 들어 있지 않다. has_rationale·risk_factor_count 같은 요약 필드가 있으면 구조는 충족된 것이며, 전체 텍스트가 없다는 이유로 "필드 누락"이나 실패로 판정하지 않는다.
 
 3. evidence_ids가 실제 evidence_bundle에 존재하는가?
 
@@ -62,6 +61,8 @@
 - 자료 부족은 낮은 가치와 구분하세요. 단, 자료가 없는데도 고득점으로 단정하면 valuation_retry입니다.
 - 축별 점수 구조 또는 축별 역할이 섞인 문제는 valuation_retry입니다.
 - evidence 자체가 없거나 검색 근거가 축별 판단에 필요한 최소 수준도 안 되면 query_rewriting입니다.
+- query_rewriting은 산업 리포트·국내 뉴스·GNews 같은 외부 검색 근거가 실제로 부족할 때만 선택한다. 권리성·기술성의 청구항·선행문헌 연결 문제, 형식·표현 문제, CPC 자동계산값 부족만으로는 query_rewriting을 선택하지 않는다(valuation_retry 또는 issues 기록).
+- 어떤 축도 외부 근거 재수집이 필요하다고 판단하지 않았고 문제의 핵심이 평가 논리·표현·근거 연결이면 valuation_retry를 선택한다. 축별 verdict가 가리키지 않은 query_rewriting을 임의로 만들지 않는다.
 
 ## 출력 형식
 {

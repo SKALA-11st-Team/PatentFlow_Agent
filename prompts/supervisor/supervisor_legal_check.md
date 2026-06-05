@@ -57,6 +57,7 @@
 - 근거의 존재 여부는 evidence.samples가 아니라 known_evidence_ids로 판단하세요. known_evidence_ids에 있으면 그 근거는 존재합니다.
 - samples에 본문이 안 보인다는 이유만으로 "근거 누락"으로 단정하지 마세요. 실제로 known_evidence_ids에 없는 항목(unknown_evidence_ids)만 문제 삼습니다.
 - 선행문헌·인용문헌·청구항 텍스트는 evidence_bundle(뉴스·산업 RAG 근거)이 아니라 특허 수집 데이터(claim_context, citation_evidence)에서 옵니다. 평가가 이를 인용했다고 해서 evidence_ids/samples에 없는 것을 "근거 누락"이나 재평가 사유로 삼지 마세요.
+- 평가가 인용한 선행문헌은 prior_art_context.cited_in_evaluation에, 입력으로 제공된 선행문헌 식별값은 prior_art_context.available_in_input에 있습니다. cited_in_evaluation의 항목이 available_in_input에 있으면 그 선행문헌은 입력에 근거한 정상 인용입니다. available_in_input에도 없는 문헌을 인용한 경우(환각)에만 valuation_retry 사유로 삼으세요.
 
 ## 출력 형식
 Return ONLY one JSON object.

@@ -908,3 +908,67 @@ def test_axis_supervisor_checks_run_concurrently(monkeypatch):
     # The barrier only releases if all four checks were in flight simultaneously,
     # and they ran on distinct worker threads.
     assert len(seen_threads) == 4
+
+
+def test_expected_total_score_is_sum_not_average():
+    from workflow.supervisor import expected_total_score
+
+    axis_payload = {
+        "legal": {"score": 67},
+        "technology": {"score": 76},
+        "market": {"score": 40},
+        "business_fit": {"score": 40},
+    }
+    # total_score in the valuation result is the sum (223), so expected matches.
+    assert expected_total_score(axis_payload) == 223
+
+
+def test_legal_axis_payload_includes_prior_art_context():
+    from workflow.supervisor import axis_supervisor_payload
+
+    state = PatentWorkflowState(
+        citation_evidence={
+            "kr_citation_documents": [
+                {"registration_number": "KR10-0948760"},
+                {"registration_number": "KR10-2014-0072547"},
+            ]
+        },
+        valuation_result={
+            "axes": {
+                "legal": {
+                    "score": 67, "grade": "B", "rationale": "근거",
+                    "evidence_ids": [], "risk_factors": ["x"], "confidence": 0.68,
+                    "prior_art_references": ["KR10-0948760"],
+                }
+            }
+        },
+    )
+
+    payload = axis_supervisor_payload(state, axis="legal")
+
+    ctx = payload["prior_art_context"]
+    assert ctx["cited_in_evaluation"] == ["KR10-0948760"]
+    assert "KR10-0948760" in ctx["available_in_input"]
+    assert "KR10-2014-0072547" in ctx["available_in_input"]
+
+
+def test_non_legal_axis_payload_has_no_prior_art_context():
+    from workflow.supervisor import axis_supervisor_payload
+
+    state = PatentWorkflowState(
+        valuation_result={"axes": {"market": {"score": 40, "grade": "C", "rationale": "x",
+                                              "evidence_ids": [], "risk_factors": ["r"], "confidence": 0.5}}},
+    )
+
+    payload = axis_supervisor_payload(state, axis="market")
+
+    assert "prior_art_context" not in payload
+
+
+def test_valuation_check_prompt_judges_structure_by_summary_fields():
+    from pathlib import Path
+
+    text = Path("prompts/supervisor/supervisor_valuation_check.md").read_text(encoding="utf-8")
+    assert "has_rationale" in text and "risk_factor_count" in text
+    assert "전체 텍스트가 없다는 이유로" in text
+    assert "축별 verdict가 가리키지 않은 query_rewriting을 임의로 만들지 않는다" in text

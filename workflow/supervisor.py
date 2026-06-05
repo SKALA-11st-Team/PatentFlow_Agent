@@ -404,7 +404,7 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
     axis_result = axes.get(axis) or {}
     known_ids = known_evidence_ids(state.evidence_bundle)
     cited_ids = [str(item) for item in axis_result.get("evidence_ids", []) if str(item).strip()]
-    return {
+    payload = {
         "current_stage": state.current_stage,
         "axis": axis,
         "patent": patent_metadata_payload(state),
@@ -412,6 +412,56 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
         "valuation_axis": valuation_axis_payload(axis, axis_result, known_ids),
         "axis_result": compact_axis_result_for_supervisor(axis_result),
     }
+    if axis == "legal":
+        # Prior art lives in the patent record (citation_evidence), not the
+        # evidence_bundle. Surface what the evaluation cited vs what the input
+        # actually provided so the supervisor can verify grounding instead of
+        # flagging it as "missing from known_evidence_ids".
+        payload["prior_art_context"] = {
+            "cited_in_evaluation": [
+                str(item) for item in axis_result.get("prior_art_references", []) if str(item).strip()
+            ],
+            "available_in_input": available_prior_art_identifiers(state),
+        }
+    return payload
+
+
+def available_prior_art_identifiers(state: PatentWorkflowState) -> list[str]:
+    identifiers: list[str] = []
+    citation = state.citation_evidence or {}
+    for key in ("kr_citation_documents", "foreign_citation_documents"):
+        for doc in citation.get(key) or []:
+            if not isinstance(doc, dict):
+                continue
+            for field in (
+                "registration_number",
+                "application_number",
+                "publication_number",
+                "document_number",
+                "display_number",
+            ):
+                value = str(doc.get(field) or "").strip()
+                if value:
+                    identifiers.append(value)
+    for source in (
+        (state.preprocessed_patent or {}).get("metadata") or {},
+        (state.kipris_api_data or {}).get("metadata") or {},
+        state.patent_structured or {},
+    ):
+        prior_art = source.get("prior_art") or []
+        if isinstance(prior_art, str):
+            prior_art = [prior_art]
+        for value in prior_art:
+            text = str(value or "").strip()
+            if text:
+                identifiers.append(text)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in identifiers:
+        if value not in seen:
+            seen.add(value)
+            deduped.append(value)
+    return deduped
 
 
 def compact_axis_result_for_supervisor(axis_result: dict[str, Any]) -> dict[str, Any]:
@@ -1057,11 +1107,14 @@ def known_evidence_ids(evidence_bundle: list[dict[str, Any]]) -> set[str]:
     return {str(evidence.get("evidence_id")) for evidence in evidence_bundle if evidence.get("evidence_id")}
 
 
-def expected_total_score(axis_payload: dict[str, dict[str, Any]]) -> float | None:
+def expected_total_score(axis_payload: dict[str, dict[str, Any]]) -> int | None:
+    # total_score in the valuation result is the SUM of the 4 axis scores
+    # (0-400). Return the sum here too so it can be cross-checked against
+    # total_score; previously this returned the average, which never matched.
     scores = [axis.get("score") for axis in axis_payload.values() if isinstance(axis.get("score"), (int, float))]
     if len(scores) != len(REQUIRED_VALUATION_AXES):
         return None
-    return round(sum(scores) / len(scores), 2)
+    return int(sum(scores))
 
 
 def preview_text(value: Any, limit: int) -> str | None:
