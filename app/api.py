@@ -58,6 +58,12 @@ class FieldRecommendationRequest(BaseModel):
     applicationNumber: str | None = None
     technologyArea: str | None = None
     businessArea: str | None = None
+    # 초록(요약) 본문. 제목만으론 분류 신호가 약해 함께 받는다. 미제공 시 에이전트가
+    # applicationNumber로 KIPRIS 초록을 best-effort 조회한다.
+    abstract: str | None = None
+    # BE가 관리자 관리 분류 목록(taxonomy)을 넘겨준다. 에이전트는 공유 DB에 직접 접근하지 않고
+    # 이 목록 안에서만 추천한다. 미제공 시 에이전트가 로컬 DB로 폴백한다.
+    taxonomy: dict[str, list[str]] | None = None
 
 
 class FieldRecommendationResponse(BaseModel):
@@ -78,6 +84,8 @@ def recommend_patent_fields(patent_id: str, request: FieldRecommendationRequest)
             application_number=request.applicationNumber,
             technology_area=request.technologyArea,
             business_area=request.businessArea,
+            abstract=request.abstract,
+            taxonomy=request.taxonomy,
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Field recommendation failed: {exc.__class__.__name__}") from exc

@@ -138,6 +138,20 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
     return result
 
 
+def fetch_kipris_abstract(application_number: str) -> str:
+    """초록 텍스트만 가볍게 조회한다(인용/패밀리/citing 등 부가 호출 없이).
+
+    분야 추천처럼 '초록만' 필요한 경로에서 fetch_kipris_bibliography의 무거운
+    네트워크 호출을 피하려고 bibliography_detail 하나만 정규화한다.
+    실패 시 빈 문자열을 반환해 호출 측이 제목만으로 폴백하게 한다.
+    """
+    client = _kipris_client()
+    kipris_application_number = normalize_kipris_application_number(application_number)
+    raw = client.bibliography_detail(kipris_application_number)
+    normalized = normalize_kipris_bibliography(raw, application_number=application_number)
+    return (normalized.get("sections") or {}).get("abstract") or ""
+
+
 def normalize_kipris_bibliography(raw: dict[str, Any], *, application_number: str) -> dict[str, Any]:
     item = _get_path(raw, ["response", "body", "item"]) or {}
     summary = _first_item(_get_path(item, ["biblioSummaryInfoArray", "biblioSummaryInfo"])) or {}
