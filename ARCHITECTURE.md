@@ -38,20 +38,15 @@ final_v1/
 
 ```text
 사용자 특허 선택
-→ patent_context_collect
-→ portfolio_sibling_node
-→ common_preprocess_node
-→ supervisor_node
-→ 요약 Agent
-→ 검색어 재작성 Node
-→ Web/API 검색 Node
-→ 뉴스 필터링 / 산업 리포트 RAG 검색 / 근거 병합
-→ evidence compression Node
-→ Supervisor 검증
-→ 가치평가 Agent
-→ Validation Node
-→ 최종 병합 Node
-→ 최종 보고서
+→ top_supervisor
+→ research_team: patent_context_collect → portfolio_sibling → common_preprocess
+→ research_supervisor
+→ query_rewriting / evidence_search / evidence_compression (필요 시 재검색)
+→ valuation_team: 4개 평가축 병렬 실행 → valuation_axes_merge
+→ valuation_supervisor
+→ writing_team: summary / final_report 병렬 생성 → validation
+→ writing_supervisor
+→ final_merge
 ```
 
 ## Responsibilities
@@ -371,9 +366,10 @@ final_check
 5. `query_rewriting_node`: Naver/GNews 검색어를 생성한다.
 6. `evidence_search_node`: 외부 API, 뉴스 필터, 산업 RAG, filtered evidence 저장을 수행한다.
 7. `evidence_compression_node`: valuation 입력용 evidence를 압축하고 portfolio evidence를 합친다.
-8. `valuation.py`: 4개 평가축별 LLM 평가와 최종 Markdown 보고서를 생성한다.
-9. `validation_node`: valuation 결과와 필수 축을 검증한다.
-10. `final_merge_node`: summary, valuation, evidence를 최종 state로 병합한다.
+8. `valuation_axes_analyze` + `valuation_legal/technology/market/business_fit`: 4개 평가축별 LLM 평가를 병렬 실행한다.
+9. `valuation_axes_merge`: 4개 평가축 결과를 합산하고 종합 권고를 만든다.
+10. `summary_validation_node` / `report_validation_node`: summary와 final report 산출물을 검증한다.
+11. `final_merge_node`: summary, valuation, evidence를 최종 state로 병합한다.
 
 ## Run Commands
 

@@ -20,15 +20,8 @@ from services.evidence.store_service import save_filtered_evidence_bundle
 from services.rag.industry_rag_service import search_and_save_patent_industry_evidence
 from services.observability.langsmith_service import trace
 from agents.summary import run_summary_agent
-from agents.valuation import finalize_valuation_agent, run_axis_valuation_agent, run_valuation_agent
 from agents.writing.final_report import run_final_report_agent
 from workflow.state import PatentWorkflowState
-
-
-@trace(run_type="tool")
-def patent_resolve_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    state.current_stage = "patent_check"
-    return state
 
 
 @trace(run_type="tool")
@@ -634,36 +627,6 @@ def artifact_subdir(state: PatentWorkflowState, name: str) -> Path:
 
 
 @trace(run_type="tool")
-def valuation_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    return run_valuation_agent(state)
-
-
-@trace(run_type="tool")
-def valuation_legal_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    return run_axis_valuation_agent("legal", state)
-
-
-@trace(run_type="tool")
-def valuation_technology_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    return run_axis_valuation_agent("technology", state)
-
-
-@trace(run_type="tool")
-def valuation_market_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    return run_axis_valuation_agent("market", state)
-
-
-@trace(run_type="tool")
-def valuation_business_fit_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    return run_axis_valuation_agent("business_fit", state)
-
-
-@trace(run_type="tool")
-def valuation_finalize_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    return finalize_valuation_agent(state)
-
-
-@trace(run_type="tool")
 def final_report_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return run_final_report_agent(state)
 
@@ -724,8 +687,3 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
     }
     state.current_stage = "final_check"
     return state
-
-
-@trace(run_type="tool")
-def validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    return report_validation_node(state)

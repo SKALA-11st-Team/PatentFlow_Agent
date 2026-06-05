@@ -362,11 +362,5 @@ def normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def limit_text_list(value: Any, *, limit: int) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [text for text in (normalize_text(item) for item in value) if text][:limit]
-
-
 def normalize_markdown_table_text(value: Any) -> str:
     return normalize_text(value).replace("|", "/").replace("\n", " ")

@@ -184,40 +184,6 @@ def build_hybrid_context(
     }
 
 
-def merge_technology_contexts(
-    *,
-    mode: str,
-    representative_cpc: str | None,
-    contexts: list[dict[str, Any]],
-) -> dict[str, Any]:
-    merged_items: list[dict[str, Any]] = []
-    prior_art_items: list[dict[str, Any]] = []
-    warnings: list[str] = []
-    candidate_count = 0
-    seen = set()
-
-    for context in contexts:
-        candidate_count += int(context.get("candidate_count") or 0)
-        warnings.extend(str(item) for item in context.get("warnings") or [])
-        for item in context.get("prior_art_patents") or []:
-            prior_art_items.append(item)
-        for item in context.get("similar_patents") or []:
-            key = item_identity(item)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged_items.append(item)
-
-    return {
-        "comparison_mode": mode,
-        "representative_cpc": representative_cpc,
-        "candidate_count": candidate_count,
-        "similar_patents": merged_items,
-        "prior_art_patents": prior_art_items,
-        "warnings": dedupe_texts(warnings),
-    }
-
-
 def merge_hybrid_items(*, prior_items: list[dict[str, Any]], similar_items: list[dict[str, Any]], target_count: int) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     seen = set()
@@ -246,12 +212,6 @@ def compact_comparison_items(items: list[dict[str, Any]]) -> list[dict[str, Any]
         {key: value for key, value in item.items() if key not in drop_keys}
         for item in items
     ]
-
-
-def count_pdf_collected(items: list[dict[str, Any]]) -> int:
-    return sum(1 for item in items if item.get("pdf_collected"))
-
-
 def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     subscores = normalize_candidate_subscores(result.get("subscores") or {})
     technical_differentiation_score = int(subscores["technical_differentiation"]["score"])
