@@ -946,6 +946,7 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "summary_issues": limit_list((state.summary_validation_result or {}).get("issues"), 10),
             "report_passed": (state.report_validation_result or {}).get("passed"),
             "report_issues": limit_list((state.report_validation_result or {}).get("issues"), 10),
+            "report_warnings": limit_list((state.report_validation_result or {}).get("warnings"), 10),
             "missing_evidence": limit_list((state.validation_result or {}).get("missing_evidence"), 10),
         },
         "evidence": evidence_summary_payload(state, include_samples=False),

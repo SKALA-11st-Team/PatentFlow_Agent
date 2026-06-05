@@ -528,3 +528,46 @@ def configure_evidence_search_mocks(
             "failed_urls": [],
         },
     )
+
+
+def _report_state(markdown, total_score=223):
+    from workflow.state import PatentWorkflowState
+    axes = {a: {"score": 50} for a in ["legal", "technology", "market", "business_fit"]}
+    return PatentWorkflowState(
+        valuation_result={"axes": axes, "total_score": total_score, "final_report_markdown": markdown}
+    )
+
+
+def test_report_validation_passes_well_formed_report():
+    from workflow.nodes import report_validation_node
+
+    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합 점수 223/400점, 평균 55.8/100점"
+    result = report_validation_node(_report_state(md)).report_validation_result
+
+    assert result["passed"] is True
+    assert result["issues"] == []
+    assert result["warnings"] == []
+
+
+def test_report_validation_flags_missing_sections_and_score_mismatch():
+    from workflow.nodes import report_validation_node
+
+    md = "## 1. 한눈에 보는 검토 결과\n## 2. 평가대상\n종합 점수 999/400점"
+    result = report_validation_node(_report_state(md, total_score=223)).report_validation_result
+
+    assert result["passed"] is False
+    assert any("missing required sections" in i for i in result["issues"])
+    assert any("total score" in i for i in result["issues"])
+
+
+def test_report_validation_records_forbidden_phrases_as_warnings():
+    from workflow.nodes import report_validation_node
+
+    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합 점수 223/400점\n방어력은 제한적이며 1:1 매핑 근거가 없어 감점했습니다."
+    result = report_validation_node(_report_state(md)).report_validation_result
+
+    # Forbidden phrases are recorded as non-blocking warnings, not hard failures.
+    assert result["passed"] is True
+    assert "방어력은 제한적" in result["warnings"]
+    assert "1:1 매핑" in result["warnings"]
+    assert "감점" in result["warnings"]

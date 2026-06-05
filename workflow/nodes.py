@@ -680,23 +680,47 @@ def summary_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
+FINAL_REPORT_REQUIRED_SECTIONS = [f"## {index}." for index in range(1, 7)]
+FINAL_REPORT_FORBIDDEN_PHRASES = [
+    "방어력은 제한적",
+    "권리적 불확실성",
+    "1:1 매핑",
+    "기술 백서 수준",
+    "정량적 PoC 부족",
+    "근거 부재",
+    "근거 전무",
+    "미흡",
+    "감점",
+]
+
+
 @trace(run_type="tool")
 def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
     valuation = state.valuation_result or {}
     axes = valuation.get("axes") or {}
     required_axes = ["legal", "technology", "market", "business_fit"]
     issues = []
-    if not valuation.get("final_report_markdown"):
+    markdown = valuation.get("final_report_markdown") or ""
+    if not markdown:
         issues.append("Missing final_report_markdown")
     missing_axes = [axis for axis in required_axes if not axes.get(axis)]
     issues.extend(f"Missing valuation axis: {axis}" for axis in missing_axes)
     if "strategy" in axes:
         issues.append("Deprecated valuation axis present: strategy")
+    if markdown:
+        missing_sections = [section for section in FINAL_REPORT_REQUIRED_SECTIONS if section not in markdown]
+        if missing_sections:
+            issues.append(f"Final report missing required sections: {', '.join(missing_sections)}")
+        total_score = valuation.get("total_score")
+        if isinstance(total_score, int) and f"{total_score}/400" not in markdown:
+            issues.append(f"Final report total score does not match valuation total_score ({total_score})")
+    warnings = [phrase for phrase in FINAL_REPORT_FORBIDDEN_PHRASES if phrase in markdown]
     passed = not issues
     state.report_validation_result = {
         "passed": passed,
         "needs_more_evidence": not passed,
         "issues": issues,
+        "warnings": warnings,
     }
     state.current_stage = "final_check"
     return state
