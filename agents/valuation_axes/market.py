@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from agents.valuation_axes.common import select_by_types_or_axes
+from agents.valuation_axes.common import grade_for_score, select_by_types_or_axes
 from agents.valuation_axes.payload_common import build_base_input_payload
 from services.evidence.api_normalizers import extract_kipris_items
 from workflow.state import PatentWorkflowState
@@ -474,16 +474,6 @@ def clamp_int(value: Any, default: int, max_value: int, min_value: int = 0) -> i
     except (TypeError, ValueError):
         return default
     return max(min_value, min(max_value, score))
-
-
-def grade_for_score(score: int) -> str:
-    if score >= 80:
-        return "A"
-    if score >= 60:
-        return "B"
-    if score >= 40:
-        return "C"
-    return "D"
 
 
 def parse_kipris_date(value: Any) -> date | None:

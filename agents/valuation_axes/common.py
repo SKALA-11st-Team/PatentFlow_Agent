@@ -22,3 +22,13 @@ def select_by_types_or_axes(
 
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def grade_for_score(score: int | float) -> str:
+    if score >= 80:
+        return "A"
+    if score >= 60:
+        return "B"
+    if score >= 40:
+        return "C"
+    return "D"

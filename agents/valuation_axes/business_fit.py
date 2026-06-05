@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.valuation_axes.common import normalize_text
+from agents.valuation_axes.common import grade_for_score, normalize_text
 from agents.valuation_axes.payload_common import build_base_input_payload
 from workflow.state import PatentWorkflowState
 
@@ -36,6 +36,11 @@ STOPWORDS = {
 }
 BROAD_TERMS = {"ai", "data", "cloud", "제조", "솔루션", "서비스", "플랫폼", "데이터"}
 WEAK_TERMS = {"예측", "분석", "관리", "서비스", "플랫폼", "솔루션"}
+BUSINESS_FIT_SUBSCORE_MAX = {
+    "official_business_evidence": 30,
+    "product_function_direct_match": 45,
+    "business_context_fit": 25,
+}
 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
@@ -47,7 +52,34 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         payload=payload,
         artifact_name=f"{AXIS}_input",
     )
-    return runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
+    result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
+    return reconcile_business_fit_scores(result)
+
+
+def reconcile_business_fit_scores(result: dict[str, Any]) -> dict[str, Any]:
+    subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
+    reconciled: dict[str, Any] = {}
+    total = 0
+    for key, max_score in BUSINESS_FIT_SUBSCORE_MAX.items():
+        item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
+        score = coerce_int(item.get("score"))
+        score = max(0, min(max_score, score or 0))
+        reconciled[key] = {**item, "score": score, "max_score": max_score}
+        total += score
+    total = max(0, min(100, total))
+    return {
+        **result,
+        "score": total,
+        "grade": grade_for_score(total),
+        "subscores": {**subscores, **reconciled},
+    }
+
+
+def coerce_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:

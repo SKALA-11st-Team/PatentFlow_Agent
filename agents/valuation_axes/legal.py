@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.valuation_axes.common import normalize_text, select_by_types_or_axes
+from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_types_or_axes
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context, unique_texts
 from workflow.state import PatentWorkflowState
 
@@ -51,7 +51,7 @@ def reconcile_legal_scores(result: dict[str, Any]) -> dict[str, Any]:
         **result,
         "subscores": {**subscores, **reconciled},
         "score": total,
-        "grade": legal_grade_for_score(total),
+        "grade": grade_for_score(total),
     }
 
 
@@ -70,16 +70,6 @@ def coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-def legal_grade_for_score(score: int) -> str:
-    if score >= 80:
-        return "A"
-    if score >= 60:
-        return "B"
-    if score >= 40:
-        return "C"
-    return "D"
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:

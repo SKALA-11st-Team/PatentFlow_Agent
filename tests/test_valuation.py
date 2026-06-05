@@ -703,7 +703,7 @@ def test_business_fit_run_uses_llm_for_final_axis_json():
     assert result["subscores"]["business_context_fit"]["score"] == 18
     assert "details" not in result["subscores"]["business_context_fit"]
     assert result["score"] == 70
-    assert result["grade"] == "C"
+    assert result["grade"] == "B"
 
 
 def test_business_fit_patent_description_uses_metadata_and_agent_summary_fallbacks():
@@ -1468,7 +1468,7 @@ def test_technology_candidate_subscores_use_60_40_structure():
     )
 
     assert result["score"] == 78
-    assert result["grade"] == "LLM_GRADE"
+    assert result["grade"] == "B"
     assert result["subscores"]["technical_differentiation"]["score"] == 48
     assert result["subscores"]["implementation_specificity"]["score"] == 30
     assert "technical_substantiality" not in result["subscores"]

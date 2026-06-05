@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agents.valuation_axes.common import select_by_types_or_axes
+from agents.valuation_axes.common import grade_for_score, select_by_types_or_axes
 from agents.valuation_axes.market import clamp_int, extract_representative_cpc
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
@@ -259,6 +259,7 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
     return {
         **result,
         "score": max(0, min(100, score)),
+        "grade": grade_for_score(score),
         "subscores": subscores,
         "technology_metrics": metrics,
     }
