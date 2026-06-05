@@ -4,7 +4,6 @@ from workflow.supervisor import (
     build_supervisor_judge_prompt,
     research_supervisor_node,
     run_axis_supervisor_checks,
-    supervisor_node,
     top_supervisor_node,
     valuation_supervisor_node,
     writing_supervisor_node,
@@ -208,34 +207,6 @@ def test_supervisor_llm_uses_dedicated_model_setting(monkeypatch):
     assert captured["model"] == "gpt-5-nano"
 
 
-def test_supervisor_node_keeps_legacy_action_for_research_success():
-    state = PatentWorkflowState(
-        current_stage="evidence_check",
-        patent_structured={
-            "id": 1,
-            "application_number": "10-2023-0000001",
-            "registration_number": "10-2000000",
-            "title_final": "테스트 특허",
-            "status": "등록",
-            "application_date": "2023-01-01",
-            "registration_date": "2024-01-01",
-        },
-        preprocessed_patent={"metadata": {"title": "테스트 특허"}},
-        summary_result={"title": "테스트", "plain_summary": "요약", "key_points": ["핵심"]},
-        evidence_bundle=[
-            {"evidence_id": "news_1", "source": "naver", "source_type": "news", "content": "본문"},
-            {"evidence_id": "news_2", "source": "naver", "source_type": "news", "content": "본문"},
-            {"evidence_id": "news_3", "source": "gnews", "source_type": "news", "content": "본문"},
-            {"evidence_id": "rag_1", "source": "report", "source_type": "industry_report", "context": "근거"},
-        ],
-    )
-
-    result = supervisor_node(state)
-
-    assert result.supervisor_decision["next_team"] == "valuation"
-    assert result.supervisor_decision["next_action"] == "valuation"
-
-
 def test_valuation_supervisor_routes_unknown_evidence_to_research():
     state = PatentWorkflowState(
         evidence_bundle=[{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}],
@@ -257,31 +228,6 @@ def test_valuation_supervisor_routes_unknown_evidence_to_research():
     result = valuation_supervisor_node(state)
 
     assert result.supervisor_decision["passed"] is False
-    assert result.supervisor_decision["next_team"] == "research"
-    assert result.supervisor_decision["next_action"] == "query_rewriting"
-
-
-def test_supervisor_node_keeps_legacy_action_for_valuation_unknown_evidence():
-    state = PatentWorkflowState(
-        current_stage="valuation_check",
-        evidence_bundle=[{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}],
-        valuation_result={
-            "axes": {
-                axis: {
-                    "score": 80,
-                    "grade": "A",
-                    "rationale": "근거 기반 평가",
-                    "evidence_ids": ["unknown"],
-                    "risk_factors": [],
-                    "confidence": 0.8,
-                }
-                for axis in ["legal", "technology", "market", "business_fit"]
-            }
-        },
-    )
-
-    result = supervisor_node(state)
-
     assert result.supervisor_decision["next_team"] == "research"
     assert result.supervisor_decision["next_action"] == "query_rewriting"
 
@@ -520,28 +466,28 @@ def test_writing_supervisor_retry_limit_finishes_when_outputs_exist(monkeypatch)
 
 
 
-def test_final_supervisor_prompt_includes_headings_not_full_markdown():
+def test_final_supervisor_prompt_includes_report_body_for_content_check():
     state = PatentWorkflowState(
         summary_result={
             "plain_summary": "최종 문서에 들어갈 요약입니다.",
-            "summary_markdown": "# 특허 요약\n\nSECRET_SUMMARY_BODY",
+            "summary_markdown": "# 특허 요약\n\nSUMMARY_BODY_TEXT",
         },
         valuation_result={
-            "axes": {axis: {"score": 70} for axis in ["legal", "technology", "market", "business_fit"]},
+            "axes": {axis: {"score": 70, "grade": "B"} for axis in ["legal", "technology", "market", "business_fit"]},
             "total_score": 70,
             "recommendation": "추가 정보 필요",
-            "final_report_markdown": "# 가치평가 리포트\n\n## 시장성\n\nSECRET_REPORT_BODY",
+            "final_report_markdown": "# 가치평가 리포트\n\n## 시장성\n\nREPORT_BODY_TEXT",
         },
         validation_result={"passed": True, "issues": []},
     )
 
     prompt = build_supervisor_judge_prompt(state, prompt_name="supervisor/supervisor_final_check.md")
 
-    assert "SECRET_SUMMARY_BODY" not in prompt
-    assert "SECRET_REPORT_BODY" not in prompt
-    assert "# 특허 요약" in prompt
-    assert "## 시장성" in prompt
-    assert "최종 문서에 들어갈 요약입니다." in prompt
+    # Body is now included so the supervisor can verify content (not just format).
+    assert "REPORT_BODY_TEXT" in prompt
+    assert "SUMMARY_BODY_TEXT" in prompt
+    # Per-axis scores are surfaced for faithfulness checks.
+    assert "axis_scores" in prompt
 
 
 def _axes_result(**overrides):
@@ -894,9 +840,12 @@ def test_markdown_headings_captures_all_report_sections():
     assert any("## 6." in h for h in headings)
 
 
-def test_final_check_prompt_defers_structure_to_report_validation():
+def test_final_check_prompt_checks_format_and_content():
     from pathlib import Path
 
     text = Path("prompts/supervisor/supervisor_final_check.md").read_text(encoding="utf-8")
+    # Format: structure/score is judged by the deterministic report_validation.
     assert "report_validation 결과(report_passed/report_issues)로 판단" in text
-    assert "안 보인다는 이유만으로" in text
+    # Content: faithfulness to scores + no fabricated facts are now checked.
+    assert "axis_scores의 점수·등급과 모순되지 않는가" in text
+    assert "입력에 없는 사실을 단정하지 않았는가" in text

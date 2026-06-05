@@ -39,54 +39,6 @@ def coerce_axis_status(axis: str, status: str) -> str:
     return status
 
 
-def decide_next_step(state: PatentWorkflowState) -> str:
-    if state.supervisor_decision:
-        return state.supervisor_decision.get("next_action", "validation")
-    if state.validation_result and state.validation_result.get("passed"):
-        return "final_merge"
-    if state.validation_result and state.validation_result.get("needs_more_evidence"):
-        return "query_rewriting"
-    if state.valuation_result is None:
-        return "valuation"
-    return "validation"
-
-
-@trace(name="supervisor_agent", run_type="chain")
-def supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    stage = state.current_stage
-    if stage in {"patent_check", "evidence_check"}:
-        return _with_legacy_research_action(research_supervisor_node(state))
-    if stage == "summary_check":
-        return writing_supervisor_node(state)
-    if stage == "valuation_check":
-        return _with_legacy_valuation_action(valuation_supervisor_node(state))
-    if stage == "final_check":
-        return writing_supervisor_node(state)
-    return top_supervisor_node(state)
-
-
-def _with_legacy_research_action(state: PatentWorkflowState) -> PatentWorkflowState:
-    decision = state.supervisor_decision or {}
-    if decision.get("next_team") == "valuation" and decision.get("next_action") == "valuation_team":
-        decision["next_action"] = "valuation"
-        state.supervisor_decision = decision
-    return state
-
-
-def _with_legacy_valuation_action(state: PatentWorkflowState) -> PatentWorkflowState:
-    decision = state.supervisor_decision or {}
-    legacy_actions = {
-        ("writing", "writing_team"): "validation",
-        ("valuation", "valuation_team"): "valuation_retry",
-        ("research", "research_team"): "query_rewriting",
-    }
-    legacy_action = legacy_actions.get((decision.get("next_team"), decision.get("next_action")))
-    if legacy_action:
-        decision["next_action"] = legacy_action
-        state.supervisor_decision = decision
-    return state
-
-
 @trace(name="top_supervisor_agent", run_type="chain")
 def top_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "top"
@@ -863,15 +815,24 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "summary_markdown_length": text_length(summary_markdown),
             "summary_markdown_headings": markdown_headings(summary_markdown),
             "plain_summary_preview": preview_text(summary.get("plain_summary"), 500),
+            "summary_markdown": preview_text(summary_markdown, 4000),
         },
         "valuation": {
             "available": bool(valuation),
             "axis_count": len((valuation.get("axes") or {})),
             "total_score": valuation.get("total_score"),
             "recommendation": valuation.get("recommendation"),
+            "axis_scores": {
+                axis: {
+                    "score": (valuation.get("axes") or {}).get(axis, {}).get("score"),
+                    "grade": (valuation.get("axes") or {}).get(axis, {}).get("grade"),
+                }
+                for axis in REQUIRED_VALUATION_AXES
+            },
             "has_final_report_markdown": bool(final_report_markdown),
             "final_report_markdown_length": text_length(final_report_markdown),
             "final_report_headings": markdown_headings(final_report_markdown),
+            "final_report_markdown": preview_text(final_report_markdown, 12000),
         },
         "validation": {
             "available": bool(state.validation_result or state.summary_validation_result or state.report_validation_result),
@@ -1217,20 +1178,3 @@ def check_valuation_result(state: PatentWorkflowState) -> SupervisorDecision:
         reason="Valuation structure and evidence-id check completed.",
     )
 
-
-def check_final_ready(state: PatentWorkflowState) -> SupervisorDecision:
-    issues = []
-    if not state.summary_result:
-        issues.append("Missing summary_result")
-    if not state.valuation_result:
-        issues.append("Missing valuation_result")
-    if not state.summary_validation_result or not state.summary_validation_result.get("passed"):
-        issues.append("Summary validation has not passed")
-    if not state.report_validation_result or not state.report_validation_result.get("passed"):
-        issues.append("Report validation has not passed")
-    return SupervisorDecision(
-        passed=not issues,
-        next_action="final_merge" if not issues else "supervisor",
-        issues=issues,
-        reason="Final readiness check completed.",
-    )
