@@ -288,3 +288,16 @@ def test_selective_retry_reuses_passing_axis_without_llm(monkeypatch):
     # technology is targeted -> re-evaluated
     assert "technology" in calls
     assert technology["valuation_axis_technology"]["axis"] == "technology"
+
+
+def test_query_rewriting_reeval_targets_preserve_self_contained_axes():
+    # After query_rewriting marks external-evidence axes, analyze resets only
+    # those; legal/technology keep their prior payloads and are reused.
+    reset = workflow_graph._start_valuation_axes_analysis(
+        PatentWorkflowState(valuation_retry_axes=["business_fit", "market"]).model_dump()
+    )
+
+    assert reset["valuation_axis_market"] is None
+    assert reset["valuation_axis_business_fit"] is None
+    assert "valuation_axis_legal" not in reset
+    assert "valuation_axis_technology" not in reset

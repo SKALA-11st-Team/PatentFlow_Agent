@@ -277,13 +277,20 @@ def apply_axis_routing_targets(
       An empty target list lets the graph fall back to a full re-evaluation,
       bounded by the global valuation retry limit.
     - query_rewriting -> aggregate the evidence gaps of the axes that need more
-      evidence into a single missing_evidence list (one shared re-search).
+      evidence into a single missing_evidence list (one shared re-search), and
+      mark only the external-evidence axes for re-evaluation. The re-search only
+      refreshes news / industry RAG / SK AX evidence, which is consumed solely
+      by market and business_fit; legal/technology inputs come from patent
+      collection and are unchanged, so their prior results are reused.
     """
+    if decision.next_action == "query_rewriting":
+        reset_axis_retry_counts(state)
+        state.valuation_retry_axes = sorted(EXTERNAL_EVIDENCE_AXES)
+        merge_axis_evidence_gaps(state, axis_checks)
+        return decision
     if decision.next_action != "valuation_team":
         reset_axis_retry_counts(state)
         state.valuation_retry_axes = []
-        if decision.next_action == "query_rewriting":
-            merge_axis_evidence_gaps(state, axis_checks)
         return decision
 
     candidates = axis_retry_targets(axis_checks)

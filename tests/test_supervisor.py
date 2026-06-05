@@ -751,7 +751,9 @@ def test_valuation_supervisor_aggregates_query_rewriting_gaps(monkeypatch):
     result = valuation_supervisor_node(state)
 
     assert result.supervisor_decision["next_action"] == "query_rewriting"
-    assert result.valuation_retry_axes == []
+    # Only external-evidence axes re-evaluate after re-search; legal/technology
+    # keep their prior results.
+    assert result.valuation_retry_axes == ["business_fit", "market"]
     assert "시장 성장 근거 부족" in result.missing_evidence
     assert "사업 적용 근거 부족" in result.missing_evidence
 
