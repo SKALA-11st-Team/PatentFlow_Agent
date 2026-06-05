@@ -42,10 +42,15 @@
 - CPC 성장성 계산값과 subscore가 서로 맞지 않습니다.
 - SK AX 사업 연계성을 시장성 점수의 핵심 근거로 설명합니다.
 
-## 근거 재수집이 필요한 신호
-- 산업 리포트, 국내 뉴스, GNews, CPC 계산값이 모두 부족합니다.
+## 근거 재수집이 필요한 신호 (첫 평가에서만)
+- 산업 리포트, 국내 뉴스, GNews가 모두 부족합니다.
 - evidence_id가 실제 evidence_bundle에 존재하지 않습니다.
 - 시장성 rationale이 참조하는 기사나 리포트가 evidence.samples에 없습니다.
+
+## 재수집 루프 방지
+- CPC 기반 시장 성장성(공개특허 수·CAGR·추세)은 KIPRIS에서 자동 계산되는 정량값이며 뉴스/산업 RAG 외부 검색으로는 채워지지 않습니다. **CPC 성장성 산정 불가는 query_rewriting 사유가 아닙니다**(missing_information/confidence로만 처리).
+- `retry_count`가 0(첫 평가)일 때만 외부 검색 근거(산업 리포트·국내 뉴스·GNews) 부족을 query_rewriting으로 보낼 수 있습니다.
+- `retry_count`가 1 이상인데도 외부 근거가 여전히 부족하면, 재검색으로 채워지지 않는 것으로 보고 query_rewriting을 다시 요청하지 마세요. 부족은 그대로 두고 `passed`로 판정하며, 시장성 점수가 낮은 것은 정상입니다.
 
 ## 근거 존재·내용 판단 주의
 - evidence.samples에는 이 평가가 인용한 근거(evidence_ids)가 우선 포함되며, 전체 근거의 일부 미리보기입니다.

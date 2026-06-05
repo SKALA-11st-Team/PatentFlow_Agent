@@ -356,6 +356,7 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
     payload = {
         "current_stage": state.current_stage,
         "axis": axis,
+        "retry_count": state.retry_count,
         "patent": patent_metadata_payload(state),
         "evidence": evidence_summary_payload(state, include_samples=True, priority_evidence_ids=cited_ids),
         "valuation_axis": valuation_axis_payload(axis, axis_result, known_ids),
