@@ -970,7 +970,7 @@ def test_market_score_helpers_apply_40_40_20_structure():
                 "cagr_score": None,
                 "trend_score": None,
             },
-            "rationale": "대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 증가율 및 추세로 산정된 코드 계산값입니다.",
+            "rationale": "대표 CPC 기준 공개 특허 수 증가율 및 추세로 산정된 코드 계산값입니다.",
         },
         "global_business": {
             "label": "글로벌 사업성",
@@ -1041,14 +1041,89 @@ def test_market_score_helpers_apply_40_40_20_structure():
     }
 
 
+def test_foreign_global_business_keeps_same_country_article_when_other_market_signal_exists():
+    from agents.valuation_axes.market import build_global_business_metrics
+
+    metrics = build_global_business_metrics(
+        [
+            {
+                "evidence_id": "us_1",
+                "source": "gnews",
+                "title": "US company launches AI service across Europe and Japan",
+                "content": "American provider expands deployment across Europe with international customer demand",
+                "metadata": {"publisher": "US News"},
+            },
+            {
+                "evidence_id": "eu_1",
+                "source": "gnews",
+                "title": "European provider launches AI platform",
+                "content": "Healthcare service deployment expands across Europe",
+                "metadata": {"publisher": "Euronews"},
+            },
+            {
+                "evidence_id": "jp_1",
+                "source": "gnews",
+                "title": "Japanese partner launches AI service",
+                "content": "AI service launch expands in Japan with customer demand",
+                "metadata": {"publisher": "Nikkei Asia"},
+            },
+        ],
+        patent_country="US",
+    )
+
+    assert metrics["gnews_evidence_count"] == 3
+    assert metrics["gnews_quality_evidence_count"] == 3
+    assert metrics["gnews_evidence_ids"] == ["us_1", "eu_1", "jp_1"]
+    assert metrics["global_business_excluded_country"] == "US"
+    assert metrics["global_business_score"] == 20
+
+
+def test_foreign_global_business_excludes_same_country_only_signal():
+    from agents.valuation_axes.market import build_global_business_metrics
+
+    metrics = build_global_business_metrics(
+        [
+            {
+                "evidence_id": "us_only",
+                "source": "gnews",
+                "title": "US hospital deploys AI service",
+                "content": "American healthcare provider launches new AI service for local market adoption",
+                "metadata": {"publisher": "US News"},
+            },
+            {
+                "evidence_id": "eu_1",
+                "source": "gnews",
+                "title": "European provider launches AI platform",
+                "content": "Healthcare service deployment expands across Europe",
+                "metadata": {"publisher": "Euronews"},
+            },
+        ],
+        patent_country="US",
+    )
+
+    assert metrics["gnews_evidence_count"] == 2
+    assert metrics["gnews_quality_evidence_count"] == 1
+    assert metrics["gnews_evidence_ids"] == ["eu_1"]
+    assert metrics["global_business_score"] == 10
+
+
 def test_market_prompt_uses_18_month_lagged_three_window_activity():
     prompt = Path("prompts/valuation/valuation_market.md").read_text(encoding="utf-8")
 
     assert "18개월 전을 마지막 시점으로 하는 3개 1년 구간" in prompt
     assert "최근 3개년 공개 활동성" not in prompt
     assert "`source`가 `gnews`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다." in prompt
+    assert "해당 국가를 제외한 해외 시장의 진출, 도입, 활용, 확산 흐름" in prompt
     assert "시장성 점수(100) = 산업 시장성(40) + 시장 성장성(40) + 글로벌 사업성(20)" in prompt
     assert "시장성 총점은 원칙적으로 55점을 넘기지 않는다" not in prompt
+
+
+def test_technology_prompt_supports_foreign_ipc_country_comparison_group():
+    prompt = Path("prompts/valuation/valuation_technology.md").read_text(encoding="utf-8")
+
+    assert "`technology_metrics.representative_ipc`" in prompt
+    assert "`technology_metrics.country_code`" in prompt
+    assert "해외특허의 추가 유사 특허는 대표 IPC 기반 해당 국가 문헌으로 수집된 것으로 간주한다." in prompt
 
 
 def test_final_report_prompt_uses_gnews_for_global_business():
@@ -1078,7 +1153,7 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
 
     assert result["score"] == 60
     assert result["subscores"]["market_growth"]["score"] is None
-    assert MARKET_GROWTH_MISSING_MESSAGE in result["missing_information"]
+    assert "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요" in result["missing_information"]
     assert result["confidence"] == 0.49
 
 
@@ -1087,8 +1162,8 @@ def test_market_growth_with_zero_start_count_is_unavailable(monkeypatch):
 
     monkeypatch.setattr(
         market,
-        "collect_cpc_window_application_counts",
-        lambda representative_cpc, windows: [
+        "collect_classification_window_application_counts",
+        lambda representative_code, windows, use_ipc=False, country_code=None: [
             {"label": "w1", "start_date": "2021-11-30", "end_date": "2022-11-29", "count": 0},
             {"label": "w2", "start_date": "2022-11-30", "end_date": "2023-11-29", "count": 179},
             {"label": "w3", "start_date": "2023-11-30", "end_date": "2024-11-29", "count": 234},
@@ -1213,6 +1288,50 @@ def test_collect_cpc_window_counts_uses_opening_date_and_stops_at_old_window(mon
     assert len(calls) == 1
 
 
+def test_foreign_market_growth_uses_ipc_and_country_filter(monkeypatch):
+    from datetime import date
+
+    from agents.valuation_axes.market import collect_classification_window_application_counts
+    import open_api.kipris_client as kipris_client
+
+    calls = []
+    windows = [
+        {"label": "w1", "start_date": date(2023, 1, 1), "end_date": date(2023, 12, 31)},
+        {"label": "w2", "start_date": date(2024, 1, 1), "end_date": date(2024, 12, 31)},
+        {"label": "w3", "start_date": date(2025, 1, 1), "end_date": date(2025, 12, 31)},
+    ]
+
+    class FakeKiprisClient:
+        def search_by_ipc(self, ipc_number, **params):
+            calls.append((ipc_number, params))
+            return {
+                "items": [
+                    {"ApplicationNumber": "US20250000001", "OpeningDate": "20250102", "countryCode": "US"},
+                    {"ApplicationNumber": "JP20250000001", "OpeningDate": "20250103", "countryCode": "JP"},
+                    {"ApplicationNumber": "US20240000001", "OpeningDate": "20240102", "countryCode": "US"},
+                    {"ApplicationNumber": "US20230000001", "OpeningDate": "20230102", "countryCode": "US"},
+                ]
+            }
+
+    monkeypatch.setattr(kipris_client, "KiprisClient", FakeKiprisClient)
+
+    counts = collect_classification_window_application_counts(
+        "G06F 40/00",
+        windows=windows,
+        use_ipc=True,
+        country_code="US",
+        page_size=20,
+    )
+
+    assert counts == [
+        {"label": "w1", "start_date": "2023-01-01", "end_date": "2023-12-31", "count": 1},
+        {"label": "w2", "start_date": "2024-01-01", "end_date": "2024-12-31", "count": 1},
+        {"label": "w3", "start_date": "2025-01-01", "end_date": "2025-12-31", "count": 1},
+    ]
+    assert len(calls) == 1
+    assert calls[0][0] == "G06F 40/00"
+
+
 def test_market_select_evidence_keeps_all_market_evidence():
     from agents.valuation_axes.market import select_evidence
 
@@ -1231,6 +1350,52 @@ def test_market_select_evidence_keeps_all_market_evidence():
     selected = select_evidence(evidence, state)
 
     assert [item["evidence_id"] for item in selected] == [f"news_{index}" for index in range(1, 9)]
+
+
+def test_foreign_market_select_evidence_prioritizes_named_industry_reports():
+    from agents.valuation_axes.market import select_evidence
+
+    evidence = [
+        {
+            "evidence_id": "industry_other",
+            "source_type": "industry_report",
+            "source": "ai_index_report_2026.pdf",
+            "metadata": {"source_name": "ai_index_report_2026.pdf"},
+            "related_axes": ["market"],
+            "score": 0.9,
+        },
+        {
+            "evidence_id": "industry_mckinsey",
+            "source_type": "industry_report",
+            "source": "mckinsey-technology-trends-outlook-2025.pdf",
+            "metadata": {"source_name": "mckinsey-technology-trends-outlook-2025.pdf"},
+            "related_axes": ["market"],
+            "score": 0.1,
+        },
+        {
+            "evidence_id": "industry_wef",
+            "source_type": "industry_report",
+            "source": "WEF_Top_10_Emerging_Technologies_of_2025.pdf",
+            "metadata": {"source_name": "WEF_Top_10_Emerging_Technologies_of_2025.pdf"},
+            "related_axes": ["market"],
+            "score": 0.2,
+        },
+        {
+            "evidence_id": "news_1",
+            "source_type": "news",
+            "source": "gnews",
+            "related_axes": ["market"],
+        },
+    ]
+    state = PatentWorkflowState(patent_structured={"country": "US"}, evidence_bundle=evidence)
+
+    selected = select_evidence(evidence, state)
+
+    assert [item["evidence_id"] for item in selected[:3]] == [
+        "industry_wef",
+        "industry_mckinsey",
+        "industry_other",
+    ]
 
 
 def test_technology_metrics_are_added_to_payload(monkeypatch):
@@ -1284,6 +1449,58 @@ def test_technology_metrics_are_added_to_payload(monkeypatch):
     assert len(captured_payloads) == 1
     assert captured_prompts[0]["prompt_name"] == "valuation/valuation_technology.md"
     assert captured_prompts[0]["artifact_name"] == "technology_input"
+
+
+def test_foreign_technology_metrics_use_ipc_and_country(monkeypatch):
+    captured_payloads = []
+
+    def fake_build_prompt(**kwargs):
+        captured_payloads.append(kwargs["payload"])
+        return "prompt"
+
+    def fake_run_llm_required(**kwargs):
+        return {
+            "axis": "technology",
+            "label": "기술성",
+            "score": 70,
+            "grade": "B",
+            "rationale": "r",
+            "evidence_ids": [],
+            "risk_factors": [],
+            "missing_information": [],
+            "confidence": 0.7,
+        }
+
+    monkeypatch.setattr(
+        "agents.valuation_axes.technology.build_similar_patent_context",
+        lambda **kwargs: {
+            "representative_cpc": None,
+            "representative_ipc": "G06F 40/30",
+            "country_code": "US",
+            "candidate_count": 2,
+            "similar_patents": [{"application_number": "US202020000001", "country_code": "US"}],
+            "warnings": [],
+        },
+    )
+
+    from agents.valuation import AxisRuntime
+    from agents.valuation_axes import technology
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "US"},
+        preprocessed_patent={"metadata": {"ipc": ["G06F 40/30"], "filing_date": "2024-01-01"}},
+    )
+    technology.run(
+        state,
+        AxisRuntime(
+            build_prompt=fake_build_prompt,
+            run_llm_required=fake_run_llm_required,
+        ),
+    )
+
+    assert captured_payloads[0]["technology_metrics"]["representative_ipc"] == "G06F 40/30"
+    assert captured_payloads[0]["technology_metrics"]["country_code"] == "US"
+    assert captured_payloads[0]["technology_metrics"]["similar_patents"][0]["country_code"] == "US"
 
 
 def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
@@ -1425,6 +1642,59 @@ def test_technology_metrics_prior_art_only_payload_omits_prior_art_duplicates(mo
     assert len(metrics["similar_patents"]) == 5
     assert "prior_art_patents" not in metrics
     assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
+
+
+def test_collect_similar_patent_candidates_filters_foreign_country_and_uses_ipc(monkeypatch):
+    from datetime import date
+
+    from services.patent.similar_patent_service import collect_similar_patent_candidates
+    import services.patent.similar_patent_service as similar_service
+
+    calls = []
+
+    class FakeKiprisClient:
+        def search_by_ipc(self, ipc_number, **params):
+            calls.append((ipc_number, params))
+            return {
+                "items": [
+                    {
+                        "ApplicationNumber": "US20230000001",
+                        "ApplicationDate": "20230102",
+                        "RegistrationStatus": "공개",
+                        "InventionName": "US patent",
+                        "Abstract": "US abstract",
+                        "Applicant": "OpenAI Inc",
+                        "countryCode": "US",
+                        "ipcNumber": "G06F 40/30",
+                    },
+                    {
+                        "ApplicationNumber": "JP20230000001",
+                        "ApplicationDate": "20230103",
+                        "RegistrationStatus": "공개",
+                        "InventionName": "JP patent",
+                        "Abstract": "JP abstract",
+                        "Applicant": "OpenAI Inc",
+                        "countryCode": "JP",
+                        "ipcNumber": "G06F 40/30",
+                    },
+                ]
+            }
+
+    monkeypatch.setattr(similar_service, "KiprisClient", FakeKiprisClient)
+
+    candidates = collect_similar_patent_candidates(
+        representative_cpc=None,
+        representative_ipc="G06F 40/30",
+        country_code="US",
+        filing_date=date(2024, 1, 1),
+        target_application_number=None,
+        max_candidates=10,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0]["application_number"] == "20230000001"
+    assert candidates[0]["country_code"] == "US"
+    assert calls[0][0] == "G06F 40/30"
 
 
 def test_technology_candidate_subscores_use_60_40_structure():
@@ -2173,6 +2443,56 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
     assert scored["subscores"]["portfolio_defensive_value"]["details"]["follow_on_right_signal"]["score"] == 4
 
 
+def test_reconcile_legal_scores_keeps_domestic_prior_art_metric():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(patent_structured={"country": "KR"})
+    result = {
+        "subscores": {
+            "right_stability": {
+                "score": 0,
+                "details": {
+                    "prior_art_overlap": {"score": 18},
+                    "claim_structure_stability": {"score": 7},
+                },
+            },
+            "claim_protection": {"score": 24},
+            "portfolio_defensive_value": {"score": 15},
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+
+    assert scored["score"] == 64
+    assert scored["subscores"]["right_stability"]["score"] == 25
+    assert scored["subscores"]["right_stability"]["max_score"] == 35
+
+
+def test_reconcile_legal_scores_excludes_prior_art_metric_for_foreign_patent():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(patent_structured={"country": "US"})
+    result = {
+        "subscores": {
+            "right_stability": {
+                "score": 0,
+                "details": {
+                    "prior_art_overlap": {"score": 18},
+                    "claim_structure_stability": {"score": 7},
+                },
+            },
+            "claim_protection": {"score": 24},
+            "portfolio_defensive_value": {"score": 15},
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+
+    assert scored["subscores"]["right_stability"]["score"] == 7
+    assert scored["subscores"]["right_stability"]["max_score"] == 10
+    assert scored["score"] == 61
+
+
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
@@ -2336,8 +2656,8 @@ def test_market_growth_reclassified_cpc_preserves_counts_and_flags_reason(monkey
     # A reclassified/inactive CPC goes empty across all recent windows.
     monkeypatch.setattr(
         market,
-        "collect_cpc_window_application_counts",
-        lambda representative_cpc, windows: [
+        "collect_classification_window_application_counts",
+        lambda representative_code, windows, use_ipc=False, country_code=None: [
             {"label": "w1", "start_date": "2021-12-06", "end_date": "2022-12-05", "count": 0},
             {"label": "w2", "start_date": "2022-12-06", "end_date": "2023-12-05", "count": 0},
             {"label": "w3", "start_date": "2023-12-06", "end_date": "2024-12-05", "count": 0},
@@ -2352,13 +2672,55 @@ def test_market_growth_reclassified_cpc_preserves_counts_and_flags_reason(monkey
     assert [w["count"] for w in metrics["cpc_application_counts"]] == [0, 0, 0]
 
 
+def test_foreign_market_growth_reclassified_ipc_preserves_counts_and_flags_reason(monkeypatch):
+    import agents.valuation_axes.market as market
+
+    monkeypatch.setattr(
+        market,
+        "collect_classification_window_application_counts",
+        lambda representative_code, windows, use_ipc, country_code: [
+            {"label": "w1", "start_date": "2021-12-06", "end_date": "2022-12-05", "count": 0},
+            {"label": "w2", "start_date": "2022-12-06", "end_date": "2023-12-05", "count": 0},
+            {"label": "w3", "start_date": "2023-12-06", "end_date": "2024-12-05", "count": 0},
+        ],
+    )
+
+    metrics = market.build_market_growth_metrics("G06F 17/50", use_ipc=True, country_code="US")
+
+    assert metrics["market_growth_available"] is False
+    assert metrics["missing_reason"] == "ipc_inactive_or_reclassified"
+    assert [w["count"] for w in metrics["cpc_application_counts"]] == [0, 0, 0]
+
+
+def test_foreign_market_growth_rationale_and_missing_message_use_ipc_country():
+    from agents.valuation_axes.market import apply_marketability_scores
+
+    result = apply_marketability_scores(
+        {
+            "score": 70,
+            "industry_marketability_score": 20,
+            "grade": "B",
+            "missing_information": [],
+            "confidence": 0.8,
+        },
+        {
+            "market_growth_code_type": "ipc",
+            "market_growth_country_code": "US",
+            "market_growth_score": None,
+            "global_business_score": 10,
+        },
+    )
+
+    assert "IPC 기준 해당 국가 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요" in result["missing_information"]
+
+
 def test_market_growth_zero_base_with_later_data_preserves_counts(monkeypatch):
     import agents.valuation_axes.market as market
 
     monkeypatch.setattr(
         market,
-        "collect_cpc_window_application_counts",
-        lambda representative_cpc, windows: [
+        "collect_classification_window_application_counts",
+        lambda representative_code, windows, use_ipc=False, country_code=None: [
             {"label": "w1", "start_date": "2021-12-06", "end_date": "2022-12-05", "count": 0},
             {"label": "w2", "start_date": "2022-12-06", "end_date": "2023-12-05", "count": 179},
             {"label": "w3", "start_date": "2023-12-06", "end_date": "2024-12-05", "count": 234},
