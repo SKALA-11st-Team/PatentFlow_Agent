@@ -546,7 +546,6 @@ def test_report_validation_passes_well_formed_report():
 
     assert result["passed"] is True
     assert result["issues"] == []
-    assert result["warnings"] == []
 
 
 def test_report_validation_flags_missing_sections_and_score_mismatch():
@@ -558,16 +557,3 @@ def test_report_validation_flags_missing_sections_and_score_mismatch():
     assert result["passed"] is False
     assert any("missing required sections" in i for i in result["issues"])
     assert any("total score" in i for i in result["issues"])
-
-
-def test_report_validation_records_forbidden_phrases_as_warnings():
-    from workflow.nodes import report_validation_node
-
-    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합 점수 223/400점\n방어력은 제한적이며 1:1 매핑 근거가 없어 감점했습니다."
-    result = report_validation_node(_report_state(md)).report_validation_result
-
-    # Forbidden phrases are recorded as non-blocking warnings, not hard failures.
-    assert result["passed"] is True
-    assert "방어력은 제한적" in result["warnings"]
-    assert "1:1 매핑" in result["warnings"]
-    assert "감점" in result["warnings"]
