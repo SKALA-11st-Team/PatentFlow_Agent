@@ -128,13 +128,20 @@ def _run_valuation_axis_result_node(payload: dict[str, Any], axis: str) -> dict[
 
 def _run_valuation_axes_merge(payload: dict[str, Any]) -> dict[str, Any]:
     state = _as_state(payload)
+    # On a selective retry only some axes were re-evaluated; carry over the prior
+    # axis supervisor checks so the supervisor can reuse them for the untouched
+    # axes instead of re-checking all four.
+    prior_checks = ((payload.get("valuation_result") or {}).get("axis_supervisor_checks")) or {}
     axis_results = {
         axis: payload[f"valuation_axis_{axis}"]
         for axis in VALUATION_AXES
         if isinstance(payload.get(f"valuation_axis_{axis}"), dict)
     }
     next_state = finalize_valuation_axis_results(state, axis_results)
-    return {"valuation_result": next_state.valuation_result}
+    result = dict(next_state.valuation_result or {})
+    if prior_checks:
+        result["axis_supervisor_checks"] = prior_checks
+    return {"valuation_result": result}
 
 
 def _route_after_top_supervisor(payload: dict[str, Any]) -> str:

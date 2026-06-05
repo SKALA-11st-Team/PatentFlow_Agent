@@ -972,3 +972,52 @@ def test_valuation_check_prompt_judges_structure_by_summary_fields():
     assert "has_rationale" in text and "risk_factor_count" in text
     assert "전체 텍스트가 없다는 이유로" in text
     assert "축별 verdict가 가리키지 않은 query_rewriting을 임의로 만들지 않는다" in text
+
+
+def test_axis_supervisor_checks_reuse_prior_for_non_retried_axes(monkeypatch):
+    calls = []
+
+    def fake_single(state, axis):
+        calls.append(axis)
+        return {"axis": axis, "status": "passed", "passed": True, "needs_retry": False,
+                "needs_more_evidence": False, "issues": [], "reason": "fresh", "source": "llm", "metadata": {}}
+
+    monkeypatch.setattr("workflow.supervisor.run_single_axis_supervisor_check", fake_single)
+    prior = {
+        axis: {"axis": axis, "status": "passed", "passed": True, "needs_retry": False,
+               "needs_more_evidence": False, "issues": [], "reason": "prior", "source": "llm", "metadata": {}}
+        for axis in ["legal", "technology", "market", "business_fit"]
+    }
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        valuation_retry_axes=["technology"],
+        valuation_result={"axes": _axes_result(), "axis_supervisor_checks": prior},
+    )
+
+    checks = run_axis_supervisor_checks(state)
+
+    # Only the re-evaluated axis is re-checked; the rest reuse prior results.
+    assert calls == ["technology"]
+    assert checks["technology"]["reason"] == "fresh"
+    assert checks["legal"]["reason"] == "prior"
+    assert checks["market"]["reason"] == "prior"
+    assert checks["business_fit"]["reason"] == "prior"
+
+
+def test_axis_supervisor_checks_full_when_no_retry_axes(monkeypatch):
+    calls = []
+
+    def fake_single(state, axis):
+        calls.append(axis)
+        return {"axis": axis, "status": "passed", "passed": True, "needs_retry": False,
+                "needs_more_evidence": False, "issues": [], "reason": "fresh", "source": "llm", "metadata": {}}
+
+    monkeypatch.setattr("workflow.supervisor.run_single_axis_supervisor_check", fake_single)
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        valuation_result={"axes": _axes_result()},
+    )
+
+    run_axis_supervisor_checks(state)
+
+    assert sorted(calls) == ["business_fit", "legal", "market", "technology"]

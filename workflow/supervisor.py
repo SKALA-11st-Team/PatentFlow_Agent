@@ -341,17 +341,30 @@ def apply_axis_routing_targets(
 
 def run_axis_supervisor_checks(state: PatentWorkflowState) -> dict[str, dict[str, Any]]:
     axes = list(REQUIRED_VALUATION_AXES)
+    prior = (state.valuation_result or {}).get("axis_supervisor_checks") or {}
+    retry_axes = [axis for axis in (state.valuation_retry_axes or []) if axis in axes]
+    reuse_axes = [axis for axis in axes if axis not in retry_axes]
+    # Selective re-check: after a selective re-evaluation only the re-evaluated
+    # axes changed, so reuse the prior checks for the untouched axes and only
+    # re-check the ones that were re-run.
+    if retry_axes and all(axis in prior for axis in reuse_axes):
+        to_check = retry_axes
+        checks = {axis: prior[axis] for axis in reuse_axes}
+    else:
+        to_check = axes
+        checks = {}
     # The per-axis checks are independent LLM calls and only read from state, so
     # run them concurrently. Rule-only checks (no LLM) are instant, so only pay
     # for threads when the LLM judge is enabled.
-    if state.user_input.get("use_llm_supervisor", False) and len(axes) > 1:
-        checks = run_axis_supervisor_checks_parallel(state, axes)
+    if state.user_input.get("use_llm_supervisor", False) and len(to_check) > 1:
+        checks.update(run_axis_supervisor_checks_parallel(state, to_check))
     else:
-        checks = {axis: run_single_axis_supervisor_check(state, axis) for axis in axes}
+        checks.update({axis: run_single_axis_supervisor_check(state, axis) for axis in to_check})
+    ordered = {axis: checks[axis] for axis in axes}
     valuation = dict(state.valuation_result or {})
-    valuation["axis_supervisor_checks"] = checks
+    valuation["axis_supervisor_checks"] = ordered
     state.valuation_result = valuation
-    return checks
+    return ordered
 
 
 def run_axis_supervisor_checks_parallel(
