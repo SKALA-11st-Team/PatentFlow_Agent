@@ -47,7 +47,7 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
             state.kipris_api_data = fetch_foreign_patent_rights_data(
                 patent,
                 output_dir=artifact_subdir(state, "patent_markdown"),
-                collect_pdf=bool(state.user_input.get("collect_pdf")),
+                collect_pdf=True,
             )
             parsed_pdf = state.kipris_api_data.get("parsed_pdf") or {}
             if parsed_pdf:

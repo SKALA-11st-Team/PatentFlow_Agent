@@ -170,11 +170,17 @@ def fetch_foreign_patent_rights_data(
             "foreign_citation_documents": [],
             "warnings": [],
         },
+        "pdf_collection": {
+            "status": "not_attempted",
+            "source": None,
+            "manual_upload_required": False,
+        },
         "warnings": [],
     }
     client = _kipris_client()
     candidates = foreign_target_literature_candidates(patent)
     result["foreign_literature_candidates"] = candidates
+    result.update(fetch_foreign_target_reference_data(client, candidates))
     if country in {"US", "JP", "CN"}:
         claims, used_literature_number = fetch_foreign_target_claims(client, candidates)
     else:
@@ -191,6 +197,7 @@ def fetch_foreign_patent_rights_data(
     if not collect_pdf:
         return result
 
+    result["pdf_collection"]["status"] = "collecting"
     try:
         parsed_pdf = download_and_parse_foreign_patent_pdf(
             client,
@@ -207,6 +214,13 @@ def fetch_foreign_patent_rights_data(
                 "pdfPath": parsed_pdf.get("pdf_path"),
             }
         }
+        result["pdf_collection"] = {
+            "status": "collected",
+            "source": foreign_pdf_source(parsed_pdf.get("selected_type")),
+            "selected_type": parsed_pdf.get("selected_type"),
+            "pdf_path": parsed_pdf.get("pdf_path"),
+            "manual_upload_required": False,
+        }
         if not claims and (pdf_claims := extract_foreign_claims_from_text(parsed_pdf.get("markdown_text") or "")):
             result["claims"] = pdf_claims
             result["claim_stats"] = _build_api_claim_stats(len(pdf_claims), pdf_claims)
@@ -215,8 +229,25 @@ def fetch_foreign_patent_rights_data(
         elif not claims:
             result["warnings"].append("foreign_pdf_claims_not_extracted")
     except Exception as exc:
-        result["warnings"].append(f"kipris_foreign_fulltext_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}")
+        result["pdf_collection"] = {
+            "status": "manual_upload_required",
+            "source": None,
+            "manual_upload_required": True,
+            "missing_reason": "kipris_and_google_patents_pdf_not_found",
+        }
+        result["warnings"].append(
+            f"foreign_pdf_manual_upload_required:{exc.__class__.__name__}:{str(exc)[:300]}"
+        )
     return result
+
+
+def foreign_pdf_source(selected_type: Any) -> str | None:
+    value = str(selected_type or "")
+    if value == "GOOGLE_PATENTS_FULLTEXT":
+        return "google_patents"
+    if value.startswith("FOREIGN_"):
+        return "kipris"
+    return None
 
 
 def foreign_patent_metadata_from_db(patent: dict[str, Any]) -> dict[str, Any]:
@@ -966,6 +997,193 @@ def fetch_foreign_target_claims(client: Any, candidates: list[dict[str, Any]]) -
             if claims:
                 return normalize_foreign_claims_for_target(claims), literature_number
     return [], None
+
+
+def fetch_foreign_target_reference_data(
+    client: Any,
+    candidates: list[dict[str, Any]],
+    *,
+    max_documents: int = 20,
+) -> dict[str, Any]:
+    cited_documents: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    used_literature_numbers: list[str] = []
+    for candidate in candidates:
+        country_code = candidate.get("country_code")
+        if not country_code:
+            continue
+        for literature_number in _foreign_literature_number_candidates(candidate):
+            domestic_raw = None
+            foreign_raw = None
+            try:
+                domestic_raw = client.overseas_us_patent_documents(literature_number, country_code)
+            except Exception as exc:
+                warnings.append(f"foreign_domestic_citations_failed:{literature_number}:{exc.__class__.__name__}")
+            try:
+                foreign_raw = client.overseas_foreign_patent_documents(literature_number, country_code)
+            except Exception as exc:
+                warnings.append(f"foreign_foreign_citations_failed:{literature_number}:{exc.__class__.__name__}")
+            documents = [
+                *normalize_foreign_reference_documents(
+                    domestic_raw,
+                    source="kipris_foreign_domestic_citation_documents",
+                    direction="cited_by_target",
+                ),
+                *normalize_foreign_reference_documents(
+                    foreign_raw,
+                    source="kipris_foreign_foreign_citation_documents",
+                    direction="cited_by_target",
+                ),
+            ]
+            if documents:
+                cited_documents.extend(documents)
+                used_literature_numbers.append(literature_number)
+                break
+        if cited_documents:
+            break
+
+    cited_documents = dedupe_foreign_reference_documents(cited_documents)[:max_documents]
+    stats = {
+        "total_count": len(cited_documents),
+        "standardized_count": len(cited_documents),
+        "non_standardized_count": 0,
+    }
+    api_collection = {
+        "target_cited_references": {
+            "available": bool(cited_documents),
+            "source": "kipris_foreign_patent_documents",
+            "used_literature_numbers": used_literature_numbers,
+            "count": len(cited_documents),
+        },
+        "target_citing_references": {
+            "available": False,
+            "source": None,
+            "missing_reason": "foreign_citing_api_not_connected",
+        },
+        "target_family": {
+            "available": False,
+            "source": None,
+            "missing_reason": "foreign_family_api_not_connected",
+        },
+        "target_legal_status": {
+            "available": False,
+            "source": None,
+            "missing_reason": "foreign_legal_status_api_not_connected",
+        },
+    }
+    return {
+        "citation_documents": cited_documents,
+        "citation_stats": stats,
+        "citation_evidence": {
+            "kr_citation_documents": [],
+            "foreign_claim_lookup_candidates": [],
+            "foreign_citation_documents": [
+                foreign_reference_to_citation_evidence(item) for item in cited_documents[:5]
+            ],
+            "warnings": warnings,
+        },
+        "foreign_api_collection": api_collection,
+    }
+
+
+def normalize_foreign_reference_documents(raw: Any, *, source: str, direction: str) -> list[dict[str, Any]]:
+    documents = []
+    for item in iter_foreign_reference_items(raw):
+        if not isinstance(item, dict):
+            continue
+        country_code = first_mapping_value(item, ("countryCode", "CountryCode", "citationCountryCode", "documentCountryCode"))
+        document_number = first_mapping_value(
+            item,
+            (
+                "literatureNumber",
+                "LiteratureNumber",
+                "documentNumber",
+                "DocumentNumber",
+                "publicationNumber",
+                "PublicationNumber",
+                "patentNumber",
+                "PatentNumber",
+            ),
+        )
+        kind_code = first_mapping_value(item, ("kindCode", "KindCode", "publicationKindCode", "PublicationKindCode"))
+        title = first_mapping_value(item, ("inventionTitle", "title", "Title", "documentTitle"))
+        publication_date = first_mapping_value(item, ("publicationDate", "PublicationDate", "openDate", "OpenDate"))
+        if not (country_code or document_number or title):
+            continue
+        documents.append(
+            {
+                "direction": direction,
+                "country_code": country_code,
+                "document_number": document_number,
+                "kind_code": kind_code,
+                "display_number": _citation_display_number(
+                    country_code=country_code,
+                    standard_number=document_number,
+                    kind_code=kind_code,
+                    original_number=None,
+                ),
+                "title": title,
+                "publication_date": _normalize_yyyymmdd(publication_date) or publication_date,
+                "lookup_status": "resolved",
+                "lookup_source": source,
+                "raw": item,
+            }
+        )
+    return documents
+
+
+def iter_foreign_reference_items(raw: Any) -> list[Any]:
+    if not isinstance(raw, dict):
+        return []
+    matches: list[Any] = []
+
+    def walk(value: Any, key_hint: str = "") -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                lowered = str(key).lower()
+                if isinstance(child, list) and any(token in lowered for token in ("documentsinfo", "patentdocuments", "citation")):
+                    matches.extend(child)
+                elif isinstance(child, dict) and any(token in lowered for token in ("documentsinfo", "patentdocuments", "citation")):
+                    matches.append(child)
+                walk(child, lowered)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child, key_hint)
+
+    walk(raw)
+    return matches
+
+
+def dedupe_foreign_reference_documents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    seen = set()
+    for item in items:
+        key = (
+            item.get("country_code"),
+            item.get("document_number"),
+            item.get("kind_code"),
+            item.get("title"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(item)
+    return result
+
+
+def foreign_reference_to_citation_evidence(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "direction": item.get("direction"),
+        "country_code": item.get("country_code"),
+        "publication_number": item.get("display_number") or item.get("document_number"),
+        "title": item.get("title"),
+        "abstract": "",
+        "register_status": None,
+        "claim_stats": {},
+        "representative_claims": [],
+        "lookup_status": item.get("lookup_status"),
+        "lookup_source": item.get("lookup_source"),
+    }
 
 
 def normalize_foreign_claims_for_target(claims: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -8,6 +8,7 @@ from services.patent.kipris_patent_service import (
     google_patents_publication_id,
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
+    normalize_foreign_reference_documents,
     resolve_citation_evidence,
     _fetch_foreign_claims_from_kipris,
     _foreign_literature_number_candidates,
@@ -87,6 +88,12 @@ class ForeignClient:
 
     def overseas_open_fulltext(self, literature_number, country_code):
         return {"response": {"body": {"items": {"item": {}}}}}
+
+    def overseas_us_patent_documents(self, literature_number, country_code):
+        return {"response": {"body": {"items": {}}}}
+
+    def overseas_foreign_patent_documents(self, literature_number, country_code):
+        return {"response": {"body": {"items": {}}}}
 
 
 class GooglePatentsResponse:
@@ -231,6 +238,33 @@ def test_fetch_foreign_patent_rights_data_marks_unsupported_claim_api_without_kr
     assert result["warnings"] == ["kipris_foreign_claims_not_supported:TW", "kipris_foreign_claims_not_found"]
 
 
+def test_fetch_foreign_patent_rights_data_requires_manual_upload_when_all_pdf_sources_fail(monkeypatch):
+    monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: ForeignClient())
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.google_patents_pdf_url",
+        lambda *args, **kwargs: None,
+    )
+
+    result = fetch_foreign_patent_rights_data(
+        {
+            "country": "CN",
+            "application_number": "201880038342.9",
+            "registration_number": "CN 110770661 B",
+            "title_final": "CN title",
+            "status": "등록",
+        },
+        collect_pdf=True,
+    )
+
+    assert result["pdf_collection"] == {
+        "status": "manual_upload_required",
+        "source": None,
+        "manual_upload_required": True,
+        "missing_reason": "kipris_and_google_patents_pdf_not_found",
+    }
+    assert result["warnings"][-1].startswith("foreign_pdf_manual_upload_required:")
+
+
 def test_google_patents_publication_id_normalizes_cn_registration_number():
     assert (
         google_patents_publication_id({"country": "CN", "registration_number": "CN 110770661 B"})
@@ -262,6 +296,37 @@ def test_extract_foreign_claims_from_text_supports_chinese_numbered_claims():
     assert claims[0]["claim_no"] == 1
     assert claims[0]["is_independent"] is True
     assert claims[1]["dependency"] == 1
+
+
+def test_normalize_foreign_reference_documents_extracts_patent_documents():
+    raw = {
+        "response": {
+            "body": {
+                "items": {
+                    "foreignPatentDocumentsInfo": [
+                        {
+                            "countryCode": "US",
+                            "literatureNumber": "1234567",
+                            "kindCode": "B2",
+                            "inventionTitle": "Prior patent",
+                            "publicationDate": "20200131",
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+    result = normalize_foreign_reference_documents(
+        raw,
+        source="kipris_foreign_foreign_citation_documents",
+        direction="cited_by_target",
+    )
+
+    assert result[0]["country_code"] == "US"
+    assert result[0]["document_number"] == "1234567"
+    assert result[0]["display_number"] == "US1234567 B2"
+    assert result[0]["publication_date"] == "2020-01-31"
 
 
 def test_fulltext_application_number_candidates_include_normalized_and_original():
