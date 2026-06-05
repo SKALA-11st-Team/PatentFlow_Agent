@@ -169,6 +169,9 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
     has_unknown_evidence = any("references unknown evidence_id" in issue for issue in decision.issues)
     decision.current_team = "valuation"
     decision.stage = "valuation_check"
+    # Routing is deterministic: the per-axis LLM checks judge each axis, and the
+    # structural rule check + axis-verdict aggregation decide the next action.
+    # There is no holistic final LLM override (it caused spurious misroutes).
     if decision.passed:
         axis_decision = axis_checks_to_supervisor_decision(axis_checks)
         decision.passed = axis_decision.passed
@@ -182,17 +185,6 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
     else:
         decision.next_team = "valuation"
         decision.next_action = "valuation_team"
-    decision = run_llm_supervisor_check(
-        state,
-        decision,
-        prompt_name="supervisor/supervisor_valuation_check.md",
-        allowed_next_actions={"validation", "query_rewriting", "valuation_retry"},
-        team_action_map={
-            "validation": ("writing", "writing_team"),
-            "query_rewriting": ("research", "query_rewriting"),
-            "valuation_retry": ("valuation", "valuation_team"),
-        },
-    )
     decision = apply_supervisor_retry_limit(
         state,
         decision,
@@ -796,8 +788,6 @@ def build_supervisor_judge_prompt(state: PatentWorkflowState, *, prompt_name: st
 def supervisor_payload(state: PatentWorkflowState, *, prompt_name: str) -> dict[str, Any]:
     if "evidence" in prompt_name:
         return evidence_supervisor_payload(state)
-    if "valuation" in prompt_name:
-        return valuation_supervisor_payload(state)
     if "final" in prompt_name:
         return final_supervisor_payload(state)
     if "patent" in prompt_name:
@@ -855,46 +845,6 @@ def evidence_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
         "query_plan": query_plan_payload(state.query_plan or {}),
         "evidence": evidence_summary_payload(state, include_samples=True),
         "missing_evidence": state.missing_evidence,
-        "retry_count": state.retry_count,
-    }
-
-
-def valuation_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
-    valuation = state.valuation_result or {}
-    axes = valuation.get("axes") or {}
-    known_ids = known_evidence_ids(state.evidence_bundle)
-    deprecated_axes = [axis for axis in axes if axis not in REQUIRED_VALUATION_AXES]
-    axis_payload = {
-        axis: valuation_axis_payload(axis, axes.get(axis) or {}, known_ids)
-        for axis in REQUIRED_VALUATION_AXES
-    }
-    cited_ids = [
-        str(item)
-        for axis in REQUIRED_VALUATION_AXES
-        for item in (axes.get(axis) or {}).get("evidence_ids", [])
-        if str(item).strip()
-    ]
-    return {
-        "current_stage": state.current_stage,
-        "patent": patent_metadata_payload(state),
-        "evidence": evidence_summary_payload(state, include_samples=True, priority_evidence_ids=cited_ids),
-        "valuation": {
-            "available": bool(valuation),
-            "axis_count": len(axes),
-            "required_axes": REQUIRED_VALUATION_AXES,
-            "missing_axes": [axis for axis in REQUIRED_VALUATION_AXES if axis not in axes],
-            "deprecated_axes": deprecated_axes,
-            "axes": axis_payload,
-            "total_score": valuation.get("total_score"),
-            "expected_total_score": expected_total_score(axis_payload),
-            "recommendation": valuation.get("recommendation"),
-            "decision_rationale_exists": bool(valuation.get("decision_rationale")),
-            "decision_rationale_preview": preview_text(valuation.get("decision_rationale"), 300),
-            "axis_supervisor_checks": valuation.get("axis_supervisor_checks") or {},
-            "required_actions_count": safe_len(valuation.get("required_actions")),
-            "has_final_report_markdown": bool(valuation.get("final_report_markdown")),
-            "final_report_markdown_length": text_length(valuation.get("final_report_markdown")),
-        },
         "retry_count": state.retry_count,
     }
 
@@ -1091,16 +1041,6 @@ def source_type_counts(evidence_bundle: list[dict[str, Any]]) -> dict[str, int]:
 
 def known_evidence_ids(evidence_bundle: list[dict[str, Any]]) -> set[str]:
     return {str(evidence.get("evidence_id")) for evidence in evidence_bundle if evidence.get("evidence_id")}
-
-
-def expected_total_score(axis_payload: dict[str, dict[str, Any]]) -> int | None:
-    # total_score in the valuation result is the SUM of the 4 axis scores
-    # (0-400). Return the sum here too so it can be cross-checked against
-    # total_score; previously this returned the average, which never matched.
-    scores = [axis.get("score") for axis in axis_payload.values() if isinstance(axis.get("score"), (int, float))]
-    if len(scores) != len(REQUIRED_VALUATION_AXES):
-        return None
-    return int(sum(scores))
 
 
 def preview_text(value: Any, limit: int) -> str | None:

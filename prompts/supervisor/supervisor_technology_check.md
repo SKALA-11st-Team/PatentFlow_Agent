@@ -2,7 +2,7 @@
 
 이 문서는 기술성 평가 결과를 검토하기 위한 축별 품질 기준입니다.
 라우팅을 결정하는 Supervisor 프롬프트가 아니며, `next_action`을 출력하지 않습니다.
-최종 라우팅은 `supervisor_valuation_check.md`에서 수행합니다.
+최종 라우팅은 4개 축의 status를 결정적으로 집계해 수행하며, 별도의 라우팅 LLM은 없습니다.
 
 ## 검토 대상
 - valuation.axes.technology
