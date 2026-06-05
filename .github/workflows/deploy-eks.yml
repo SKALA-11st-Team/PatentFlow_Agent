@@ -156,6 +156,15 @@ jobs:
           OPENAI_SUPERVISOR_MODEL_VALUE: ${{ secrets.OPENAI_SUPERVISOR_MODEL }}
           LANGSMITH_API_KEY_VALUE: ${{ secrets.LANGSMITH_API_KEY }}
           POSTGRES_PASSWORD_VALUE: ${{ secrets.POSTGRES_PASSWORD }}
+          # 평가(evaluate) 근거수집용 외부 API. 분류(recommend-fields)는 사용 안 함.
+          # 미제공 시 빈 값으로 들어가고 해당 근거만 degrade(부팅엔 지장 없음).
+          DART_KEY_VALUE: ${{ secrets.DART_KEY }}
+          GNEWS_API_KEY_VALUE: ${{ secrets.GNEWS_API_KEY }}
+          NAVER_CLIENT_ID_VALUE: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET_VALUE: ${{ secrets.NAVER_CLIENT_SECRET }}
+          GOOGLE_CUSTOM_SEARCH_API_KEY_VALUE: ${{ secrets.GOOGLE_CUSTOM_SEARCH_API_KEY }}
+          GOOGLE_CUSTOM_SEARCH_CX_VALUE: ${{ secrets.GOOGLE_CUSTOM_SEARCH_CX }}
+          TAVILY_API_KEY_VALUE: ${{ secrets.TAVILY_API_KEY }}
         run: |
           PGVECTOR_DATABASE_URL="postgresql://${PGVECTOR_USER}:${POSTGRES_PASSWORD_VALUE}@${PGVECTOR_HOST}:5432/${PGVECTOR_DB}"
           kubectl create secret generic team11-patentflow-agent-secret \
@@ -166,6 +175,13 @@ jobs:
             --from-literal=OPENAI_SUPERVISOR_MODEL="${OPENAI_SUPERVISOR_MODEL_VALUE}" \
             --from-literal=LANGSMITH_API_KEY="${LANGSMITH_API_KEY_VALUE}" \
             --from-literal=PGVECTOR_DATABASE_URL="${PGVECTOR_DATABASE_URL}" \
+            --from-literal=DART_KEY="${DART_KEY_VALUE}" \
+            --from-literal=GNEWS_API_KEY="${GNEWS_API_KEY_VALUE}" \
+            --from-literal=NAVER_CLIENT_ID="${NAVER_CLIENT_ID_VALUE}" \
+            --from-literal=NAVER_CLIENT_SECRET="${NAVER_CLIENT_SECRET_VALUE}" \
+            --from-literal=GOOGLE_CUSTOM_SEARCH_API_KEY="${GOOGLE_CUSTOM_SEARCH_API_KEY_VALUE}" \
+            --from-literal=GOOGLE_CUSTOM_SEARCH_CX="${GOOGLE_CUSTOM_SEARCH_CX_VALUE}" \
+            --from-literal=TAVILY_API_KEY="${TAVILY_API_KEY_VALUE}" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Apply agent config

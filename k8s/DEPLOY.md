@@ -29,6 +29,21 @@ BE 레포에 이미 있는 값들을 **에이전트 레포에도** 등록해야 
 | `OPENAI_SUPERVISOR_MODEL` | (선택) supervisor 모델 | 신규(선택) |
 | `LANGSMITH_API_KEY` | (선택) 트레이싱 | 신규(선택) |
 
+### 평가(evaluate) 워크플로 전용 — 분류(recommend-fields)에는 불필요
+근거수집(시장성/뉴스/재무) 단계에서 쓰인다. 미등록 시 빈 값으로 들어가 **해당 근거만 degrade**되고
+부팅·분류에는 지장이 없다. evaluate까지 제대로 쓰려면 등록한다.
+
+| Secret | 서비스 |
+|---|---|
+| `DART_KEY` | DART 재무공시 |
+| `GNEWS_API_KEY` | GNews 뉴스 검색 |
+| `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | Naver 검색 |
+| `GOOGLE_CUSTOM_SEARCH_API_KEY`, `GOOGLE_CUSTOM_SEARCH_CX` | Google CSE (SK AX 사이트 검색) |
+| `TAVILY_API_KEY` | Tavily 검색(대체) |
+
+> BigQuery(해외특허, `BIGQUERY_PROJECT` + GCP 서비스계정)는 별도 인증이 필요해 이 워크플로에 포함하지
+> 않았다. 필요 시 GOOGLE_APPLICATION_CREDENTIALS 마운트를 추가로 구성해야 한다.
+
 ## 선택 — GitHub Actions Variables (없으면 기본값 사용)
 | Variable | 기본값 |
 |---|---|
