@@ -24,6 +24,7 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         state=state,
         payload=payload,
         artifact_name=f"{AXIS}_input",
+        axis=AXIS,
     )
     result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
     return apply_marketability_scores(result, metrics)

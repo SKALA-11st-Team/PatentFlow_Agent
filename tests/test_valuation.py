@@ -2274,3 +2274,57 @@ def test_cli_user_input_can_disable_only_llm_supervisor():
     assert user_input["use_llm_valuation"] is True
     assert user_input["use_llm_final_report"] is True
     assert user_input["use_llm_supervisor"] is False
+
+
+def test_build_axis_prompt_injects_previous_retry_feedback():
+    from agents.valuation import build_axis_prompt
+    from workflow.state import PatentWorkflowState
+
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        valuation_result={
+            "axis_supervisor_checks": {
+                "legal": {
+                    "status": "valuation_retry",
+                    "issues": ["권리성 점수가 근거와 불일치"],
+                    "reason": "평가 논리 보완 필요",
+                }
+            }
+        },
+    )
+
+    prompt = build_axis_prompt(
+        prompt_name="valuation/valuation_legal.md",
+        state=state,
+        payload={"patent": {}},
+        artifact_name="legal_input",
+        axis="legal",
+    )
+
+    assert "이전 평가 반려 사유" in prompt
+    assert "권리성 점수가 근거와 불일치" in prompt
+    assert "평가 논리 보완 필요" in prompt
+
+
+def test_build_axis_prompt_no_feedback_when_axis_passed():
+    from agents.valuation import build_axis_prompt
+    from workflow.state import PatentWorkflowState
+
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        valuation_result={
+            "axis_supervisor_checks": {
+                "legal": {"status": "passed", "issues": [], "reason": ""}
+            }
+        },
+    )
+
+    prompt = build_axis_prompt(
+        prompt_name="valuation/valuation_legal.md",
+        state=state,
+        payload={"patent": {}},
+        artifact_name="legal_input",
+        axis="legal",
+    )
+
+    assert "이전 평가 반려 사유" not in prompt

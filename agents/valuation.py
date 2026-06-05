@@ -97,11 +97,38 @@ def build_axis_prompt(
     state: PatentWorkflowState,
     payload: dict[str, Any],
     artifact_name: str,
+    axis: str,
 ) -> str:
     common_template = load_prompt("valuation/common_valuation.md").strip()
     template = load_prompt(prompt_name).strip()
     save_valuation_input_payload(state, artifact_name, payload)
-    return f"{common_template}\n\n{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    prompt = f"{common_template}\n\n{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    feedback = axis_retry_feedback_block(state, axis)
+    if feedback:
+        prompt = f"{prompt}\n\n{feedback}"
+    return prompt
+
+
+def axis_retry_feedback_block(state: PatentWorkflowState, axis: str) -> str:
+    """Render the previous supervisor reject reason so a re-evaluation corrects
+    the flagged issue instead of blindly re-rolling. Only emitted when the axis
+    was sent back with status valuation_retry on the prior pass."""
+    checks = (state.valuation_result or {}).get("axis_supervisor_checks") or {}
+    check = checks.get(axis) if isinstance(checks, dict) else None
+    if not isinstance(check, dict) or check.get("status") != "valuation_retry":
+        return ""
+    issues = [text for text in (normalize_text(item) for item in (check.get("issues") or [])) if text]
+    reason = normalize_text(check.get("reason"))
+    if not issues and not reason:
+        return ""
+    lines = [
+        "## 이전 평가 반려 사유 (반드시 교정)",
+        "직전 평가가 아래 사유로 반려되었습니다. 같은 문제를 반복하지 말고 평가 논리와 점수를 교정하세요.",
+    ]
+    lines.extend(f"- {issue}" for issue in issues)
+    if reason:
+        lines.append(f"종합 사유: {reason}")
+    return "\n".join(lines)
 
 
 AXIS_RUNTIME = AxisRuntime(

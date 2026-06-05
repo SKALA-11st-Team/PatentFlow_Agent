@@ -801,3 +801,35 @@ def test_valuation_supervisor_allows_first_axis_retry_within_budget(monkeypatch)
     assert result.supervisor_decision["next_action"] == "valuation_team"
     assert result.valuation_retry_axes == ["technology"]
     assert result.team_status["axis_retry_counts"]["technology"] == 1
+
+
+def test_self_contained_axis_query_rewriting_is_coerced_to_retry():
+    from workflow.supervisor import axis_supervisor_check_result
+
+    for axis in ["legal", "technology"]:
+        result = axis_supervisor_check_result(
+            axis=axis, status="query_rewriting", issues=["x"], reason="r", source="llm"
+        )
+        assert result["status"] == "valuation_retry"
+        assert result["needs_more_evidence"] is False
+        assert result["needs_retry"] is True
+
+
+def test_external_evidence_axis_keeps_query_rewriting():
+    from workflow.supervisor import axis_supervisor_check_result
+
+    for axis in ["market", "business_fit"]:
+        result = axis_supervisor_check_result(
+            axis=axis, status="query_rewriting", issues=["x"], reason="r", source="llm"
+        )
+        assert result["status"] == "query_rewriting"
+        assert result["needs_more_evidence"] is True
+
+
+def test_legal_technology_prompts_no_longer_offer_query_rewriting():
+    from pathlib import Path
+
+    for filename in ["supervisor_legal_check.md", "supervisor_technology_check.md"]:
+        text = Path("prompts/supervisor", filename).read_text(encoding="utf-8")
+        assert '"status": "passed" | "valuation_retry"' in text
+        assert '| "query_rewriting"' not in text

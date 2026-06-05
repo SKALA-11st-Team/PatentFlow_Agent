@@ -47,22 +47,21 @@
 - 해외 패밀리 부재를 권리 약점 또는 포기 근거로 단정합니다.
 - 선행문헌 존재만으로 무효 가능성을 법률 결론처럼 단정합니다.
 
-## 근거 재수집이 필요한 신호
-- 청구항, 등록상태, 선행문헌 식별 정보가 대부분 없습니다.
-- evidence_id가 실제 evidence_bundle에 존재하지 않습니다.
-- 권리성 rationale이 참조하는 근거가 evidence.samples 또는 patent context 어디에도 없습니다.
+## 평가 범위 주의
+- 권리성은 청구항·선행문헌·등록상태·포트폴리오 등 특허 수집 단계에서 들어온 정보로만 판단합니다.
+- 이 근거는 Naver/GNews/산업 RAG 외부 검색으로 보강되지 않습니다. 따라서 권리성은 외부 근거 재수집(query_rewriting)을 요청하지 않습니다.
+- 청구항·등록상태·선행문헌 식별 정보 자체가 거의 없으면, 이는 특허 수집 단계(patent_check)의 문제이며 이 체크의 재수집 대상이 아닙니다. 주어진 정보로 평가 논리가 타당한지만 봅니다.
 
 ## 출력 형식
 Return ONLY one JSON object.
 `next_action`은 출력하지 마세요.
 
 {
-  "status": "passed" | "valuation_retry" | "query_rewriting",
+  "status": "passed" | "valuation_retry",
   "issues": [],
   "reason": ""
 }
 
 status 선택 기준:
 - `passed`: 권리성 평가가 자기 기준에 맞고, 근거 연결이 확인됨
-- `valuation_retry`: 근거는 있으나 권리성 평가 논리, 점수, 표현을 다시 써야 함
-- `query_rewriting`: 권리성 판단에 필요한 청구항, 선행문헌, 등록상태, 포트폴리오 근거가 부족함
+- `valuation_retry`: 권리성 평가 논리, 점수, 표현을 다시 써야 함

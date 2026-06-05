@@ -32,6 +32,17 @@ AXIS_SUPERVISOR_PROMPTS = {
     "business_fit": "supervisor/supervisor_business_fit_check.md",
 }
 AXIS_SUPERVISOR_STATUSES = {"passed", "valuation_retry", "query_rewriting"}
+# Only these axes consume external search evidence (news, industry RAG, SK AX
+# official). Patent-intrinsic axes (legal/technology) get their inputs from the
+# patent collection phase (KIPRIS claims/prior-art/CPC), so re-running the
+# evidence search loop cannot help them — they may only request valuation_retry.
+EXTERNAL_EVIDENCE_AXES = {"market", "business_fit"}
+
+
+def coerce_axis_status(axis: str, status: str) -> str:
+    if status == "query_rewriting" and axis not in EXTERNAL_EVIDENCE_AXES:
+        return "valuation_retry"
+    return status
 
 
 def decide_next_step(state: PatentWorkflowState) -> str:
@@ -475,6 +486,7 @@ def axis_supervisor_check_result(
     source: str,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    status = coerce_axis_status(axis, status)
     return {
         "axis": axis,
         "status": status,
