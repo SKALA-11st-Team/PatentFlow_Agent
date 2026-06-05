@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextvars
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from app.config import settings
@@ -338,14 +340,31 @@ def apply_axis_routing_targets(
 
 
 def run_axis_supervisor_checks(state: PatentWorkflowState) -> dict[str, dict[str, Any]]:
-    checks = {
-        axis: run_single_axis_supervisor_check(state, axis)
-        for axis in REQUIRED_VALUATION_AXES
-    }
+    axes = list(REQUIRED_VALUATION_AXES)
+    # The per-axis checks are independent LLM calls and only read from state, so
+    # run them concurrently. Rule-only checks (no LLM) are instant, so only pay
+    # for threads when the LLM judge is enabled.
+    if state.user_input.get("use_llm_supervisor", False) and len(axes) > 1:
+        checks = run_axis_supervisor_checks_parallel(state, axes)
+    else:
+        checks = {axis: run_single_axis_supervisor_check(state, axis) for axis in axes}
     valuation = dict(state.valuation_result or {})
     valuation["axis_supervisor_checks"] = checks
     state.valuation_result = valuation
     return checks
+
+
+def run_axis_supervisor_checks_parallel(
+    state: PatentWorkflowState, axes: list[str]
+) -> dict[str, dict[str, Any]]:
+    futures = {}
+    with ThreadPoolExecutor(max_workers=len(axes)) as executor:
+        for axis in axes:
+            # Copy the current context so the langsmith run tree propagates into
+            # the worker thread and each LLM call still nests under this node.
+            ctx = contextvars.copy_context()
+            futures[axis] = executor.submit(ctx.run, run_single_axis_supervisor_check, state, axis)
+    return {axis: futures[axis].result() for axis in axes}
 
 
 def run_single_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> dict[str, Any]:

@@ -879,3 +879,32 @@ def test_axis_check_prompts_have_evidence_existence_note():
     ]:
         text = Path("prompts/supervisor", filename).read_text(encoding="utf-8")
         assert "근거의 존재 여부는 evidence.samples가 아니라 known_evidence_ids로 판단" in text
+
+
+def test_axis_supervisor_checks_run_concurrently(monkeypatch):
+    import threading
+    import time
+
+    barrier = threading.Barrier(4, timeout=5)
+    seen_threads = set()
+
+    def fake_call_llm(prompt, **kwargs):
+        seen_threads.add(threading.get_ident())
+        # If the 4 checks run concurrently, all reach the barrier together.
+        barrier.wait()
+        return '{"status": "passed", "issues": [], "reason": "정상"}'
+
+    monkeypatch.setattr("workflow.supervisor.call_llm", fake_call_llm)
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        evidence_bundle=[{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}],
+        valuation_result={"axes": _axes_result()},
+    )
+
+    checks = run_axis_supervisor_checks(state)
+
+    assert set(checks) == {"legal", "technology", "market", "business_fit"}
+    assert all(c["status"] == "passed" for c in checks.values())
+    # The barrier only releases if all four checks were in flight simultaneously,
+    # and they ran on distinct worker threads.
+    assert len(seen_threads) == 4
