@@ -676,7 +676,7 @@ def _axes_result(**overrides):
             "grade": "B",
             "rationale": "known 근거 기반 평가",
             "evidence_ids": ["known"],
-            "risk_factors": [],
+            "risk_factors": ["리스크"],
             "missing_information": [],
             "confidence": 0.7,
         }
@@ -754,3 +754,50 @@ def test_valuation_supervisor_aggregates_query_rewriting_gaps(monkeypatch):
     assert result.valuation_retry_axes == []
     assert "시장 성장 근거 부족" in result.missing_evidence
     assert "사업 적용 근거 부족" in result.missing_evidence
+
+
+def test_valuation_supervisor_drops_axis_after_retry_budget_exhausted(monkeypatch):
+    def fake_call_llm(prompt, **kwargs):
+        if "Technology Axis Quality Check Criteria" in prompt:
+            return '{"status": "valuation_retry", "issues": ["기술성 논리 보완"], "reason": "재평가"}'
+        if "Axis Quality Check Criteria" in prompt:
+            return '{"status": "passed", "issues": [], "reason": "정상"}'
+        return '{"passed": false, "next_action": "valuation_retry", "issues": [], "reason": "재평가"}'
+
+    monkeypatch.setattr("workflow.supervisor.call_llm", fake_call_llm)
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        team_status={"axis_retry_counts": {"technology": 1}},
+        patent_structured={"id": 1, "title_final": "테스트 특허"},
+        evidence_bundle=[{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}],
+        valuation_result={"axes": _axes_result()},
+    )
+
+    result = valuation_supervisor_node(state)
+
+    assert result.supervisor_decision["next_action"] == "writing_team"
+    assert result.valuation_retry_axes == []
+    assert result.supervisor_decision["metadata"]["axis_retry_budget"]["exhausted_axes"] == ["technology"]
+
+
+def test_valuation_supervisor_allows_first_axis_retry_within_budget(monkeypatch):
+    def fake_call_llm(prompt, **kwargs):
+        if "Technology Axis Quality Check Criteria" in prompt:
+            return '{"status": "valuation_retry", "issues": ["기술성 논리 보완"], "reason": "재평가"}'
+        if "Axis Quality Check Criteria" in prompt:
+            return '{"status": "passed", "issues": [], "reason": "정상"}'
+        return '{"passed": false, "next_action": "valuation_retry", "issues": [], "reason": "재평가"}'
+
+    monkeypatch.setattr("workflow.supervisor.call_llm", fake_call_llm)
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        patent_structured={"id": 1, "title_final": "테스트 특허"},
+        evidence_bundle=[{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}],
+        valuation_result={"axes": _axes_result()},
+    )
+
+    result = valuation_supervisor_node(state)
+
+    assert result.supervisor_decision["next_action"] == "valuation_team"
+    assert result.valuation_retry_axes == ["technology"]
+    assert result.team_status["axis_retry_counts"]["technology"] == 1

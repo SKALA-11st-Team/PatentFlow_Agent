@@ -21,6 +21,7 @@ STAGE_PROMPTS = {
 }
 
 VALUATION_SUPERVISOR_RETRY_LIMIT = 1
+AXIS_SUPERVISOR_RETRY_LIMIT = 1
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
 REQUIRED_VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
 MAX_SUPERVISOR_EVIDENCE_SAMPLES = 5
@@ -198,7 +199,7 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
         fallback_reason="Valuation supervisor retry limit reached; continuing with structurally valid valuation result.",
         allow_fallback=check_valuation_result(state).passed,
     )
-    apply_axis_routing_targets(state, decision, axis_checks)
+    decision = apply_axis_routing_targets(state, decision, axis_checks)
     state.supervisor_decision = decision.model_dump()
     return state
 
@@ -223,31 +224,99 @@ def aggregate_axis_evidence_gaps(axis_checks: dict[str, dict[str, Any]]) -> list
     return gaps
 
 
+def increment_axis_retry_count(state: PatentWorkflowState, axis: str) -> int:
+    team_status = dict(state.team_status or {})
+    counts = dict(team_status.get("axis_retry_counts") or {})
+    counts[axis] = int(counts.get(axis) or 0) + 1
+    team_status["axis_retry_counts"] = counts
+    state.team_status = team_status
+    return counts[axis]
+
+
+def reset_axis_retry_counts(state: PatentWorkflowState) -> None:
+    if not state.team_status or "axis_retry_counts" not in state.team_status:
+        return
+    team_status = dict(state.team_status)
+    team_status.pop("axis_retry_counts")
+    state.team_status = team_status
+
+
+def merge_axis_evidence_gaps(state: PatentWorkflowState, axis_checks: dict[str, dict[str, Any]]) -> None:
+    gaps = aggregate_axis_evidence_gaps(axis_checks)
+    if not gaps:
+        return
+    merged = list(state.missing_evidence or [])
+    for gap in gaps:
+        if gap not in merged:
+            merged.append(gap)
+    state.missing_evidence = merged
+
+
 def apply_axis_routing_targets(
     state: PatentWorkflowState,
     decision: SupervisorDecision,
     axis_checks: dict[str, dict[str, Any]],
-) -> None:
+) -> SupervisorDecision:
     """Translate per-axis verdicts into graph routing targets.
 
-    - valuation_team(retry) -> re-run only the axes flagged valuation_retry.
-      An empty target list lets the graph fall back to a full re-evaluation.
+    - valuation_team(retry) -> re-run only the axes flagged valuation_retry,
+      each bounded by a per-axis retry budget. Axes that exhaust their budget
+      are dropped; if every flagged axis is exhausted, accept the current
+      structurally-valid result and continue to writing.
+      An empty target list lets the graph fall back to a full re-evaluation,
+      bounded by the global valuation retry limit.
     - query_rewriting -> aggregate the evidence gaps of the axes that need more
       evidence into a single missing_evidence list (one shared re-search).
     """
-    if decision.next_action == "valuation_team":
-        state.valuation_retry_axes = axis_retry_targets(axis_checks)
-    else:
+    if decision.next_action != "valuation_team":
+        reset_axis_retry_counts(state)
         state.valuation_retry_axes = []
+        if decision.next_action == "query_rewriting":
+            merge_axis_evidence_gaps(state, axis_checks)
+        return decision
 
-    if decision.next_action == "query_rewriting":
-        gaps = aggregate_axis_evidence_gaps(axis_checks)
-        if gaps:
-            merged = list(state.missing_evidence or [])
-            for gap in gaps:
-                if gap not in merged:
-                    merged.append(gap)
-            state.missing_evidence = merged
+    candidates = axis_retry_targets(axis_checks)
+    if not candidates:
+        # Retry direction without a specific axis -> full re-evaluation,
+        # governed by the global valuation retry limit.
+        state.valuation_retry_axes = []
+        return decision
+
+    eligible: list[str] = []
+    exhausted: list[str] = []
+    for axis in candidates:
+        if increment_axis_retry_count(state, axis) <= AXIS_SUPERVISOR_RETRY_LIMIT:
+            eligible.append(axis)
+        else:
+            exhausted.append(axis)
+
+    if eligible:
+        state.valuation_retry_axes = eligible
+        return decision
+
+    # Every flagged axis exhausted its per-axis retry budget.
+    state.valuation_retry_axes = []
+    if not check_valuation_result(state).passed:
+        return decision
+    reset_axis_retry_counts(state)
+    metadata = dict(decision.metadata)
+    metadata["axis_retry_budget"] = {
+        "exhausted_axes": exhausted,
+        "retry_limit": AXIS_SUPERVISOR_RETRY_LIMIT,
+        "fallback_action": "writing_team",
+    }
+    return SupervisorDecision(
+        passed=True,
+        current_team=decision.current_team,
+        next_team="writing",
+        stage=decision.stage,
+        next_action="writing_team",
+        issues=decision.issues,
+        missing_evidence=decision.missing_evidence,
+        reason="축별 재평가 예산을 모두 사용해 현재 평가 결과로 진행합니다.",
+        route_reason="축별 재평가 예산 소진",
+        metadata=metadata,
+    )
 
 
 def run_axis_supervisor_checks(state: PatentWorkflowState) -> dict[str, dict[str, Any]]:
