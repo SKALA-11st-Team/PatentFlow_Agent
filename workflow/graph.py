@@ -57,6 +57,7 @@ class WorkflowGraphState(TypedDict, total=False):
     valuation_axis_technology: dict[str, Any]
     valuation_axis_market: dict[str, Any]
     valuation_axis_business_fit: dict[str, Any]
+    valuation_retry_axes: list[str]
 
 
 def _as_state(payload: dict[str, Any]) -> PatentWorkflowState:
@@ -76,15 +77,23 @@ def _run_node_partial(payload: dict[str, Any], fn: Any, keys: list[str]) -> dict
 
 
 def _start_valuation_axes_analysis(payload: dict[str, Any]) -> dict[str, Any]:
-    del payload
-    return {
-        "valuation_result": None,
-        "validation_result": None,
-        "valuation_axis_legal": None,
-        "valuation_axis_technology": None,
-        "valuation_axis_market": None,
-        "valuation_axis_business_fit": None,
-    }
+    retry_axes = payload.get("valuation_retry_axes") or []
+    if not retry_axes:
+        # First entry or full re-evaluation: reset every axis.
+        return {
+            "valuation_result": None,
+            "validation_result": None,
+            "valuation_axis_legal": None,
+            "valuation_axis_technology": None,
+            "valuation_axis_market": None,
+            "valuation_axis_business_fit": None,
+        }
+    # Selective retry: clear only the targeted axes and keep passing ones.
+    reset: dict[str, Any] = {"validation_result": None}
+    for axis in VALUATION_AXES:
+        if axis in retry_axes:
+            reset[f"valuation_axis_{axis}"] = None
+    return reset
 
 
 def _start_writing_reports(payload: dict[str, Any]) -> dict[str, Any]:
@@ -109,6 +118,11 @@ def _route_after_writing_join(payload: dict[str, Any]) -> str:
 
 
 def _run_valuation_axis_result_node(payload: dict[str, Any], axis: str) -> dict[str, Any]:
+    retry_axes = payload.get("valuation_retry_axes") or []
+    existing = payload.get(f"valuation_axis_{axis}")
+    if retry_axes and axis not in retry_axes and isinstance(existing, dict):
+        # Selective retry: this axis already passed, reuse it without re-calling the LLM.
+        return {f"valuation_axis_{axis}": existing}
     state = _as_state(payload)
     return {f"valuation_axis_{axis}": run_axis_valuation_result(axis, state)}
 

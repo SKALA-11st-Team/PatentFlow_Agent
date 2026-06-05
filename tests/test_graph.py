@@ -237,3 +237,54 @@ def test_writing_graph_reuses_report_nodes_for_retry():
     assert "summary_validation_retry" not in graph_nodes
     assert "final_report_retry" not in graph_nodes
     assert "report_validation_retry" not in graph_nodes
+
+
+def test_start_valuation_axes_analysis_full_reset_when_no_targets():
+    reset = workflow_graph._start_valuation_axes_analysis(
+        PatentWorkflowState(valuation_retry_axes=[]).model_dump()
+    )
+
+    assert reset["valuation_axis_legal"] is None
+    assert reset["valuation_axis_technology"] is None
+    assert reset["valuation_axis_market"] is None
+    assert reset["valuation_axis_business_fit"] is None
+    assert reset["valuation_result"] is None
+
+
+def test_start_valuation_axes_analysis_selective_reset_keeps_passing_axes():
+    reset = workflow_graph._start_valuation_axes_analysis(
+        PatentWorkflowState(valuation_retry_axes=["technology"]).model_dump()
+    )
+
+    assert reset["valuation_axis_technology"] is None
+    # Passing axes must not be reset (absent keys keep their existing payload).
+    assert "valuation_axis_legal" not in reset
+    assert "valuation_axis_market" not in reset
+    assert "valuation_axis_business_fit" not in reset
+    assert "valuation_result" not in reset
+
+
+def test_selective_retry_reuses_passing_axis_without_llm(monkeypatch):
+    calls = []
+
+    def fake_run_axis(axis, state):
+        calls.append(axis)
+        return {"axis": axis, "score": 50, "grade": "C"}
+
+    monkeypatch.setattr(workflow_graph, "run_axis_valuation_result", fake_run_axis)
+
+    payload = PatentWorkflowState(
+        valuation_retry_axes=["technology"],
+        patent_structured={"id": 1, "title_final": "테스트 특허"},
+    ).model_dump()
+    payload["valuation_axis_legal"] = {"axis": "legal", "score": 80, "grade": "A"}
+
+    legal = workflow_graph._run_valuation_axis_result_node(payload, "legal")
+    technology = workflow_graph._run_valuation_axis_result_node(payload, "technology")
+
+    # legal already passed -> reused as-is, no re-evaluation
+    assert legal["valuation_axis_legal"]["score"] == 80
+    assert "legal" not in calls
+    # technology is targeted -> re-evaluated
+    assert "technology" in calls
+    assert technology["valuation_axis_technology"]["axis"] == "technology"

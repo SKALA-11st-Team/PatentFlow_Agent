@@ -31,6 +31,7 @@ class PatentWorkflowState(BaseModel):
 
     # Valuation and report markdown
     valuation_result: dict[str, Any] | None = None
+    valuation_retry_axes: list[str] = Field(default_factory=list)
     final_report: dict[str, Any] | None = None
 
     # Validation/supervisor loop

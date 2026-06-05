@@ -198,8 +198,56 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
         fallback_reason="Valuation supervisor retry limit reached; continuing with structurally valid valuation result.",
         allow_fallback=check_valuation_result(state).passed,
     )
+    apply_axis_routing_targets(state, decision, axis_checks)
     state.supervisor_decision = decision.model_dump()
     return state
+
+
+def axis_retry_targets(axis_checks: dict[str, dict[str, Any]]) -> list[str]:
+    return [
+        axis
+        for axis, check in axis_checks.items()
+        if check.get("status") == "valuation_retry"
+    ]
+
+
+def aggregate_axis_evidence_gaps(axis_checks: dict[str, dict[str, Any]]) -> list[str]:
+    gaps: list[str] = []
+    for check in axis_checks.values():
+        if check.get("status") != "query_rewriting":
+            continue
+        for issue in check.get("issues", []):
+            text = str(issue).strip()
+            if text and text not in gaps:
+                gaps.append(text)
+    return gaps
+
+
+def apply_axis_routing_targets(
+    state: PatentWorkflowState,
+    decision: SupervisorDecision,
+    axis_checks: dict[str, dict[str, Any]],
+) -> None:
+    """Translate per-axis verdicts into graph routing targets.
+
+    - valuation_team(retry) -> re-run only the axes flagged valuation_retry.
+      An empty target list lets the graph fall back to a full re-evaluation.
+    - query_rewriting -> aggregate the evidence gaps of the axes that need more
+      evidence into a single missing_evidence list (one shared re-search).
+    """
+    if decision.next_action == "valuation_team":
+        state.valuation_retry_axes = axis_retry_targets(axis_checks)
+    else:
+        state.valuation_retry_axes = []
+
+    if decision.next_action == "query_rewriting":
+        gaps = aggregate_axis_evidence_gaps(axis_checks)
+        if gaps:
+            merged = list(state.missing_evidence or [])
+            for gap in gaps:
+                if gap not in merged:
+                    merged.append(gap)
+            state.missing_evidence = merged
 
 
 def run_axis_supervisor_checks(state: PatentWorkflowState) -> dict[str, dict[str, Any]]:
