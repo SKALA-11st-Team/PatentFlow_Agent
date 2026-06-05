@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -261,6 +262,7 @@ def build_patent_basic_info_markdown(metadata: dict[str, Any]) -> str:
         ("출원일", metadata.get("application_date")),
         ("등록일", metadata.get("registration_date")),
         ("예상 소멸일", metadata.get("expected_expiration_date")),
+        ("보고서 생성일", datetime.now().strftime("%Y-%m-%d")),
     ]
     lines = [
         "# 특허 가치판단 종합 보고서",
