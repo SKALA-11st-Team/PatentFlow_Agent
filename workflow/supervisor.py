@@ -1158,7 +1158,7 @@ def safe_len(value: Any) -> int:
     return 0
 
 
-def markdown_headings(markdown: Any, limit: int = 8) -> list[str]:
+def markdown_headings(markdown: Any, limit: int = 20) -> list[str]:
     if not markdown:
         return []
     headings = []

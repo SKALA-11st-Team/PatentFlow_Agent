@@ -1021,3 +1021,28 @@ def test_axis_supervisor_checks_full_when_no_retry_axes(monkeypatch):
     run_axis_supervisor_checks(state)
 
     assert sorted(calls) == ["business_fit", "legal", "market", "technology"]
+
+
+def test_markdown_headings_captures_all_report_sections():
+    from workflow.supervisor import markdown_headings
+
+    md = "\n".join([
+        "### 제목", "## 특허 기본 정보",
+        "## 1. 한눈에 보는 검토 결과", "## 2. 평가대상 및 범위", "## 3. 판단 근거",
+        "## 4. 평가축별 상세 근거", "### 4.1 권리성", "### 4.2 기술성",
+        "### 4.3 시장성", "### 4.4 사업 연계성",
+        "## 5. 사업부 확인 필요 사항", "## 6. 최종 검토 의견",
+    ])
+    headings = markdown_headings(md)
+
+    # Sections 5 and 6 must survive (previously truncated at 8 by the 4.x subsections).
+    assert any("## 5." in h for h in headings)
+    assert any("## 6." in h for h in headings)
+
+
+def test_final_check_prompt_defers_structure_to_report_validation():
+    from pathlib import Path
+
+    text = Path("prompts/supervisor/supervisor_final_check.md").read_text(encoding="utf-8")
+    assert "report_validation 결과(report_passed/report_issues)로 판단" in text
+    assert "안 보인다는 이유만으로" in text
