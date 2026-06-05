@@ -47,6 +47,11 @@
 - 관련제품 또는 핵심 기능을 확인할 수 있는 evidence가 없습니다.
 - evidence_id가 실제 evidence_bundle에 존재하지 않습니다.
 
+## 근거 존재·내용 판단 주의
+- evidence.samples에는 이 평가가 인용한 근거(evidence_ids)가 우선 포함되며, 전체 근거의 일부 미리보기입니다.
+- 근거의 존재 여부는 evidence.samples가 아니라 known_evidence_ids로 판단하세요. known_evidence_ids에 있으면 그 근거는 존재합니다.
+- samples에 본문이 안 보인다는 이유만으로 "근거 누락"으로 단정하거나 근거 재수집(query_rewriting)을 요청하지 마세요. 실제로 known_evidence_ids에 없는 항목(unknown_evidence_ids)만 문제 삼습니다.
+
 ## 출력 형식
 Return ONLY one JSON object.
 `next_action`은 출력하지 마세요.

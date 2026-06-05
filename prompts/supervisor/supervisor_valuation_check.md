@@ -48,11 +48,17 @@
 5. 최종 추천이 점수와 모순되지 않는가?
    - 최종 추천은 4개 축 결과를 종합한 결과이며, 축별 기준서가 직접 결정하지 않습니다.
 
+## 근거 존재·내용 판단 주의
+- evidence.samples에는 각 축이 인용한 근거(evidence_ids)가 우선 포함되며, 전체 근거의 일부 미리보기입니다.
+- 근거의 존재 여부는 evidence.samples가 아니라 known_evidence_ids로 판단하세요. samples에 본문이 안 보인다는 이유만으로 "근거 누락"으로 단정하지 말고, 실제로 known_evidence_ids에 없는 항목(unknown_evidence_ids)만 문제 삼습니다.
+
 ## 판정 원칙
 - 입력은 valuation 결과와 evidence preview만 담은 점검표입니다. 원문 전체가 없다고 실패시키지 마세요.
 - unknown_evidence_ids, missing_axes, deprecated_axes가 있으면 passed=false입니다.
 - 근거가 약하지만 evidence_id 연결과 rationale이 존재하면 passed=true로 두고 issues에 남길 수 있습니다.
 - valuation 로직 자체의 문제는 valuation_retry, 근거 자체가 부족한 문제는 query_rewriting을 선택하세요.
+- 어떤 축이 외부 검색으로 보강 가능한 근거(산업 리포트·국내 뉴스·GNews)가 실제로 부족하면, 평가 논리만 다시 쓰는 valuation_retry로는 그 공백이 메워지지 않습니다. 근거 부족과 평가 논리 문제가 동시에 있으면 query_rewriting을 우선하세요.
+- 단, 청구항·선행문헌·CPC 자동계산값처럼 외부 검색으로 보강되지 않는 데이터의 부족은 query_rewriting 사유가 아닙니다(valuation_retry 또는 missing_information으로 처리).
 - 자료 부족은 낮은 가치와 구분하세요. 단, 자료가 없는데도 고득점으로 단정하면 valuation_retry입니다.
 - 축별 점수 구조 또는 축별 역할이 섞인 문제는 valuation_retry입니다.
 - evidence 자체가 없거나 검색 근거가 축별 판단에 필요한 최소 수준도 안 되면 query_rewriting입니다.

@@ -44,6 +44,12 @@
 - 이 근거는 Naver/GNews/산업 RAG 외부 검색으로 보강되지 않습니다. 따라서 기술성은 외부 근거 재수집(query_rewriting)을 요청하지 않습니다.
 - 특허 설명·비교군·선행문헌 정보 자체가 거의 없으면, 이는 특허 수집 단계(patent_check)의 문제이며 이 체크의 재수집 대상이 아닙니다. 주어진 정보로 평가 논리가 타당한지만 봅니다.
 
+## 근거 존재·내용 판단 주의
+- evidence.samples에는 이 평가가 인용한 근거(evidence_ids)가 우선 포함되며, 전체 근거의 일부 미리보기입니다.
+- 근거의 존재 여부는 evidence.samples가 아니라 known_evidence_ids로 판단하세요. known_evidence_ids에 있으면 그 근거는 존재합니다.
+- samples에 본문이 안 보인다는 이유만으로 "근거 누락"으로 단정하지 마세요. 실제로 known_evidence_ids에 없는 항목(unknown_evidence_ids)만 문제 삼습니다.
+- 비교군 특허·선행문헌·청구항 텍스트는 evidence_bundle(뉴스·산업 RAG 근거)이 아니라 특허 수집 데이터(claim_context, technology_metrics, citation_evidence)에서 옵니다. 평가가 이를 인용했다고 해서 evidence_ids/samples에 없는 것을 "근거 누락"이나 재평가 사유로 삼지 마세요.
+
 ## 출력 형식
 Return ONLY one JSON object.
 `next_action`은 출력하지 마세요.

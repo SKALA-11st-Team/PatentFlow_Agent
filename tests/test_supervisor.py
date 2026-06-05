@@ -835,3 +835,47 @@ def test_legal_technology_prompts_no_longer_offer_query_rewriting():
         text = Path("prompts/supervisor", filename).read_text(encoding="utf-8")
         assert '"status": "passed" | "valuation_retry"' in text
         assert '| "query_rewriting"' not in text
+
+
+def test_supervisor_samples_prioritize_cited_evidence_beyond_first_five():
+    from workflow.supervisor import supervisor_evidence_samples
+
+    bundle = [
+        {"evidence_id": f"e{i}", "source": "naver", "source_type": "news",
+         "compressed_summary": f"요약 {i}"}
+        for i in range(12)
+    ]
+    # An axis cites e9 / e11, which fall outside the first 5 of the bundle.
+    samples = supervisor_evidence_samples(bundle, priority_evidence_ids=["e9", "e11"])
+    ids = [s["evidence_id"] for s in samples]
+
+    assert "e9" in ids and "e11" in ids
+    # Cited items come first, then context fill.
+    assert ids[0] == "e9" and ids[1] == "e11"
+
+
+def test_supervisor_samples_without_priority_keep_legacy_first_n():
+    from workflow.supervisor import supervisor_evidence_samples, MAX_SUPERVISOR_EVIDENCE_SAMPLES
+
+    bundle = [
+        {"evidence_id": f"e{i}", "source": "naver", "source_type": "news"}
+        for i in range(12)
+    ]
+    samples = supervisor_evidence_samples(bundle, priority_evidence_ids=None)
+
+    assert len(samples) == MAX_SUPERVISOR_EVIDENCE_SAMPLES
+    assert [s["evidence_id"] for s in samples] == [f"e{i}" for i in range(MAX_SUPERVISOR_EVIDENCE_SAMPLES)]
+
+
+def test_axis_check_prompts_have_evidence_existence_note():
+    from pathlib import Path
+
+    for filename in [
+        "supervisor_legal_check.md",
+        "supervisor_technology_check.md",
+        "supervisor_market_check.md",
+        "supervisor_business_fit_check.md",
+        "supervisor_valuation_check.md",
+    ]:
+        text = Path("prompts/supervisor", filename).read_text(encoding="utf-8")
+        assert "근거의 존재 여부는 evidence.samples가 아니라 known_evidence_ids로 판단" in text

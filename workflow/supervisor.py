@@ -384,11 +384,12 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
     axes = valuation.get("axes") or {}
     axis_result = axes.get(axis) or {}
     known_ids = known_evidence_ids(state.evidence_bundle)
+    cited_ids = [str(item) for item in axis_result.get("evidence_ids", []) if str(item).strip()]
     return {
         "current_stage": state.current_stage,
         "axis": axis,
         "patent": patent_metadata_payload(state),
-        "evidence": evidence_summary_payload(state, include_samples=True),
+        "evidence": evidence_summary_payload(state, include_samples=True, priority_evidence_ids=cited_ids),
         "valuation_axis": valuation_axis_payload(axis, axis_result, known_ids),
         "axis_result": compact_axis_result_for_supervisor(axis_result),
     }
@@ -813,10 +814,16 @@ def valuation_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
         axis: valuation_axis_payload(axis, axes.get(axis) or {}, known_ids)
         for axis in REQUIRED_VALUATION_AXES
     }
+    cited_ids = [
+        str(item)
+        for axis in REQUIRED_VALUATION_AXES
+        for item in (axes.get(axis) or {}).get("evidence_ids", [])
+        if str(item).strip()
+    ]
     return {
         "current_stage": state.current_stage,
         "patent": patent_metadata_payload(state),
-        "evidence": evidence_summary_payload(state, include_samples=True),
+        "evidence": evidence_summary_payload(state, include_samples=True, priority_evidence_ids=cited_ids),
         "valuation": {
             "available": bool(valuation),
             "axis_count": len(axes),
@@ -939,7 +946,12 @@ def query_plan_payload(query_plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def evidence_summary_payload(state: PatentWorkflowState, *, include_samples: bool) -> dict[str, Any]:
+def evidence_summary_payload(
+    state: PatentWorkflowState,
+    *,
+    include_samples: bool,
+    priority_evidence_ids: list[str] | None = None,
+) -> dict[str, Any]:
     evidence_bundle = state.evidence_bundle or []
     payload = {
         "total_count": len(evidence_bundle),
@@ -947,11 +959,35 @@ def evidence_summary_payload(state: PatentWorkflowState, *, include_samples: boo
         "known_evidence_ids": sorted(known_evidence_ids(evidence_bundle)),
     }
     if include_samples:
-        payload["samples"] = [
-            evidence_sample(evidence)
-            for evidence in evidence_bundle[:MAX_SUPERVISOR_EVIDENCE_SAMPLES]
-        ]
+        payload["samples"] = supervisor_evidence_samples(evidence_bundle, priority_evidence_ids)
     return payload
+
+
+def supervisor_evidence_samples(
+    evidence_bundle: list[dict[str, Any]],
+    priority_evidence_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Build evidence previews for a supervisor check.
+
+    The evidence the rationale actually cited (priority_evidence_ids) is included
+    in full so the supervisor can content-verify it, then a few non-cited items
+    are added for context. Without priorities this keeps the legacy behaviour of
+    the first MAX_SUPERVISOR_EVIDENCE_SAMPLES items.
+    """
+    priority = [str(item) for item in (priority_evidence_ids or []) if str(item).strip()]
+    priority_set = set(priority)
+    cited = [
+        evidence
+        for evidence in evidence_bundle
+        if str(evidence.get("evidence_id")) in priority_set
+    ]
+    others = [
+        evidence
+        for evidence in evidence_bundle
+        if str(evidence.get("evidence_id")) not in priority_set
+    ]
+    selected = cited + others[:MAX_SUPERVISOR_EVIDENCE_SAMPLES]
+    return [evidence_sample(evidence) for evidence in selected]
 
 
 def evidence_sample(evidence: dict[str, Any]) -> dict[str, Any]:
