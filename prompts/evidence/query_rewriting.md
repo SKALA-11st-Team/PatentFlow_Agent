@@ -19,6 +19,13 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
 - 하나의 검색어에 여러 의도를 모두 담지 말고, 핵심 키워드 중심으로 작성한다.
 - ko는 Naver News용 한국어 검색어로 작성한다.
 - en은 GNews용 영어 검색어로 작성하며, 한글을 포함하지 않는다.
+- en(GNews) 전용 규칙:
+  - GNews는 글로벌 영어 일반 뉴스를 색인한다. layout optimization, production line layout, manufacturing facility layout 같은 엔지니어링/공정 세부 표현은 영어 뉴스에 거의 없으므로 쓰지 않는다.
+  - 대신 영어 뉴스에 자주 나오는 넓은 산업·트렌드·제품 표현으로 작성한다(예: smart factory, factory automation, digital twin, robo advisor).
+  - 핵심 기술이 특정 언어/지역에 종속적이면(예: 한국어 숫자 표기 처리) 영어로 직역하지 말고 상위 응용 분야의 영어 표현으로 바꾼다(예: conversational AI, chatbot, speech recognition).
+  - 가능하면 `AI` 또는 적용 산업명을 함께 붙여 일반 뉴스에서 검색되는 형태로 만든다(예: AI asset allocation, AI portfolio management).
+  - 합성어는 영어 뉴스에서 통용되는 띄어쓰기/하이픈 형태로 쓴다(roboadvisor 아님, robo advisor).
+  - metadata에 영어 회사명/제품명이 있으면 en 검색어 중 1개는 회사명 또는 제품명을 활용한다(글로벌 뉴스는 기업 단위 보도가 많다).
 - 하이픈, 슬래시, 콜론, 따옴표, 괄호 같은 특수문자를 넣지 않는다.
 - 관련 제품명이 길면 전체를 그대로 복사하지 말고 핵심 제품명만 사용한다.
 - 예: `CMP Pad Press Cutting, Aging` → `CMP 패드` 또는 `CMP Pad`
@@ -53,11 +60,18 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
 - 반드시 JSON object만 출력하고, 설명/Markdown은 출력하지 않는다.
 
 좋은 en 검색어 예시:
-- ai investing
-- portfolio management ai
-- digital wealth management
-- polishing pad automation
-- semiconductor materials
+- AI asset allocation
+- AI portfolio management
+- robo advisor
+- factory automation
+- digital twin factory
+
+나쁜 en 검색어 예시 (영어 일반 뉴스에 거의 안 나옴, 사용 금지):
+- factory layout optimization
+- production line layout
+- manufacturing facility layout
+- Korean numeral conversion
+- roboadvisor
 
 좋은 ko 검색어 예시:
 - AI 투자 서비스
