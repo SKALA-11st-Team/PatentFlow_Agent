@@ -28,6 +28,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=5)
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--batch-name", default=None)
+    parser.add_argument(
+        "--localize-batch",
+        default=None,
+        help="Don't run; just make an existing batch's reports self-contained (copy images, rewrite paths).",
+    )
     return parser.parse_args()
 
 
@@ -68,6 +73,62 @@ def first_match(directory: Path | None, pattern: str) -> Path | None:
     if not directory:
         return None
     return next(directory.glob(pattern), None)
+
+
+IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+
+def localize_report_images(report_path: Path, *, run_dir: Path | None, key: str) -> int:
+    """Make a copied report self-contained: copy the images it references into an
+    `images/<key>/` folder next to the report and rewrite the (relative) image
+    links to point there. External (http) images are left as-is. Returns the
+    number of images localized."""
+    if not report_path.exists():
+        return 0
+    text = report_path.read_text(encoding="utf-8")
+    images_dir = report_path.parent / "images" / key
+    count = 0
+
+    def repl(match: re.Match) -> str:
+        nonlocal count
+        alt, path = match.group(1), match.group(2).strip()
+        if path.startswith("http://") or path.startswith("https://"):
+            return match.group(0)
+        src = None
+        for base in ([run_dir / "final"] if run_dir else []) + [report_path.parent]:
+            candidate = (base / path)
+            if candidate.exists():
+                src = candidate
+                break
+        if src is None:
+            return match.group(0)
+        images_dir.mkdir(parents=True, exist_ok=True)
+        dst = images_dir / src.name
+        shutil.copy2(src, dst)
+        count += 1
+        return f"![{alt}](images/{key}/{src.name})"
+
+    new_text = IMAGE_RE.sub(repl, text)
+    if count:
+        report_path.write_text(new_text, encoding="utf-8")
+    return count
+
+
+def localize_existing_batch(batch_name: str) -> int:
+    batch_root = Path("artifacts/batches") / batch_name
+    manifest = json.loads((batch_root / "manifest.json").read_text(encoding="utf-8"))
+    total = 0
+    for item in manifest.get("completed", []):
+        run_dir = Path(item["run_dir"]) if item.get("run_dir") else None
+        for kind in ("summary_report", "valuation_report"):
+            path = Path(item[kind]) if item.get(kind) else None
+            if not path or not path.exists():
+                continue
+            prefix = re.match(r"(\d+)_", path.name)
+            key = f"{prefix.group(1)}_{item['management_number']}" if prefix else item["management_number"]
+            total += localize_report_images(path, run_dir=run_dir, key=key)
+    print(f"localized {total} images in {batch_root}", flush=True)
+    return total
 
 
 async def run_one(
@@ -120,6 +181,9 @@ async def run_one(
             final_copy = valuation_dir / f"{index:02d}_{management_number}_{final.name}"
             shutil.copy2(summary, summary_copy)
             shutil.copy2(final, final_copy)
+            key = f"{index:02d}_{management_number}"
+            localize_report_images(summary_copy, run_dir=run_dir, key=key)
+            localize_report_images(final_copy, run_dir=run_dir, key=key)
             print(f"[done  {index}/{total}] completed {management_number}", flush=True)
             return {
                 "ok": True,
@@ -141,6 +205,9 @@ async def run_one(
 
 async def main_async() -> int:
     args = parse_args()
+    if args.localize_batch:
+        localize_existing_batch(args.localize_batch)
+        return 0
     management_numbers = resolve_management_numbers(args)
     if not management_numbers:
         raise SystemExit("No management numbers resolved.")
