@@ -107,7 +107,12 @@ def build_market_growth_metrics(representative_cpc: str | None) -> dict[str, Any
     first_count = int(counts[0]["count"] or 0)
     last_count = int(counts[-1]["count"] or 0)
     if first_count <= 0:
-        return missing_market_growth("cagr_start_count_zero", windows)
+        # CAGR needs a non-zero base year. A CPC reclassified into a new code
+        # (e.g. G06F 17/50 -> G06F 30/xx) goes empty in recent windows, so the
+        # base window is 0. Keep the real counts and flag the likely cause.
+        total = sum(int(item.get("count") or 0) for item in counts)
+        reason = "cpc_inactive_or_reclassified" if total == 0 else "cagr_start_count_zero"
+        return unavailable_market_growth(reason, counts)
 
     cagr = (last_count / first_count) ** (1 / (len(counts) - 1)) - 1
     cagr_score = score_cagr(cagr)
@@ -123,6 +128,24 @@ def build_market_growth_metrics(representative_cpc: str | None) -> dict[str, Any
         "trend_score": trend_score,
         "market_growth_score": cagr_score + trend_score,
         "missing_reason": None,
+    }
+
+
+def unavailable_market_growth(reason: str, counts: list[dict[str, Any]]) -> dict[str, Any]:
+    """CAGR could not be computed, but keep the real per-window counts so the
+    gap stays diagnosable (e.g. a reclassified/inactive CPC whose recent windows
+    are empty) instead of masking every window count as null."""
+    reference_date = counts[-1]["end_date"] if counts else None
+    return {
+        "cpc_application_counts": counts,
+        "market_growth_reference_date": reference_date,
+        "market_growth_available": False,
+        "cagr": None,
+        "cagr_score": None,
+        "trend_status": None,
+        "trend_score": None,
+        "market_growth_score": None,
+        "missing_reason": reason,
     }
 
 

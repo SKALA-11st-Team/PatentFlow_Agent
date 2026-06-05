@@ -2328,3 +2328,46 @@ def test_build_axis_prompt_no_feedback_when_axis_passed():
     )
 
     assert "이전 평가 반려 사유" not in prompt
+
+
+def test_market_growth_reclassified_cpc_preserves_counts_and_flags_reason(monkeypatch):
+    import agents.valuation_axes.market as market
+
+    # A reclassified/inactive CPC goes empty across all recent windows.
+    monkeypatch.setattr(
+        market,
+        "collect_cpc_window_application_counts",
+        lambda representative_cpc, windows: [
+            {"label": "w1", "start_date": "2021-12-06", "end_date": "2022-12-05", "count": 0},
+            {"label": "w2", "start_date": "2022-12-06", "end_date": "2023-12-05", "count": 0},
+            {"label": "w3", "start_date": "2023-12-06", "end_date": "2024-12-05", "count": 0},
+        ],
+    )
+
+    metrics = market.build_market_growth_metrics("G06F 17/50")
+
+    assert metrics["market_growth_available"] is False
+    assert metrics["missing_reason"] == "cpc_inactive_or_reclassified"
+    # Real per-window counts are preserved (not masked as null) for diagnosis.
+    assert [w["count"] for w in metrics["cpc_application_counts"]] == [0, 0, 0]
+
+
+def test_market_growth_zero_base_with_later_data_preserves_counts(monkeypatch):
+    import agents.valuation_axes.market as market
+
+    monkeypatch.setattr(
+        market,
+        "collect_cpc_window_application_counts",
+        lambda representative_cpc, windows: [
+            {"label": "w1", "start_date": "2021-12-06", "end_date": "2022-12-05", "count": 0},
+            {"label": "w2", "start_date": "2022-12-06", "end_date": "2023-12-05", "count": 179},
+            {"label": "w3", "start_date": "2023-12-06", "end_date": "2024-12-05", "count": 234},
+        ],
+    )
+
+    metrics = market.build_market_growth_metrics("G06Q 40/06")
+
+    assert metrics["market_growth_available"] is False
+    assert metrics["missing_reason"] == "cagr_start_count_zero"
+    # Counts are no longer nulled out when CAGR can't be computed.
+    assert [w["count"] for w in metrics["cpc_application_counts"]] == [0, 179, 234]
