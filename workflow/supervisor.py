@@ -14,14 +14,6 @@ from schemas.supervisor import SupervisorDecision
 from workflow.state import PatentWorkflowState
 
 
-STAGE_PROMPTS = {
-    "patent_check": "supervisor/supervisor_patent_check.md",
-    "summary_check": "supervisor/supervisor_summary_check.md",
-    "evidence_check": "supervisor/supervisor_evidence_check.md",
-    "valuation_check": "supervisor/supervisor_valuation_check.md",
-    "final_check": "supervisor/supervisor_final_check.md",
-}
-
 VALUATION_SUPERVISOR_RETRY_LIMIT = 1
 AXIS_SUPERVISOR_RETRY_LIMIT = 1
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
@@ -802,8 +794,6 @@ def build_supervisor_judge_prompt(state: PatentWorkflowState, *, prompt_name: st
 
 
 def supervisor_payload(state: PatentWorkflowState, *, prompt_name: str) -> dict[str, Any]:
-    if "summary" in prompt_name:
-        return summary_supervisor_payload(state)
     if "evidence" in prompt_name:
         return evidence_supervisor_payload(state)
     if "valuation" in prompt_name:
@@ -854,24 +844,6 @@ def patent_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "warning": parsed_pdf.get("warning"),
         },
         "preprocess_validation": preprocess_validation_payload(preprocessed),
-        "retry_count": state.retry_count,
-    }
-
-
-def summary_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
-    summary = state.summary_result or {}
-    return {
-        "current_stage": state.current_stage,
-        "patent": patent_metadata_payload(state),
-        "summary": {
-            "available": bool(summary),
-            "title": summary.get("title"),
-            "plain_summary_preview": preview_text(summary.get("plain_summary"), 700),
-            "key_points": limit_list(summary.get("key_points"), 8),
-            "has_summary_markdown": bool(summary.get("summary_markdown")),
-            "summary_markdown_length": text_length(summary.get("summary_markdown")),
-        },
-        "preprocess_validation": preprocess_validation_payload(state.preprocessed_patent or {}),
         "retry_count": state.retry_count,
     }
 
@@ -1217,18 +1189,6 @@ def normalize_bool(value: Any, fallback: bool) -> bool:
     return fallback
 
 
-def run_rule_based_check(state: PatentWorkflowState, stage: str) -> SupervisorDecision:
-    if stage == "patent_check":
-        return check_patent_data(state)
-    if stage == "summary_check":
-        return check_summary_result(state)
-    if stage == "evidence_check":
-        return check_evidence_bundle(state)
-    if stage == "valuation_check":
-        return check_valuation_result(state)
-    return check_final_ready(state)
-
-
 def check_patent_data(state: PatentWorkflowState) -> SupervisorDecision:
     patent = state.patent_structured or {}
     required_fields = [
@@ -1256,18 +1216,6 @@ def check_patent_data(state: PatentWorkflowState) -> SupervisorDecision:
         issues=issues,
         reason="Patent metadata check completed.",
         metadata={"warnings": warnings},
-    )
-
-
-def check_summary_result(state: PatentWorkflowState) -> SupervisorDecision:
-    summary = state.summary_result or {}
-    required_fields = ["title", "plain_summary", "key_points"]
-    missing = [field for field in required_fields if not summary.get(field)]
-    return SupervisorDecision(
-        passed=not missing,
-        next_action="evidence_check" if not missing else "summary",
-        issues=[f"Missing summary field: {field}" for field in missing],
-        reason="Summary structure check completed.",
     )
 
 

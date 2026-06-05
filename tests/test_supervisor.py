@@ -556,31 +556,6 @@ def test_writing_supervisor_retry_limit_finishes_when_outputs_exist(monkeypatch)
     assert result.supervisor_decision["metadata"]["supervisor_retry_limit"]["scope"] == "writing"
 
 
-def test_summary_supervisor_prompt_excludes_full_preprocessed_text():
-    state = PatentWorkflowState(
-        patent_structured={"title_final": "요약 대상 특허", "application_number": "10-2024-0000001"},
-        preprocessed_patent={
-            "cleaned_markdown": "SECRET_FULL_PATENT_MARKDOWN",
-            "sections": {"description": "SECRET_FULL_DESCRIPTION"},
-            "validation": {"is_valid": True, "warnings": ["확인 필요"]},
-        },
-        summary_result={
-            "title": "요약 대상 특허",
-            "plain_summary": "특허와 직접 관련된 요약입니다.",
-            "key_points": ["핵심 기술"],
-            "summary_markdown": "# 특허 요약\n\nSECRET_FULL_SUMMARY_MARKDOWN",
-        },
-    )
-
-    prompt = build_supervisor_judge_prompt(state, prompt_name="supervisor/supervisor_summary_check.md")
-
-    assert "SECRET_FULL_PATENT_MARKDOWN" not in prompt
-    assert "SECRET_FULL_DESCRIPTION" not in prompt
-    assert "SECRET_FULL_SUMMARY_MARKDOWN" not in prompt
-    assert "특허와 직접 관련된 요약입니다." in prompt
-    assert "summary_markdown_length" in prompt
-
-
 def test_valuation_supervisor_prompt_uses_evidence_previews_not_raw_content():
     state = PatentWorkflowState(
         patent_structured={"title_final": "평가 대상 특허"},
