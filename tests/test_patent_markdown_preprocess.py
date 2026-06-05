@@ -128,6 +128,34 @@ def test_preprocess_uses_cover_representative_when_numbered_drawing_is_missing()
     assert representative["image_source"] == "cover_representative"
 
 
+def test_preprocess_uses_cover_image_when_representative_has_no_figure_number():
+    raw_text = """
+등록특허 10-2042318
+
+대 표 도
+
+![image 4](<1020170168335_images/imageFile4.png>)
+
+# 도면의 간단한 설명
+
+[0028] 도 1은 본 발명의 일 실시예에 따른 스마트 팩토리 레이아웃 설계 방법의 설명에 제공되는 흐름도이다.
+
+도면
+
+- 도면1
+
+![image 12](<1020170168335_images/imageFile12.png>)
+"""
+
+    result = build_preprocessed_patent(raw_text)
+    representative = result["drawing_context"]["representative_drawing"]
+
+    assert representative["figure_number"] == "대표도"
+    assert representative["image_path"] == "1020170168335_images/imageFile4.png"
+    assert representative["image_source"] == "cover_representative"
+    assert "representative_figure_detail" not in result["drawing_context"]
+
+
 def test_preprocess_prefers_ordered_drawing_section_image_over_cover_thumbnail():
     raw_text = """
 (뒷면에 계속) 대 표 도 - 도4

@@ -57,6 +57,7 @@ IMAGE_MARKDOWN_RE = re.compile(r"!\[image\s+(\d+)\]\(<([^>]+)>\)")
 REPRESENTATIVE_FIGURE_RE = re.compile(
     r"(?:대\s*표\s*도|대표도)\s*[-:]\s*도\s*(\d+)",
 )
+REPRESENTATIVE_LABEL_RE = re.compile(r"(?:대\s*표\s*도|대표도)")
 DRAWING_SECTION_HEADING_RE = re.compile(r"(?:^|\n)#?\s*도면\s*(?:\n|$)")
 DRAWING_ITEM_RE = re.compile(r"^\s*-?\s*도면\s*(\d+)\s*$", re.MULTILINE)
 
@@ -72,7 +73,21 @@ def extract_representative_drawing(
 ) -> dict[str, Any] | None:
     representative_match = REPRESENTATIVE_FIGURE_RE.search(raw_text or "")
     if not representative_match:
-        return None
+        representative_label_match = REPRESENTATIVE_LABEL_RE.search(raw_text or "")
+        if not representative_label_match:
+            return None
+        image_match = IMAGE_MARKDOWN_RE.search(raw_text, representative_label_match.end())
+        if not image_match:
+            return None
+        markdown_paths = (source or {}).get("markdown_paths") or []
+        drawing = {
+            "figure_number": "대표도",
+            "image_path": image_match.group(2),
+            "image_source": "cover_representative",
+        }
+        if markdown_paths:
+            drawing["markdown_path"] = str(markdown_paths[0])
+        return drawing
 
     figure_number = representative_match.group(1)
     image_match = find_drawing_section_image(raw_text, figure_number)

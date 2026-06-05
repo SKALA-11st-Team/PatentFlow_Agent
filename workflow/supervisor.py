@@ -24,6 +24,13 @@ VALUATION_SUPERVISOR_RETRY_LIMIT = 1
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
 REQUIRED_VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
 MAX_SUPERVISOR_EVIDENCE_SAMPLES = 5
+AXIS_SUPERVISOR_PROMPTS = {
+    "legal": "supervisor/supervisor_legal_check.md",
+    "technology": "supervisor/supervisor_technology_check.md",
+    "market": "supervisor/supervisor_market_check.md",
+    "business_fit": "supervisor/supervisor_business_fit_check.md",
+}
+AXIS_SUPERVISOR_STATUSES = {"passed", "valuation_retry", "query_rewriting"}
 
 
 def decide_next_step(state: PatentWorkflowState) -> str:
@@ -151,13 +158,18 @@ def research_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
 @trace(name="valuation_supervisor_agent", run_type="chain")
 def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "valuation"
+    axis_checks = run_axis_supervisor_checks(state)
     decision = check_valuation_result(state)
     has_unknown_evidence = any("references unknown evidence_id" in issue for issue in decision.issues)
     decision.current_team = "valuation"
     decision.stage = "valuation_check"
     if decision.passed:
-        decision.next_team = "writing"
-        decision.next_action = "writing_team"
+        axis_decision = axis_checks_to_supervisor_decision(axis_checks)
+        decision.passed = axis_decision.passed
+        decision.issues = axis_decision.issues
+        decision.reason = axis_decision.reason
+        decision.next_team = axis_decision.next_team
+        decision.next_action = axis_decision.next_action
     elif has_unknown_evidence:
         decision.next_team = "research"
         decision.next_action = "query_rewriting"
@@ -188,6 +200,212 @@ def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState
     )
     state.supervisor_decision = decision.model_dump()
     return state
+
+
+def run_axis_supervisor_checks(state: PatentWorkflowState) -> dict[str, dict[str, Any]]:
+    checks = {
+        axis: run_single_axis_supervisor_check(state, axis)
+        for axis in REQUIRED_VALUATION_AXES
+    }
+    valuation = dict(state.valuation_result or {})
+    valuation["axis_supervisor_checks"] = checks
+    state.valuation_result = valuation
+    return checks
+
+
+def run_single_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> dict[str, Any]:
+    fallback = build_rule_axis_supervisor_check(state, axis)
+    if not state.user_input.get("use_llm_supervisor", False):
+        return fallback
+
+    try:
+        raw = call_llm(
+            build_axis_supervisor_check_prompt(state, axis=axis),
+            model=settings.openai_supervisor_model,
+        )
+        parsed = parse_json_object(raw)
+        if not parsed:
+            raise ValueError("Axis supervisor response was not valid JSON.")
+        return normalize_axis_supervisor_check(axis, parsed, fallback=fallback)
+    except Exception as exc:
+        return {
+            **fallback,
+            "metadata": {
+                **dict(fallback.get("metadata") or {}),
+                "supervisor_llm_warning": f"{exc.__class__.__name__}:{str(exc)[:200]}",
+            },
+        }
+
+
+def build_axis_supervisor_check_prompt(state: PatentWorkflowState, *, axis: str) -> str:
+    prompt_name = AXIS_SUPERVISOR_PROMPTS[axis]
+    template = load_prompt(prompt_name).strip()
+    payload = axis_supervisor_payload(state, axis=axis)
+    return f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+
+
+def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[str, Any]:
+    valuation = state.valuation_result or {}
+    axes = valuation.get("axes") or {}
+    axis_result = axes.get(axis) or {}
+    known_ids = known_evidence_ids(state.evidence_bundle)
+    return {
+        "current_stage": state.current_stage,
+        "axis": axis,
+        "patent": patent_metadata_payload(state),
+        "evidence": evidence_summary_payload(state, include_samples=True),
+        "valuation_axis": valuation_axis_payload(axis, axis_result, known_ids),
+        "axis_result": compact_axis_result_for_supervisor(axis_result),
+    }
+
+
+def compact_axis_result_for_supervisor(axis_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "axis": axis_result.get("axis"),
+        "label": axis_result.get("label"),
+        "score": axis_result.get("score"),
+        "grade": axis_result.get("grade"),
+        "rationale_preview": preview_text(axis_result.get("rationale"), 600),
+        "evidence_ids": limit_list(axis_result.get("evidence_ids"), 20),
+        "risk_factors": limit_list(axis_result.get("risk_factors"), 10),
+        "missing_information": limit_list(axis_result.get("missing_information"), 10),
+        "confidence": axis_result.get("confidence"),
+        "subscores": supervisor_subscores_payload(axis_result.get("subscores")),
+    }
+
+
+def supervisor_subscores_payload(subscores: Any) -> dict[str, Any]:
+    if not isinstance(subscores, dict):
+        return {}
+    payload: dict[str, Any] = {}
+    for key, item in subscores.items():
+        if not isinstance(item, dict):
+            continue
+        payload[str(key)] = {
+            "label": item.get("label"),
+            "score": item.get("score"),
+            "max_score": item.get("max_score"),
+            "details": item.get("details") if isinstance(item.get("details"), dict) else {},
+            "rationale_preview": preview_text(item.get("rationale"), 300),
+        }
+    return payload
+
+
+def build_rule_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> dict[str, Any]:
+    valuation = state.valuation_result or {}
+    axis_result = (valuation.get("axes") or {}).get(axis) or {}
+    known_ids = known_evidence_ids(state.evidence_bundle)
+    axis_payload = valuation_axis_payload(axis, axis_result, known_ids)
+    issues: list[str] = []
+    status = "passed"
+
+    if not axis_payload["exists"]:
+        status = "valuation_retry"
+        issues.append(f"Missing valuation axis: {axis}")
+    elif axis_payload["unknown_evidence_ids"]:
+        status = "query_rewriting"
+        issues.append(f"{axis} references unknown evidence_id: {', '.join(axis_payload['unknown_evidence_ids'])}")
+    else:
+        for field in ("score", "grade", "confidence"):
+            if axis_result.get(field) in (None, "", []):
+                status = "valuation_retry"
+                issues.append(f"{axis} missing {field}")
+        if not axis_payload["has_rationale"]:
+            status = "valuation_retry"
+            issues.append(f"{axis} missing rationale")
+
+    return axis_supervisor_check_result(
+        axis=axis,
+        status=status,
+        issues=issues,
+        reason="축별 평가 구조와 근거 연결을 rule 기반으로 확인했습니다.",
+        source="rule",
+    )
+
+
+def normalize_axis_supervisor_check(axis: str, parsed: dict[str, Any], *, fallback: dict[str, Any]) -> dict[str, Any]:
+    status = normalize_axis_supervisor_status(parsed, fallback.get("status", "passed"))
+    issues = normalize_text_list(parsed.get("issues"), list(fallback.get("issues") or []))
+    reason = str(parsed.get("reason") or fallback.get("reason") or "")
+    return axis_supervisor_check_result(
+        axis=axis,
+        status=status,
+        issues=issues,
+        reason=reason,
+        source="llm",
+        metadata={"supervisor_llm": {"prompt": True}},
+    )
+
+
+def normalize_axis_supervisor_status(parsed: dict[str, Any], fallback: str) -> str:
+    raw_status = str(parsed.get("status") or "").strip()
+    if raw_status in AXIS_SUPERVISOR_STATUSES:
+        return raw_status
+    requested_action = str(parsed.get("next_action") or "").strip()
+    if requested_action in {"valuation_retry", "query_rewriting"}:
+        return requested_action
+    if normalize_bool(parsed.get("passed"), fallback == "passed"):
+        return "passed"
+    return fallback if fallback in AXIS_SUPERVISOR_STATUSES else "passed"
+
+
+def axis_supervisor_check_result(
+    *,
+    axis: str,
+    status: str,
+    issues: list[str],
+    reason: str,
+    source: str,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "axis": axis,
+        "status": status,
+        "passed": status == "passed",
+        "needs_retry": status == "valuation_retry",
+        "needs_more_evidence": status == "query_rewriting",
+        "issues": issues,
+        "reason": reason,
+        "source": source,
+        "metadata": metadata or {},
+    }
+
+
+def axis_checks_to_supervisor_decision(axis_checks: dict[str, dict[str, Any]]) -> SupervisorDecision:
+    issues = [
+        f"{axis}: {issue}"
+        for axis, check in axis_checks.items()
+        for issue in check.get("issues", [])
+    ]
+    if any(check.get("status") == "query_rewriting" for check in axis_checks.values()):
+        return SupervisorDecision(
+            passed=False,
+            current_team="valuation",
+            next_team="research",
+            stage="valuation_check",
+            next_action="query_rewriting",
+            issues=issues,
+            reason="축별 평가 검증에서 근거 재수집이 필요한 항목이 확인되었습니다.",
+        )
+    if any(check.get("status") == "valuation_retry" for check in axis_checks.values()):
+        return SupervisorDecision(
+            passed=False,
+            current_team="valuation",
+            next_team="valuation",
+            stage="valuation_check",
+            next_action="valuation_team",
+            issues=issues,
+            reason="축별 평가 검증에서 평가 논리 재작성 또는 재평가가 필요한 항목이 확인되었습니다.",
+        )
+    return SupervisorDecision(
+        passed=True,
+        current_team="valuation",
+        next_team="writing",
+        stage="valuation_check",
+        next_action="writing_team",
+        issues=issues,
+        reason="축별 평가 검증을 통과했습니다.",
+    )
 
 
 def check_writing_result(state: PatentWorkflowState) -> SupervisorDecision:
@@ -475,6 +693,7 @@ def valuation_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "recommendation": valuation.get("recommendation"),
             "decision_rationale_exists": bool(valuation.get("decision_rationale")),
             "decision_rationale_preview": preview_text(valuation.get("decision_rationale"), 300),
+            "axis_supervisor_checks": valuation.get("axis_supervisor_checks") or {},
             "required_actions_count": safe_len(valuation.get("required_actions")),
             "has_final_report_markdown": bool(valuation.get("final_report_markdown")),
             "final_report_markdown_length": text_length(valuation.get("final_report_markdown")),
