@@ -149,7 +149,10 @@ jobs:
       - name: Apply agent secret
         env:
           OPENAI_API_KEY_VALUE: ${{ secrets.OPENAI_API_KEY }}
+          # 단일 키(KIPRIS_SERVICE_KEY) 또는 한도 분산용 다중 키(KIPRIS_SERVICE_KEYS, 콤마 구분) 중
+          # 가진 것을 넣으면 된다. 에이전트 KiprisClient는 KEYS를 우선 읽고 라운드로빈/실패 시 재시도한다.
           KIPRIS_SERVICE_KEY_VALUE: ${{ secrets.KIPRIS_SERVICE_KEY }}
+          KIPRIS_SERVICE_KEYS_VALUE: ${{ secrets.KIPRIS_SERVICE_KEYS }}
           OPENAI_SUPERVISOR_MODEL_VALUE: ${{ secrets.OPENAI_SUPERVISOR_MODEL }}
           LANGSMITH_API_KEY_VALUE: ${{ secrets.LANGSMITH_API_KEY }}
           POSTGRES_PASSWORD_VALUE: ${{ secrets.POSTGRES_PASSWORD }}
@@ -159,6 +162,7 @@ jobs:
             --namespace="${KUBE_NAMESPACE}" \
             --from-literal=OPENAI_API_KEY="${OPENAI_API_KEY_VALUE}" \
             --from-literal=KIPRIS_SERVICE_KEY="${KIPRIS_SERVICE_KEY_VALUE}" \
+            --from-literal=KIPRIS_SERVICE_KEYS="${KIPRIS_SERVICE_KEYS_VALUE}" \
             --from-literal=OPENAI_SUPERVISOR_MODEL="${OPENAI_SUPERVISOR_MODEL_VALUE}" \
             --from-literal=LANGSMITH_API_KEY="${LANGSMITH_API_KEY_VALUE}" \
             --from-literal=PGVECTOR_DATABASE_URL="${PGVECTOR_DATABASE_URL}" \

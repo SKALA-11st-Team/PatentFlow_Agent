@@ -38,6 +38,33 @@ class KiprisError(RuntimeError):
     """KIPRISPlus 호출 또는 응답 파싱 오류."""
 
 
+def _resolve_service_keys(explicit: str | None = None) -> list[str]:
+    """KIPRIS 키 목록을 구성한다. 한도(쿼터) 분산을 위해 다중 키를 지원한다.
+
+    우선순위: 명시 인자 > KIPRIS_SERVICE_KEYS(콤마/공백 구분 다중) > KIPRIS_SERVICE_KEY
+    > KIPRIS_API_KEY > SERVICE_KEY. 중복은 순서를 유지하며 제거한다.
+    """
+    raw = (
+        explicit
+        or os.getenv("KIPRIS_SERVICE_KEYS")
+        or os.getenv("KIPRIS_SERVICE_KEY")
+        or os.getenv("KIPRIS_API_KEY")
+        or os.getenv("SERVICE_KEY")
+        or ""
+    )
+    keys: list[str] = []
+    for part in re.split(r"[,\s]+", raw):
+        part = part.strip()
+        if part and part not in keys:
+            keys.append(part)
+    return keys
+
+
+# 인스턴스가 호출마다 새로 생성될 수 있어(_kipris_client), 키 라운드로빈 시작점을
+# 모듈 전역 커서로 유지해 호출 간에도 부하가 고르게 분산되도록 한다.
+_key_cursor = 0
+
+
 @dataclass(frozen=True)
 class KiprisDocumentPath:
     doc_name: str | None
@@ -119,14 +146,11 @@ class KiprisClient:
         timeout: float = 30.0,
         sleep_seconds: float = 0.0,
     ) -> None:
-        self.service_key = (
-            service_key
-            or os.getenv("KIPRIS_SERVICE_KEY")
-            or os.getenv("KIPRIS_API_KEY")
-            or os.getenv("SERVICE_KEY")
-        )
-        if not self.service_key:
-            raise ValueError("service_key 또는 환경변수 KIPRIS_SERVICE_KEY가 필요합니다.")
+        self.service_keys = _resolve_service_keys(service_key)
+        if not self.service_keys:
+            raise ValueError("service_key 또는 환경변수 KIPRIS_SERVICE_KEY(S)가 필요합니다.")
+        # 단일 키 참조 하위호환
+        self.service_key = self.service_keys[0]
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.sleep_seconds = sleep_seconds
@@ -148,7 +172,7 @@ class KiprisClient:
         if self.sleep_seconds:
             time.sleep(self.sleep_seconds)
 
-        query = {auth_param: self.service_key}
+        query: dict[str, Any] = {}
         if params:
             for k, v in params.items():
                 if v is None:
@@ -159,13 +183,33 @@ class KiprisClient:
                     query[k] = v
 
         url = self._url(service_path, operation_name)
-        response = self.session.get(url, params=query, timeout=self.timeout)
-        response.raise_for_status()
 
-        text = response.text.strip()
-        if not parse_xml:
-            return text
-        return parse_xml_response(text)
+        # 한도(쿼터) 회피: 키 목록을 라운드로빈으로 시작점만 바꿔 부하를 분산하고,
+        # 호출 실패(429/5xx/네트워크 오류) 시 남은 키로 순차 재시도한다.
+        global _key_cursor
+        count = len(self.service_keys)
+        start = _key_cursor % count
+        _key_cursor += 1
+        ordered = [self.service_keys[(start + i) % count] for i in range(count)]
+
+        last_exc: Exception | None = None
+        for key in ordered:
+            attempt = dict(query)
+            attempt[auth_param] = key
+            try:
+                response = self.session.get(url, params=attempt, timeout=self.timeout)
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                last_exc = exc
+                continue
+            text = response.text.strip()
+            if not parse_xml:
+                return text
+            return parse_xml_response(text)
+
+        raise KiprisError(
+            f"KIPRIS 호출 실패(키 {count}개 모두 실패): {last_exc}"
+        ) from last_exc
 
     # -------------------------
     # 특허·실용 공개·등록공보
