@@ -265,16 +265,12 @@ Return ONLY JSON:
         "prior_art_overlap": {
           "label": "선행문헌 대비 청구항 중복도",
           "score": 0,
-          "max_score": 25,
-          "overlap_claim_count": 2,
-          "compared_prior_art_count": 3,
+          "compared_prior_art_count": 0,
           "overlap_basis": "독립항 1의 데이터 수집/분석 구성과 KR...의 대표 청구항 일부가 겹침",
           "rationale": "선행문헌 일부와 핵심 구성은 겹치지만 대상 특허의 차별 구성 또는 결합 방식이 남아 있어 18점으로 판단함"
         },
         "claim_structure_stability": {
-          "label": "청구항 구조 안정성",
-          "score": 0,
-          "max_score": 10
+          "score": 0
         }
       },
       "rationale": "..."
@@ -285,25 +281,16 @@ Return ONLY JSON:
       "max_score": 40,
       "details": {
         "core_solution_coverage": {
-          "label": "핵심 해결수단의 독립항 반영도",
-          "score": 0,
-          "max_score": 12
+          "score": 0
         },
         "independent_claim_scope": {
-          "label": "독립항 보호범위 적정성",
-          "score": 0,
-          "max_score": 12
+          "score": 0
         },
         "dependent_claim_support": {
-          "label": "종속항 보완성",
-          "score": 0,
-          "max_score": 10
+          "score": 0
         },
         "claim_type_diversity": {
-          "label": "청구항 보호형태 다양성",
-          "score": 0,
-          "max_score": 6,
-          "rationale": "..."
+          "score": 0
         }
       },
       "rationale": "..."
@@ -314,19 +301,13 @@ Return ONLY JSON:
       "max_score": 25,
       "details": {
         "portfolio_connection_coverage": {
-          "label": "관련 특허군 연계·커버리지",
-          "score": 0,
-          "max_score": 15
+          "score": 0
         },
         "overseas_right_coverage": {
-          "label": "해외 권리 확보 범위",
-          "score": 0,
-          "max_score": 6
+          "score": 0
         },
         "follow_on_right_signal": {
-          "label": "후속 권리화 신호",
-          "score": 0,
-          "max_score": 4
+          "score": 0
         }
       },
       "rationale": "..."

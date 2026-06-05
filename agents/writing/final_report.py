@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -62,14 +63,69 @@ def build_final_report_prompt(*, state: PatentWorkflowState, valuation_result: d
 
 
 def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_result: dict[str, Any]) -> dict[str, Any]:
+    patent = {
+        "metadata": final_report_patent_metadata(state),
+        "summary_result": state.summary_result,
+    }
+    rights_scope_context = build_rights_scope_context(state)
+    if rights_scope_context:
+        patent["rights_scope_context"] = rights_scope_context
+
     return {
-        "patent": {
-            "metadata": final_report_patent_metadata(state),
-            "summary_result": state.summary_result,
-        },
+        "patent": patent,
         "evidence_references": build_evidence_references(state, valuation_result),
         "valuation_result": compact_final_report_valuation_result(valuation_result),
     }
+
+
+def build_rights_scope_context(state: PatentWorkflowState) -> dict[str, Any] | None:
+    drawing_context = (state.preprocessed_patent or {}).get("drawing_context")
+    if not isinstance(drawing_context, dict):
+        return None
+
+    context: dict[str, Any] = {}
+    figure_description = normalize_text(drawing_context.get("figure_description"))
+    if figure_description:
+        context["figure_description"] = figure_description
+
+    representative_detail = normalize_text(drawing_context.get("representative_figure_detail"))
+    if representative_detail:
+        context["representative_figure_detail"] = representative_detail
+
+    representative = drawing_context.get("representative_drawing")
+    if isinstance(representative, dict):
+        image_markdown = build_representative_drawing_markdown(state, representative)
+        if image_markdown:
+            context["representative_drawing"] = {
+                "figure_number": normalize_text(representative.get("figure_number")) or "대표도",
+                "image_markdown": image_markdown,
+            }
+
+    return context or None
+
+
+def build_representative_drawing_markdown(
+    state: PatentWorkflowState,
+    representative: dict[str, Any],
+) -> str | None:
+    image_path = normalize_text(representative.get("image_path"))
+    if not image_path:
+        return None
+
+    display_path = image_path
+    markdown_path = normalize_text(representative.get("markdown_path"))
+    artifact_dir = normalize_text((state.user_input or {}).get("artifact_dir"))
+    if markdown_path and artifact_dir:
+        absolute_image_path = Path(markdown_path).parent / image_path
+        final_dir = Path(artifact_dir) / "final"
+        display_path = os.path.relpath(absolute_image_path, final_dir)
+
+    display_path = display_path.replace("\\", "/")
+    if looks_like_local_path(display_path) and not display_path.startswith("../"):
+        return None
+
+    figure_number = normalize_text(representative.get("figure_number")) or "도면"
+    return f"![권리범위 참고도 {figure_number}]({display_path})"
 
 
 def compact_final_report_valuation_result(valuation_result: dict[str, Any]) -> dict[str, Any]:

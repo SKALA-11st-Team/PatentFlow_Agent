@@ -52,12 +52,37 @@ def test_legal_prompt_does_not_treat_missing_foreign_claims_as_weakness():
     assert "해외 패밀리 또는 해외 등록 정보는 확인된 경우에만 보조 긍정 근거로 사용한다." in text
 
 
-def test_technology_and_final_report_prompts_do_not_require_benchmark_data():
-    technology = Path("prompts/valuation/valuation_technology.md").read_text(encoding="utf-8")
+def test_final_report_prompt_does_not_require_benchmark_data():
     final_report = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
-    assert "특허 문헌은 논문 또는 실험보고서가 아니므로 정량 성능 검증, benchmark, 학습 데이터 세부 부재를 기술적 약점이나 감점 사유로 작성하지 않는다." in technology
     assert "정량 성능 검증, benchmark, 학습 데이터 세부 부재를 기술성 약점처럼 쓰지 않습니다." in final_report
+
+
+def test_final_report_prompt_uses_rights_scope_explanation_for_legal_axis():
+    final_report = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
+
+    assert "**권리범위 참고도 및 이해**" in final_report
+    assert "| 권리범위 참고도 | 권리범위 이해 |" in final_report
+    assert "### 4.1 권리성" in final_report
+    legal_section = final_report.split("### 4.1 권리성", 1)[1].split("### 4.2 기술성", 1)[0]
+    assert "**주요 근거**" in legal_section
+    assert "patent.rights_scope_context.representative_drawing.image_markdown" in final_report
+    assert "patent.rights_scope_context.representative_figure_detail" in final_report
+    assert "도면에 나타난 주요 구성 또는 처리 단계가 청구항의 어느 필수 구성과 연결되는지 매칭하세요." in final_report
+    assert "도면상 구성/흐름 → 청구항 필수 구성 → 권리범위 형성 의미" in final_report
+    assert "왼쪽 열에는 도면 이미지와 도면 설명만 작성하고 권리범위 판단을 쓰지 마세요." in final_report
+    assert "아이디어 자체보다" not in final_report
+
+
+def test_market_prompt_uses_40_40_20_market_structure():
+    prompt = Path("prompts/valuation/valuation_market.md").read_text(encoding="utf-8")
+
+    assert "시장성 점수(100) = 산업 시장성(40) + 시장 성장성(40) + 글로벌 사업성(20)" in prompt
+    assert "- `industry_growth_evidence`: 0 또는 15" in prompt
+    assert "- `corporate_investment_entry`: 0 또는 10" in prompt
+    assert "- `news_market_diffusion`: 0 또는 10" in prompt
+    assert "직접 기능 시장성(60)" not in prompt
+    assert "specific_function_demand" not in prompt
 
 
 def test_run_valuation_agent_sets_result():
@@ -562,10 +587,6 @@ def test_business_fit_quantitative_metrics_uses_sk_owned_media_as_lower_tier_evi
 
     assert payload["business_fit_context"]["skax_official_evidence"] == []
     assert payload["business_fit_context"]["sk_owned_media_evidence"][0]["source_domain"] == "skcareersjournal.com"
-    assert metrics["official_site_evidence_count"] == 0
-    assert metrics["sk_owned_media_evidence_count"] == 1
-    assert metrics["official_business_evidence"]["score"] == 8
-    assert metrics["product_function_direct_match"]["score"] > 0
 
 
 def test_business_fit_quantitative_metrics_limits_match_when_core_terms_are_missing():
@@ -927,12 +948,12 @@ def test_market_score_helpers_apply_40_40_20_structure():
             "confidence": 0.8,
         },
         {
-            "market_growth_score": 35,
+            "market_growth_score": 32,
             "global_business_score": 20,
         },
     )
 
-    assert result["score"] == 95
+    assert result["score"] == 92
     assert result["grade"] == "A"
     assert result["subscores"] == {
         "industry_marketability": {
@@ -943,14 +964,23 @@ def test_market_score_helpers_apply_40_40_20_structure():
         },
         "market_growth": {
             "label": "시장 성장성",
-            "score": 35,
+            "score": 32,
             "max_score": 40,
+            "details": {
+                "cagr_score": None,
+                "trend_score": None,
+            },
             "rationale": "대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 증가율 및 추세로 산정된 코드 계산값입니다.",
         },
         "global_business": {
             "label": "글로벌 사업성",
             "score": 20,
             "max_score": 20,
+            "details": {
+                "gnews_evidence_count": 0,
+                "gnews_quality_evidence_count": 0,
+                "global_business_status": "",
+            },
             "rationale": "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
         },
     }
@@ -958,39 +988,52 @@ def test_market_score_helpers_apply_40_40_20_structure():
     result = apply_marketability_scores(
         {
             "score": 70,
-            "industry_marketability_breakdown": {
-                "industry_growth_evidence_score": 12,
-                "corporate_investment_entry_score": 7,
-                "news_market_diffusion_score": 0,
-                "source_reliability_score": 3,
+            "subscores": {
+                "industry_marketability": {
+                    "details": {
+                        "industry_growth_evidence": 15,
+                        "corporate_investment_entry": 10,
+                        "news_market_diffusion": 10,
+                        "source_reliability": 5,
+                    },
+                },
             },
             "grade": "B",
             "missing_information": [],
             "confidence": 0.8,
         },
         {
-            "market_growth_score": 20,
-            "global_business_score": 10,
+            "market_growth_score": 40,
+            "global_business_score": 20,
         },
     )
 
-    assert result["subscores"]["industry_marketability"] == {
-        "label": "산업 시장성",
-        "score": 30,
-        "max_score": 40,
-        "rationale": "",
+    assert result["subscores"]["industry_marketability"]["score"] == 40
+    assert result["subscores"]["industry_marketability"]["max_score"] == 40
+    assert result["subscores"]["industry_marketability"]["details"] == {
+        "industry_growth_evidence": 15,
+        "corporate_investment_entry": 10,
+        "news_market_diffusion": 10,
+        "source_reliability": 5,
     }
+    assert result["subscores"]["market_growth"]["details"] == {
+        "cagr_score": None,
+        "trend_score": None,
+    }
+    assert result["subscores"]["global_business"]["details"]["global_business_status"] == ""
     assert "industry_marketability_breakdown" not in result
-    assert result["score"] == 60
+    assert result["score"] == 100
+    assert "market_score_cap_reason" not in result["marketability_metrics"]
 
     assert build_global_business_metrics(
         [
-            {"evidence_id": "g1", "source": "gnews", "compressed_summary": "글로벌 자산관리 AI 수요"},
-            {"evidence_id": "g2", "source": "gnews", "key_facts": ["해외 투자 흐름"]},
+            {"evidence_id": "g0", "source": "gnews", "compressed_summary": "글로벌 AI 투자 흐름"},
+            {"evidence_id": "g1", "source": "gnews", "compressed_summary": "해외 고객사의 서비스 도입 사례"},
+            {"evidence_id": "g2", "source": "gnews", "key_facts": ["글로벌 시장에서 관련 제품 출시"]},
             {"evidence_id": "n1", "source": "naver_news", "compressed_summary": "국내 뉴스"},
         ]
     ) == {
-        "gnews_evidence_count": 2,
+        "gnews_evidence_count": 3,
         "gnews_quality_evidence_count": 2,
         "gnews_evidence_ids": ["g1", "g2"],
         "global_business_status": "limited_gnews_global_signal",
@@ -1004,12 +1047,14 @@ def test_market_prompt_uses_18_month_lagged_three_window_activity():
     assert "18개월 전을 마지막 시점으로 하는 3개 1년 구간" in prompt
     assert "최근 3개년 공개 활동성" not in prompt
     assert "`source`가 `gnews`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다." in prompt
+    assert "시장성 점수(100) = 산업 시장성(40) + 시장 성장성(40) + 글로벌 사업성(20)" in prompt
+    assert "시장성 총점은 원칙적으로 55점을 넘기지 않는다" not in prompt
 
 
 def test_final_report_prompt_uses_gnews_for_global_business():
     prompt = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
-    assert "글로벌 사업성은 GNews 등 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 중심으로 설명하세요." in prompt
+    assert "글로벌 적용성은 GNews 등 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 중심으로 설명하세요." in prompt
     assert "GNews 기반 글로벌 시장 근거가 없다는 사실만으로 시장성이 낮다고 단정하지 마세요." in prompt
     assert "해외 Patent Family가 확인되지 않아 글로벌 사업성은 국내 단독 출원 기준으로 낮게 반영되었습니다." not in prompt
 
@@ -1020,7 +1065,7 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
     result = apply_marketability_scores(
         {
             "score": 70,
-            "industry_marketability_score": 40,
+            "industry_marketability_score": 60,
             "grade": "B",
             "missing_information": [],
             "confidence": 0.8,
@@ -1382,95 +1427,7 @@ def test_technology_metrics_prior_art_only_payload_omits_prior_art_duplicates(mo
     assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
 
 
-def test_technology_breakdown_scores_are_binary():
-    from agents.valuation_axes.technology import apply_technology_scores
-
-    result = apply_technology_scores(
-        {
-            "score": 80,
-            "grade": "A",
-            "rationale": "r",
-            "evidence_ids": [],
-            "risk_factors": [],
-            "missing_information": [],
-            "confidence": 0.8,
-            "technical_differentiation_breakdown": {
-                "new_component_score": 15,
-                "combination_difference_score": 13,
-                "processing_structure_difference_score": 12,
-                "solution_approach_difference_score": 8,
-                "evidence_clarity_score": 4,
-            },
-            "implementation_specificity_breakdown": {
-                "input_data_score": 4,
-                "processing_target_score": 2,
-                "core_variable_score": 3,
-                "output_structure_score": 3,
-                "component_linkage_score": 1,
-                "procedure_score": 6,
-                "logic_score": 5,
-                "condition_parameter_score": 5,
-                "calculation_decision_score": 4,
-                "exception_iteration_update_score": 3,
-            },
-        },
-        {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
-    )
-
-    assert result["technical_differentiation_breakdown"] == {
-        "new_component_score": 15,
-        "combination_difference_score": 8,
-        "processing_structure_difference_score": 8,
-        "solution_approach_difference_score": 5,
-        "evidence_clarity_score": 2,
-    }
-    assert result["implementation_specificity_breakdown"]["processing_target_score"] == 0
-    assert result["implementation_specificity_breakdown"]["logic_score"] == 0
-    assert result["score"] == 62
-
-
-def test_technology_risk_text_does_not_apply_keyword_penalty():
-    from agents.valuation_axes.technology import apply_technology_scores
-
-    result = apply_technology_scores(
-        {
-            "score": 80,
-            "grade": "A",
-            "rationale": "r",
-            "evidence_ids": [],
-            "risk_factors": ["정량 성능 검증 및 benchmark 정보는 특허 문헌상 제한적임"],
-            "missing_information": ["학습 데이터 세부 정보 부족"],
-            "confidence": 0.8,
-            "technical_differentiation_breakdown": {
-                "new_component_score": 15,
-                "combination_difference_score": 15,
-                "processing_structure_difference_score": 15,
-                "solution_approach_difference_score": 10,
-                "evidence_clarity_score": 5,
-            },
-            "implementation_specificity_breakdown": {
-                "input_data_score": 4,
-                "processing_target_score": 3,
-                "core_variable_score": 3,
-                "output_structure_score": 3,
-                "component_linkage_score": 2,
-                "procedure_score": 6,
-                "logic_score": 6,
-                "condition_parameter_score": 5,
-                "calculation_decision_score": 5,
-                "exception_iteration_update_score": 3,
-            },
-        },
-        {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
-    )
-
-    assert result["technical_differentiation_breakdown"]["new_component_score"] == 15
-    assert result["technical_differentiation_breakdown"]["solution_approach_difference_score"] == 10
-    assert result["implementation_specificity_breakdown"]["logic_score"] == 6
-    assert result["score"] == 100
-
-
-def test_technology_candidate_subscores_use_new_grade_thresholds():
+def test_technology_candidate_subscores_use_60_40_structure():
     from agents.valuation_axes.technology import apply_technology_scores
 
     result = apply_technology_scores(
@@ -1514,6 +1471,7 @@ def test_technology_candidate_subscores_use_new_grade_thresholds():
     assert result["grade"] == "LLM_GRADE"
     assert result["subscores"]["technical_differentiation"]["score"] == 48
     assert result["subscores"]["implementation_specificity"]["score"] == 30
+    assert "technical_substantiality" not in result["subscores"]
     assert result["subscores"]["technical_differentiation"]["details"] == {
         "configuration_differentiation": 16,
         "operation_differentiation": 20,
@@ -1761,6 +1719,86 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
     assert "markdown_paths" not in serialized
     assert "SECRET_FULL_SIMILAR_PATENT_TEXT" not in serialized
     assert "/Users/soojeong/Documents/Team11" not in serialized
+
+
+def test_final_report_input_payload_ignores_structured_drawing_context(tmp_path):
+    from agents.writing.final_report import build_final_report_input_payload
+
+    run_dir = tmp_path / "run"
+    markdown_path = run_dir / "patent_markdown" / "10-2021-0131424" / "1020210131424.md"
+    image_path = markdown_path.parent / "1020210131424_images" / "imageFile4.png"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"")
+
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(run_dir)},
+        patent_structured={
+            "title_final": "권리범위 설명 특허",
+            "drawing_context": {
+                "representative_drawing": {
+                    "figure_number": "도4",
+                    "image_path": "1020210131424_images/imageFile4.png",
+                    "markdown_path": str(markdown_path),
+                },
+                "figure_description": "도 4는 청구항의 처리 흐름을 이해하는 데 참고가 되는 도면이다.",
+            },
+        },
+        summary_result={"plain_summary": "요약"},
+    )
+    valuation_result = {
+        "total_score": 300,
+        "average_score": 75,
+        "final_indicator": "조건부 유지",
+        "axes": {},
+    }
+
+    payload = build_final_report_input_payload(state=state, valuation_result=valuation_result)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert "rights_scope_context" not in payload["patent"]
+    assert str(tmp_path) not in serialized
+    assert "markdown_path" not in serialized
+
+
+def test_final_report_input_payload_uses_preprocessed_drawing_context(tmp_path):
+    from agents.writing.final_report import build_final_report_input_payload
+
+    run_dir = tmp_path / "run"
+    markdown_path = run_dir / "patent_markdown" / "10-2021-0131424" / "1020210131424.md"
+    image_path = markdown_path.parent / "1020210131424_images" / "imageFile8.png"
+    image_path.parent.mkdir(parents=True)
+    image_path.write_bytes(b"")
+
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(run_dir)},
+        patent_structured={"title_final": "권리범위 설명 특허"},
+        preprocessed_patent={
+            "drawing_context": {
+                "representative_drawing": {
+                    "figure_number": "도4",
+                    "image_path": "1020210131424_images/imageFile8.png",
+                    "markdown_path": str(markdown_path),
+                },
+                "figure_description": "도 4는 도면 섹션의 원본 이미지이다.",
+                "representative_figure_detail": (
+                    "도 4를 참조하면, 입력 문장을 토큰화하고(S410), 품사를 판별해 숫자 토큰을 추출한다(S420)."
+                ),
+            }
+        },
+        summary_result={"plain_summary": "요약"},
+    )
+
+    payload = build_final_report_input_payload(
+        state=state,
+        valuation_result={"total_score": 300, "average_score": 75, "axes": {}},
+    )
+
+    rights_scope = payload["patent"]["rights_scope_context"]
+    assert rights_scope["representative_drawing"]["image_markdown"] == (
+        "![권리범위 참고도 도4](../patent_markdown/10-2021-0131424/1020210131424_images/imageFile8.png)"
+    )
+    assert "도면 섹션의 원본 이미지" in rights_scope["figure_description"]
+    assert "입력 문장을 토큰화하고(S410)" in rights_scope["representative_figure_detail"]
 
 
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):

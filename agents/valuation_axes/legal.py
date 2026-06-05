@@ -22,7 +22,64 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         artifact_name=f"{AXIS}_input",
     )
     result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
+    result = reconcile_legal_scores(result)
     return attach_legal_context(result, payload=payload, state=state)
+
+
+LEGAL_SUBSCORE_MAX = {
+    "right_stability": 35,
+    "claim_protection": 40,
+    "portfolio_defensive_value": 25,
+}
+
+
+def reconcile_legal_scores(result: dict[str, Any]) -> dict[str, Any]:
+    subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
+    reconciled: dict[str, Any] = {}
+    total = 0
+    for key, max_score in LEGAL_SUBSCORE_MAX.items():
+        item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
+        details = item.get("details") if isinstance(item.get("details"), dict) else {}
+        detail_sum = sum_detail_scores(details)
+        raw_score = coerce_int(item.get("score"))
+        score = detail_sum if detail_sum is not None else raw_score
+        score = max(0, min(max_score, score or 0))
+        reconciled[key] = {**item, "score": score, "max_score": max_score}
+        total += score
+    total = max(0, min(100, total))
+    return {
+        **result,
+        "subscores": {**subscores, **reconciled},
+        "score": total,
+        "grade": legal_grade_for_score(total),
+    }
+
+
+def sum_detail_scores(details: dict[str, Any]) -> int | None:
+    values: list[int] = []
+    for detail in details.values():
+        if isinstance(detail, dict) and "score" in detail:
+            value = coerce_int(detail.get("score"))
+            if value is not None:
+                values.append(value)
+    return sum(values) if values else None
+
+
+def coerce_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def legal_grade_for_score(score: int) -> str:
+    if score >= 80:
+        return "A"
+    if score >= 60:
+        return "B"
+    if score >= 40:
+        return "C"
+    return "D"
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:

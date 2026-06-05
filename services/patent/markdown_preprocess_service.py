@@ -53,9 +53,147 @@ HEADER_NORMALIZE_MAP = {
     "배 경 기 술": "배경기술",
 }
 
+IMAGE_MARKDOWN_RE = re.compile(r"!\[image\s+(\d+)\]\(<([^>]+)>\)")
+REPRESENTATIVE_FIGURE_RE = re.compile(
+    r"(?:대\s*표\s*도|대표도)\s*[-:]\s*도\s*(\d+)",
+)
+DRAWING_SECTION_HEADING_RE = re.compile(r"(?:^|\n)#?\s*도면\s*(?:\n|$)")
+DRAWING_ITEM_RE = re.compile(r"^\s*-?\s*도면\s*(\d+)\s*$", re.MULTILINE)
+
 
 def remove_image_markdown(text: str) -> str:
-    return re.sub(r"!\[image\s+\d+\]\(<[^>]+>\)", "", text)
+    return IMAGE_MARKDOWN_RE.sub("", text)
+
+
+def extract_representative_drawing(
+    raw_text: str,
+    *,
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    representative_match = REPRESENTATIVE_FIGURE_RE.search(raw_text or "")
+    if not representative_match:
+        return None
+
+    figure_number = representative_match.group(1)
+    image_match = find_drawing_section_image(raw_text, figure_number)
+    image_source = "drawing_section"
+    if not image_match:
+        image_match = find_ordered_drawing_section_image(raw_text, figure_number)
+        image_source = "drawing_section_order"
+    if not image_match:
+        image_match = IMAGE_MARKDOWN_RE.search(raw_text, representative_match.end())
+        image_source = "cover_representative"
+    if not image_match:
+        return None
+
+    markdown_paths = (source or {}).get("markdown_paths") or []
+    drawing = {
+        "figure_number": f"도{figure_number}",
+        "image_path": image_match.group(2),
+        "image_source": image_source,
+    }
+    if markdown_paths:
+        drawing["markdown_path"] = str(markdown_paths[0])
+    return drawing
+
+
+def find_drawing_section_image(raw_text: str, figure_number: str) -> re.Match[str] | None:
+    section_match = DRAWING_SECTION_HEADING_RE.search(raw_text or "")
+    if not section_match:
+        return None
+
+    section_text = raw_text[section_match.end() :]
+    target_item: re.Match[str] | None = None
+    next_item: re.Match[str] | None = None
+    for item_match in DRAWING_ITEM_RE.finditer(section_text):
+        if target_item:
+            next_item = item_match
+            break
+        if item_match.group(1) == figure_number:
+            target_item = item_match
+
+    if not target_item:
+        return None
+
+    search_end = next_item.start() if next_item else len(section_text)
+    return IMAGE_MARKDOWN_RE.search(section_text, target_item.end(), search_end)
+
+
+def find_ordered_drawing_section_image(raw_text: str, figure_number: str) -> re.Match[str] | None:
+    section_match = DRAWING_SECTION_HEADING_RE.search(raw_text or "")
+    if not section_match:
+        return None
+
+    try:
+        target_index = int(figure_number) - 1
+    except ValueError:
+        return None
+
+    if target_index < 0:
+        return None
+
+    section_text = raw_text[section_match.end() :]
+    images = list(IMAGE_MARKDOWN_RE.finditer(section_text))
+    if target_index >= len(images):
+        return None
+    return images[target_index]
+
+
+def extract_representative_figure_detail(
+    sections: dict[str, str],
+    figure_number: str | None,
+) -> str | None:
+    if not figure_number:
+        return None
+
+    digit_match = re.search(r"\d+", figure_number)
+    if not digit_match:
+        return None
+
+    target_number = digit_match.group(0)
+    detailed_description = sections.get("detailed_description") or ""
+    if not detailed_description:
+        return None
+
+    start_match = re.search(rf"도\s*{re.escape(target_number)}(?!\d)\s*(?:은|는|을|를|에)?", detailed_description)
+    if not start_match:
+        return None
+
+    next_figure_match = re.search(
+        rf"도\s*(?!{re.escape(target_number)}(?!\d))\d+\s*(?:은|는|을|를|에)?",
+        detailed_description[start_match.end() :],
+    )
+    end_index = (
+        start_match.end() + next_figure_match.start()
+        if next_figure_match
+        else len(detailed_description)
+    )
+    return postprocess_agent_text(detailed_description[start_match.start() : end_index])
+
+
+def build_drawing_context(
+    raw_text: str,
+    sections: dict[str, str],
+    *,
+    source: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    representative = extract_representative_drawing(raw_text, source=source)
+    figure_description = postprocess_agent_text(sections.get("figure_description") or "")
+    if not representative and not figure_description:
+        return None
+
+    context: dict[str, Any] = {}
+    if representative:
+        context["representative_drawing"] = representative
+        representative_detail = extract_representative_figure_detail(
+            sections,
+            representative.get("figure_number"),
+        )
+        if representative_detail:
+            context["representative_figure_detail"] = representative_detail
+    if figure_description:
+        context["figure_description"] = figure_description
+    return context
 
 
 def remove_duplicate_registration_title(text: str, max_scan_lines: int = 40) -> str:
@@ -178,6 +316,7 @@ def build_preprocessed_patent(
 ) -> dict[str, Any]:
     cleaned_text = preprocess_patent_markdown(raw_text)
     sections = extract_sections(cleaned_text)
+    drawing_context = build_drawing_context(raw_text, sections, source=source)
 
     if api_data:
         metadata = merge_api_metadata(
@@ -240,6 +379,8 @@ def build_preprocessed_patent(
         },
         "cleaned_markdown": cleaned_text,
     }
+    if drawing_context:
+        result["drawing_context"] = drawing_context
     return result
 
 

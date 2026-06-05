@@ -47,19 +47,7 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         payload=payload,
         artifact_name=f"{AXIS}_input",
     )
-    result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
-    return remove_business_context_fit_label(result)
-
-
-def remove_business_context_fit_label(result: dict[str, Any]) -> dict[str, Any]:
-    subscores = result.get("subscores")
-    if not isinstance(subscores, dict):
-        return result
-    context_fit = subscores.get("business_context_fit")
-    if not isinstance(context_fit, dict):
-        return result
-    context_fit.pop("details", None)
-    return result
+    return runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:

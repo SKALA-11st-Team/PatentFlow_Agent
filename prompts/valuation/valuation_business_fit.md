@@ -186,6 +186,8 @@ confidence:
 - `subscores.official_business_evidence.score`는 0, 8, 16, 24, 30 중 하나만 사용한다.
 - `subscores.product_function_direct_match.score`는 0, 12, 24, 36, 45 중 하나만 사용한다.
 - `subscores.business_context_fit.score`는 0, 4, 10, 18, 25 중 하나만 사용한다.
+- 각 subscore에는 판단을 추적할 수 있도록 `details` 객체를 포함한다.
+- `details`에는 점수 산정에 사용한 근거 수, 매칭 수준, 핵심 매칭어, score_reasons 등 입력에서 확인 가능한 값만 작성한다.
 - `evidence_ids`에는 출력 근거로 실제 사용한 evidence_id만 작성한다.
 - 점수 감점 사유와 자료 부족 사유를 구분한다.
 - 관련제품 또는 핵심 기능이 공식 evidence에서 확인되지 않으면 그 한계를 구체적으로 작성한다.
@@ -204,18 +206,34 @@ Return ONLY JSON:
       "label": "공식 근거 존재성",
       "score": 0,
       "max_score": 30,
+      "details": {
+        "official_site_evidence_count": 0,
+        "sk_owned_media_evidence_count": 0,
+        "score_reasons": []
+      },
       "rationale": "..."
     },
     "product_function_direct_match": {
       "label": "제품·기능 직접 매칭도",
       "score": 0,
       "max_score": 45,
+      "details": {
+        "product_match_level": "direct/partial/broad/none",
+        "matched_core_terms": [],
+        "missing_core_terms": [],
+        "core_match_ratio": 0.0
+      },
       "rationale": "..."
     },
     "business_context_fit": {
       "label": "사업 문맥 적합성",
       "score": 0,
       "max_score": 25,
+      "details": {
+        "context_match_level": "direct/natural/broad/weak/none",
+        "matched_business_context": [],
+        "score_reasons": []
+      },
       "rationale": "..."
     }
   },

@@ -13,14 +13,6 @@ AXIS = "market"
 LABEL = "시장성"
 PROMPT_PATH = "valuation/valuation_market.md"
 MARKET_GROWTH_MISSING_MESSAGE = "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"
-INDUSTRY_MARKETABILITY_BREAKDOWN_LIMITS = {
-    "industry_growth_evidence_score": 15,
-    "corporate_investment_entry_score": 10,
-    "news_market_diffusion_score": 10,
-    "source_reliability_score": 5,
-}
-
-
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = build_input_payload(state=state, evidence=evidence)
@@ -275,12 +267,12 @@ def score_recent_trend(counts: list[int]) -> tuple[str, int]:
         return "continuous_decrease", 0
     if counts[0] < counts[1] or counts[1] < counts[2]:
         return "partial_increase", 8
-    return "flat_or_mixed", 8
+    return "flat_or_mixed", 0
 
 
 def build_global_business_metrics(evidence: list[dict[str, Any]]) -> dict[str, Any]:
     gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "gnews"]
-    quality_items = [item for item in gnews_items if has_market_signal_content(item)]
+    quality_items = [item for item in gnews_items if has_global_market_signal_content(item)]
     quality_count = len(quality_items)
     if quality_count >= 3:
         score = 20
@@ -300,16 +292,48 @@ def build_global_business_metrics(evidence: list[dict[str, Any]]) -> dict[str, A
     }
 
 
-def has_market_signal_content(item: dict[str, Any]) -> bool:
-    if normalize_text(item.get("compressed_summary")):
-        return True
+def has_global_market_signal_content(item: dict[str, Any]) -> bool:
+    texts = [
+        normalize_text(item.get("title")),
+        normalize_text(item.get("compressed_summary")),
+        normalize_text(item.get("summary")),
+    ]
     key_facts = item.get("key_facts")
-    return isinstance(key_facts, list) and any(normalize_text(fact) for fact in key_facts)
+    if isinstance(key_facts, list):
+        texts.extend(normalize_text(fact) for fact in key_facts)
+    combined = " ".join(text for text in texts if text).lower()
+    if not combined:
+        return False
+    signal_keywords = (
+        "도입",
+        "출시",
+        "상용",
+        "제품",
+        "서비스",
+        "적용",
+        "확산",
+        "고객",
+        "수요",
+        "규제",
+        "시장",
+        "adoption",
+        "launch",
+        "commercial",
+        "deployment",
+        "product",
+        "service",
+        "demand",
+        "customer",
+        "regulation",
+        "market",
+    )
+    return any(keyword in combined for keyword in signal_keywords)
 
 
 def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     industry_breakdown = normalize_industry_marketability_breakdown(
         result.get("industry_marketability_breakdown")
+        or (((result.get("subscores") or {}).get("industry_marketability") or {}).get("details"))
     )
     if industry_breakdown:
         industry_score = sum(industry_breakdown.values())
@@ -323,6 +347,7 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
     score = industry_score + global_business_score
     if market_growth_score is not None:
         score += int(market_growth_score)
+    metrics = dict(metrics)
     missing_information = list(result.get("missing_information") or [])
     if market_growth_score is None and MARKET_GROWTH_MISSING_MESSAGE not in missing_information:
         missing_information.append(MARKET_GROWTH_MISSING_MESSAGE)
@@ -344,6 +369,7 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
         "grade": grade_for_score(score),
         "subscores": build_market_subscores(
             result,
+            metrics=metrics,
             industry_score=industry_score,
             market_growth_score=market_growth_score,
             global_business_score=global_business_score,
@@ -357,6 +383,7 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
 def build_market_subscores(
     result: dict[str, Any],
     *,
+    metrics: dict[str, Any],
     industry_score: int,
     market_growth_score: int | None,
     global_business_score: int,
@@ -370,12 +397,17 @@ def build_market_subscores(
             "label": "산업 시장성",
             "score": industry_score,
             "max_score": 40,
+            **({"details": normalize_industry_marketability_breakdown(industry.get("details"))} if isinstance(industry.get("details"), dict) else {}),
             "rationale": normalize_text(industry.get("rationale")),
         },
         "market_growth": {
             "label": "시장 성장성",
             "score": market_growth_score,
             "max_score": 40,
+            "details": {
+                "cagr_score": nullable_int(metrics.get("cagr_score")),
+                "trend_score": nullable_int(metrics.get("trend_score")),
+            },
             "rationale": normalize_text(market_growth.get("rationale"))
             or "대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 증가율 및 추세로 산정된 코드 계산값입니다.",
         },
@@ -383,31 +415,57 @@ def build_market_subscores(
             "label": "글로벌 사업성",
             "score": global_business_score,
             "max_score": 20,
+            "details": {
+                "gnews_evidence_count": clamp_int(metrics.get("gnews_evidence_count"), default=0, max_value=9999),
+                "gnews_quality_evidence_count": clamp_int(metrics.get("gnews_quality_evidence_count"), default=0, max_value=9999),
+                "global_business_status": normalize_text(metrics.get("global_business_status")),
+            },
             "rationale": normalize_text(global_business.get("rationale"))
             or "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
         },
     }
 
 
+def nullable_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_industry_marketability_breakdown(value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
         return {}
     return {
-        key: binary_full_score(value.get(key), max_score)
-        for key, max_score in INDUSTRY_MARKETABILITY_BREAKDOWN_LIMITS.items()
+        "industry_growth_evidence": nearest_score(
+            first_present(value, "industry_growth_evidence_score", "industry_growth_evidence"),
+            (0, 15),
+        ),
+        "corporate_investment_entry": nearest_score(
+            first_present(value, "corporate_investment_entry_score", "corporate_investment_entry"),
+            (0, 10),
+        ),
+        "news_market_diffusion": nearest_score(
+            first_present(value, "news_market_diffusion_score", "news_market_diffusion"),
+            (0, 10),
+        ),
+        "source_reliability": nearest_score(
+            first_present(value, "source_reliability_score", "source_reliability"),
+            (0, 5),
+        ),
     }
 
 
 def normalize_industry_score(value: Any) -> int:
-    return binary_full_score(value, 40)
+    return clamp_int(value, default=0, max_value=40)
 
 
-def binary_full_score(value: Any, max_score: int) -> int:
+def nearest_score(value: Any, candidates: tuple[int, ...]) -> int:
     try:
-        score = int(value)
+        score = float(value)
     except (TypeError, ValueError):
         return 0
-    return max_score if score > 0 else 0
+    return min(candidates, key=lambda candidate: (abs(candidate - score), -candidate))
 
 
 def clamp_int(value: Any, default: int, max_value: int, min_value: int = 0) -> int:
