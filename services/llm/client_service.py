@@ -1,34 +1,38 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from functools import wraps
-from typing import Any, TypeVar
+from typing import Any
 
 from openai import OpenAI
 
 from app.config import settings
 
 
-F = TypeVar("F", bound=Callable[..., Any])
+_CLIENT: OpenAI | None = None
 
 
-def trace_llm_call(func: F) -> F:
-    if not settings.langsmith_tracing or not settings.langsmith_api_key:
-        return func
-    try:
-        from langsmith import traceable
-    except ImportError:
-        return func
-    traced = traceable(name="openai_responses", run_type="llm")(func)
+def _get_client() -> OpenAI:
+    """Return a shared OpenAI client.
 
-    @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        return traced(*args, **kwargs)
+    When LangSmith tracing is enabled the client is wrapped with
+    ``wrap_openai`` so every LLM call (Responses API included) becomes an LLM
+    run with token usage/cost, nested under the current LangGraph node run.
+    """
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
 
-    return wrapper  # type: ignore[return-value]
+    client = OpenAI(api_key=settings.openai_api_key)
+    if settings.langsmith_tracing and settings.langsmith_api_key:
+        try:
+            from langsmith.wrappers import wrap_openai
+
+            client = wrap_openai(client)
+        except ImportError:
+            pass
+    _CLIENT = client
+    return client
 
 
-@trace_llm_call
 def call_llm(
     prompt: str,
     *,
@@ -46,48 +50,15 @@ def call_llm(
     if supports_temperature(selected_model):
         request["temperature"] = temperature
 
-    client = OpenAI(api_key=settings.openai_api_key)
-    response = client.responses.create(**request)
+    response = _get_client().responses.create(**request)
     output_text = getattr(response, "output_text", None)
     if not output_text:
         raise RuntimeError("LLM response did not contain output_text.")
-    record_langsmith_usage(
-        model=selected_model,
-        prompt=prompt,
-        output_text=output_text,
-        response=response,
-    )
     return output_text.strip()
 
 
 def supports_temperature(model: str) -> bool:
     return not model.startswith("gpt-5")
-
-
-def record_langsmith_usage(
-    *,
-    model: str,
-    prompt: str,
-    output_text: str,
-    response: Any,
-) -> None:
-    try:
-        from langsmith.run_helpers import get_current_run_tree
-    except ImportError:
-        return
-
-    run = get_current_run_tree()
-    if run is None:
-        return
-
-    usage = getattr(response, "usage", None)
-    usage_metadata = response_usage_metadata(usage)
-    run.set(
-        inputs={"messages": [{"role": "user", "content": prompt}]},
-        outputs={"message": {"role": "assistant", "content": output_text}},
-        metadata={"ls_provider": "openai", "ls_model_name": model},
-        usage_metadata=usage_metadata if usage_metadata else None,
-    )
 
 
 def response_usage_metadata(usage: Any) -> dict[str, int] | None:

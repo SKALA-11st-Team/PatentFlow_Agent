@@ -4,7 +4,6 @@ from langgraph.graph import END, START, StateGraph
 
 from agents.valuation import VALUATION_AXES, finalize_valuation_axis_results, run_axis_valuation_result
 from app.config import settings
-from services.observability.langsmith_service import trace
 from workflow.nodes import (
     common_preprocess_node,
     evidence_compression_node,
@@ -300,7 +299,12 @@ def _build_graph() -> Any:
 WORKFLOW_GRAPH = _build_graph()
 
 
-@trace(name="patent_valuation_workflow", run_type="chain")
 def run_workflow(state: PatentWorkflowState) -> PatentWorkflowState:
-    result = WORKFLOW_GRAPH.invoke(state.model_dump())
+    # LangGraph traces the whole run as a single nested tree (one root named
+    # below) when LANGSMITH_TRACING is enabled; node spans and wrap_openai LLM
+    # calls nest under it. See services.observability.langsmith_service.
+    result = WORKFLOW_GRAPH.invoke(
+        state.model_dump(),
+        config={"run_name": "patent_valuation_workflow"},
+    )
     return PatentWorkflowState.model_validate(result)
