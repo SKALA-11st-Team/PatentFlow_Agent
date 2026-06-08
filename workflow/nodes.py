@@ -678,17 +678,6 @@ def summary_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
 
 
 FINAL_REPORT_REQUIRED_SECTIONS = [f"## {index}." for index in range(1, 7)]
-FINAL_REPORT_FORBIDDEN_PHRASES = [
-    "방어력은 제한적",
-    "권리적 불확실성",
-    "1:1 매핑",
-    "기술 백서 수준",
-    "정량적 PoC 부족",
-    "근거 부재",
-    "근거 전무",
-    "미흡",
-    "감점",
-]
 
 
 @trace(run_type="tool")
@@ -711,13 +700,13 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
         total_score = valuation.get("total_score")
         if isinstance(total_score, int) and f"{total_score}/400" not in markdown:
             issues.append(f"Final report total score does not match valuation total_score ({total_score})")
-    warnings = [phrase for phrase in FINAL_REPORT_FORBIDDEN_PHRASES if phrase in markdown]
+    # Forbidden expressions / evaluator tone are judged by the LLM final check
+    # (it reads the report body), not by brittle substring matching here.
     passed = not issues
     state.report_validation_result = {
         "passed": passed,
         "needs_more_evidence": not passed,
         "issues": issues,
-        "warnings": warnings,
     }
     state.current_stage = "final_check"
     return state

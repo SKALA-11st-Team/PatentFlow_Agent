@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.valuation_axes.common import grade_for_score, select_by_types_or_axes
-from agents.valuation_axes.market import clamp_int, extract_representative_cpc
+from agents.valuation_axes.market import clamp_int, extract_patent_country, extract_representative_cpc, extract_representative_ipc
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
 from services.patent.similar_patent_service import build_similar_patent_context
@@ -72,7 +72,10 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
             if (claim or {}).get("is_independent")
         ),
     }
+    country_code = extract_patent_country(state)
+    foreign_patent = bool(country_code and country_code != "KR")
     representative_cpc = extract_representative_cpc(state)
+    representative_ipc = extract_representative_ipc(state)
     artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
     similar_dir = Path(artifact_dir) / "similar_patents" if artifact_dir else None
     prior_art_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
@@ -80,6 +83,8 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
         metadata=metadata,
         kipris_api_data=state.kipris_api_data,
         representative_cpc=representative_cpc,
+        representative_ipc=representative_ipc,
+        country_code=country_code if foreign_patent else None,
         similar_dir=similar_dir,
         prior_art_dir=prior_art_dir,
     )
@@ -89,6 +94,8 @@ def build_similar_context(
     *,
     metadata: dict[str, Any],
     representative_cpc: str | None,
+    representative_ipc: str | None,
+    country_code: str | None,
     output_dir: Path | None,
 ) -> dict[str, Any]:
     try:
@@ -96,6 +103,8 @@ def build_similar_context(
             **build_similar_patent_context(
                 target_metadata=metadata,
                 representative_cpc=representative_cpc,
+                representative_ipc=representative_ipc,
+                country_code=country_code,
                 top_k=TECHNOLOGY_COMPARISON_TARGET_COUNT,
                 collect_pdf=True,
                 output_dir=output_dir,
@@ -107,6 +116,8 @@ def build_similar_context(
         return {
             "comparison_mode": "similar",
             "representative_cpc": representative_cpc,
+            "representative_ipc": representative_ipc,
+            "country_code": country_code,
             "candidate_count": 0,
             "similar_patents": [],
             "prior_art_patents": [],
@@ -143,6 +154,8 @@ def build_hybrid_context(
     metadata: dict[str, Any],
     kipris_api_data: dict[str, Any] | None,
     representative_cpc: str | None,
+    representative_ipc: str | None,
+    country_code: str | None,
     similar_dir: Path | None,
     prior_art_dir: Path | None,
     target_top_k: int = TECHNOLOGY_COMPARISON_TARGET_COUNT,
@@ -155,13 +168,21 @@ def build_hybrid_context(
             "comparison_mode": "hybrid",
             "selection_policy": "prior-art-only",
             "representative_cpc": representative_cpc,
+            "representative_ipc": representative_ipc,
+            "country_code": country_code,
             "candidate_count": int(prior_art.get("candidate_count") or 0),
             "similar_patents": compact_comparison_items(prior_items[:target_top_k]),
             "target_count": target_top_k,
             "warnings": list(prior_art.get("warnings") or []),
         }
 
-    similar = build_similar_context(metadata=metadata, representative_cpc=representative_cpc, output_dir=similar_dir)
+    similar = build_similar_context(
+        metadata=metadata,
+        representative_cpc=representative_cpc,
+        representative_ipc=representative_ipc,
+        country_code=country_code,
+        output_dir=similar_dir,
+    )
     hybrid_items = merge_hybrid_items(
         prior_items=prior_items,
         similar_items=list(similar.get("similar_patents") or []),
@@ -177,6 +198,8 @@ def build_hybrid_context(
         "comparison_mode": "hybrid",
         "selection_policy": "prior-art-first-then-similar",
         "representative_cpc": representative_cpc,
+        "representative_ipc": representative_ipc,
+        "country_code": country_code,
         "candidate_count": int(prior_art.get("candidate_count") or 0) + int(similar.get("candidate_count") or 0),
         "similar_patents": compact_comparison_items(hybrid_items),
         "target_count": target_top_k,

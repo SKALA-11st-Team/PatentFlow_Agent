@@ -42,10 +42,15 @@
 - 실제 적용, 매출, 고객, 도입 계획을 입력 없이 단정합니다.
 - 관련제품 메타데이터만으로 제품·기능 직접 매칭을 높게 평가합니다.
 
-## 근거 재수집이 필요한 신호
+## 근거 재수집이 필요한 신호 (첫 평가에서만)
 - SK AX 공식 evidence와 계열 매체 evidence가 모두 부족합니다.
 - 관련제품 또는 핵심 기능을 확인할 수 있는 evidence가 없습니다.
 - evidence_id가 실제 evidence_bundle에 존재하지 않습니다.
+
+## 재수집 루프 방지
+- SK AX 검색은 `site:skax.co.kr` 전용 검색이며, 대상 기술에 해당하는 SK AX 공식 페이지가 존재하지 않으면 재검색해도 채워지지 않습니다.
+- `retry_count`가 0(첫 평가)일 때만 SK AX/사업 근거 부족을 query_rewriting으로 보낼 수 있습니다.
+- `retry_count`가 1 이상인데도 SK AX 공식/계열 근거가 여전히 부족하면, 재검색으로 채워지지 않는 것으로 보고 query_rewriting을 다시 요청하지 마세요. 부족은 그대로 두고 `passed`로 판정하며, 사업 연계성 점수가 낮은 것은 정상입니다(자료 부족 → missing_information/confidence로 처리).
 
 ## 근거 존재·내용 판단 주의
 - evidence.samples에는 이 평가가 인용한 근거(evidence_ids)가 우선 포함되며, 전체 근거의 일부 미리보기입니다.

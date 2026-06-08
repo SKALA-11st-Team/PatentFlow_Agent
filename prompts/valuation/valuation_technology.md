@@ -47,11 +47,13 @@
 - 처리 흐름
 - 발명의 효과
 - `technology_metrics.representative_cpc`
+- `technology_metrics.representative_ipc`
+- `technology_metrics.country_code`
 - `technology_metrics.similar_patents`
 - `technology_metrics.warnings`
 - citation_evidence
 - prior_art_candidates
-- CPC/IPC 기반 유사 특허 검색 결과
+- 국내특허는 CPC 기반, 해외특허는 IPC 기반 해당 국가 유사 특허 검색 결과
 
 
 ----------------------------------------
@@ -74,6 +76,7 @@
 - 선행기술조사문헌과 embedding similarity 기반 유사 특허를 함께 활용하여 비교군을 구성한다.
 - 선행기술조사문헌은 실제 특허 심사 과정에서 관련성이 검토된 공식 비교 문헌으로 우선 활용한다.
 - 추가 유사 특허는 심사 과정에서 반영되지 않은 유사 기술 가능성을 보완하기 위해 사용한다.
+- 국내특허의 추가 유사 특허는 대표 CPC 기반으로, 해외특허의 추가 유사 특허는 대표 IPC 기반 해당 국가 문헌으로 수집된 것으로 간주한다.
 - 비교군은 기술 관련성 및 중복성을 고려하여 총 5개 내외 특허로 구성된 것으로 간주하고 평가한다.
 
 평가 방식:
