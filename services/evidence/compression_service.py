@@ -16,7 +16,7 @@ DEFAULT_COMPRESSED_EVIDENCE_DIR = settings.output_dir / "compressed_evidence"
 DEFAULT_RAG_SCORE_THRESHOLD = settings.rag_score_threshold
 ALLOWED_AXES = {"legal", "technology", "market", "business_fit", "strategy"}
 DEFAULT_TEXT_LIMIT = 6000
-DEFAULT_COMPRESSION_WORKERS = 3
+DEFAULT_COMPRESSION_WORKERS = settings.compression_workers
 
 
 def compress_evidence_items(
