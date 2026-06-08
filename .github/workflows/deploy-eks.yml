@@ -18,7 +18,8 @@ env:
   OPENAI_CHAT_MODEL: ${{ vars.OPENAI_CHAT_MODEL || 'gpt-5-mini' }}
   # supervisor 모델도 그냥 모델명(자격증명 아님) → Variable. 비우면 OPENAI_CHAT_MODEL로 폴백.
   OPENAI_SUPERVISOR_MODEL: ${{ vars.OPENAI_SUPERVISOR_MODEL || '' }}
-  # 점수 재현성(VAL-01): true면 평가 축이 seed 존중 모델(gpt-4o)+seed로 동작, false면 gpt-5-mini(재현 미보장).
+  # 점수 재현성(VAL-01): 기본 평가 모델은 gpt-5-mini. 재현성이 필요하면 VALUATION_MODEL=gpt-4o + VALUATION_SEED_SUPPORTED=true.
+  VALUATION_MODEL: ${{ vars.VALUATION_MODEL || 'gpt-5-mini' }}
   VALUATION_SEED_SUPPORTED: ${{ vars.VALUATION_SEED_SUPPORTED || 'false' }}
   # seed 값(자격증명 아님). 비우면 코드 기본값(20260608) 사용.
   VALUATION_SEED: ${{ vars.VALUATION_SEED || '' }}
@@ -217,6 +218,7 @@ jobs:
             --namespace="${KUBE_NAMESPACE}" \
             --from-literal=OPENAI_CHAT_MODEL="${OPENAI_CHAT_MODEL}" \
             --from-literal=OPENAI_SUPERVISOR_MODEL="${OPENAI_SUPERVISOR_MODEL}" \
+            --from-literal=VALUATION_MODEL="${VALUATION_MODEL}" \
             --from-literal=VALUATION_SEED_SUPPORTED="${VALUATION_SEED_SUPPORTED}" \
             --from-literal=VALUATION_SEED="${VALUATION_SEED}" \
             --from-literal=ENABLE_SHARED_DB_FALLBACK="${ENABLE_SHARED_DB_FALLBACK}" \
