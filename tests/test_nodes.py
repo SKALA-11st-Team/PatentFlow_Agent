@@ -85,6 +85,49 @@ def test_patent_fetch_continues_when_kipris_pdf_is_missing(monkeypatch):
     assert result.patent_structured["pdf"]["warning"].startswith("pdf_fetch_failed:RuntimeError")
 
 
+def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.get_patent",
+        lambda **kwargs: {
+            "id": 45,
+            "management_number": "P202012001-US0",
+            "country": "US",
+            "application_number": "18/020,829",
+            "registration_number": "12,417,849",
+            "status": "등록",
+        },
+    )
+
+    def fail_domestic_fetch(application_number):
+        raise AssertionError("domestic KIPRIS fetch should not be used for foreign patents")
+
+    monkeypatch.setattr("workflow.nodes.fetch_kipris_bibliography", fail_domestic_fetch)
+    captured_kwargs = {}
+
+    def fake_foreign_fetch(patent, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "source_type": "kipris_foreign_patent",
+            "metadata": {"country": "US", "application_number": patent["application_number"]},
+            "claim_stats": {"active_claim_count": 1},
+            "family_patents": [],
+            "citation_evidence": {},
+            "citation_stats": {"total_count": 0},
+            "citing_stats": {"total_count": 0},
+        }
+
+    monkeypatch.setattr("workflow.nodes.fetch_foreign_patent_rights_data", fake_foreign_fetch)
+
+    state = PatentWorkflowState(user_input={"management_number": "P202012001-US0", "collect_kipris_api": True})
+
+    result = patent_fetch_node(state)
+
+    assert result.kipris_api_data["source_type"] == "kipris_foreign_patent"
+    assert result.kipris_api_data["metadata"]["country"] == "US"
+    assert result.patent_structured["kipris_api"]["metadata"]["country"] == "US"
+    assert captured_kwargs["collect_pdf"] is True
+
+
 def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
     monkeypatch.setattr(
         "workflow.nodes.rewrite_search_queries",

@@ -113,9 +113,11 @@ def convert_industry_pdfs_to_markdown(
 
 def extract_pdf_text_without_tables(pdf_path: Path) -> str:
     import pdfplumber
+    from pypdf import PdfReader
 
     pages: list[str] = []
     table_count = 0
+    fallback_reader = PdfReader(str(pdf_path))
     with pdfplumber.open(str(pdf_path)) as pdf:
         for page_index, page in enumerate(pdf.pages, start=1):
             table_bboxes = [table.bbox for table in page.find_tables()]
@@ -128,8 +130,24 @@ def extract_pdf_text_without_tables(pdf_path: Path) -> str:
             )
             kept_words = [word for word in words if not is_word_inside_any_bbox(word, table_bboxes)]
             text = words_to_text(kept_words)
+            if should_fallback_to_pypdf(text):
+                fallback_text = fallback_reader.pages[page_index - 1].extract_text() or ""
+                if len(normalize_extracted_page_text(fallback_text)) > len(normalize_extracted_page_text(text)):
+                    text = fallback_text
             pages.append(f"\n# Page {page_index}\n\n{text.strip()}")
     return "\n\n".join(pages).strip() + f"\n\n<!-- removed_tables: {table_count} -->\n"
+
+
+def should_fallback_to_pypdf(text: str) -> bool:
+    normalized = normalize_extracted_page_text(text)
+    if len(normalized) < 120:
+        return True
+    return False
+
+
+def normalize_extracted_page_text(text: str) -> str:
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    return compact
 
 
 def is_word_inside_any_bbox(word: dict[str, Any], bboxes: list[tuple[float, float, float, float]]) -> bool:
@@ -218,6 +236,10 @@ def chunk_report_by_type(
         from rag.chunkers.kiet_chunker import chunk_report
     elif report_type == "ai_index":
         from rag.chunkers.ai_index_chunker import chunk_report
+    elif report_type == "mckinsey_tech_trends":
+        from rag.chunkers.mckinsey_tech_trends_chunker import chunk_report
+    elif report_type == "wef_top10":
+        from rag.chunkers.wef_top10_chunker import chunk_report
     elif report_type == "kpmg_ai":
         from rag.chunkers.kpmg_ai_chunker import chunk_report
     elif report_type == "kpmg_fintech":
@@ -243,6 +265,12 @@ def detect_report_type(source_name: str) -> str:
         return "kiet"
     if "ai_index" in normalized or "ai index" in normalized:
         return "ai_index"
+    if "mckinsey" in normalized and "technology" in normalized and "trends" in normalized:
+        return "mckinsey_tech_trends"
+    if "wef" in normalized and "top" in normalized and "emerging" in normalized and "technologies" in normalized:
+        return "wef_top10"
+    if "world economic forum" in normalized and "emerging technologies" in normalized:
+        return "wef_top10"
     if "kpmg" in normalized and ("ai" in normalized or "수익" in source_name):
         return "kpmg_ai"
     if "kpmg" in normalized or "핀테크" in source_name:
