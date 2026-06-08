@@ -9,7 +9,7 @@ from services.evidence.api_normalizers import extract_kipris_items
 from services.patent.kipris_patent_service import (
     _foreign_literature_number_candidates,
     download_and_parse_patent_pdf,
-    fetch_kipris_bibliography,
+    fetch_kipris_bibliography_basic,
     parse_single_patent_pdf,
 )
 from services.patent.markdown_preprocess_service import extract_sections, preprocess_patent_markdown
@@ -178,7 +178,7 @@ def resolve_prior_art_candidate(
         )
     if application_number:
         try:
-            bibliography = fetch_kipris_bibliography(application_number)
+            bibliography = fetch_kipris_bibliography_basic(application_number)
             metadata = bibliography.get("metadata") or {}
             sections = bibliography.get("sections") or {}
             abstract = sections.get("abstract") if isinstance(sections, dict) else None
