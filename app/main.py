@@ -166,6 +166,9 @@ def build_user_input(args: argparse.Namespace) -> dict[str, Any]:
         user_input["registration_number"] = args.registration_number
     if args.management_number:
         user_input["management_number"] = args.management_number
+    if args.dart_corp_code:
+        # EVID-02: DART 재무근거(opt-in) — corp_code가 주어지면 워크플로우 근거 수집에 전달.
+        user_input["dart_corp_code"] = args.dart_corp_code
     return user_input
 
 

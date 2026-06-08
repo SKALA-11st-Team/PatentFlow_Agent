@@ -199,6 +199,10 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
         user_input["patent_id"] = int(patent_id)
     else:
         user_input["management_number"] = patent_id
+    # EVID-02: DART 재무근거(opt-in) — 요청 metadata에 corp_code가 있으면 근거 수집에 전달.
+    dart_corp_code = normalize_optional_identifier((request.metadata or {}).get("dart_corp_code"))
+    if dart_corp_code:
+        user_input["dart_corp_code"] = dart_corp_code
     return user_input
 
 

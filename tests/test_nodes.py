@@ -689,3 +689,46 @@ def test_report_validation_flags_missing_sections_and_score_mismatch():
     assert result["passed"] is False
     assert any("missing required sections" in i for i in result["issues"])
     assert any("total score" in i for i in result["issues"])
+
+
+def _capture_collect_external_evidence(monkeypatch):
+    configure_evidence_search_mocks(monkeypatch, external_items=[], news_kept=[])
+    captured = {}
+
+    def capturing(**kwargs):
+        captured.update(kwargs)
+        return {"items": [], "queries": ["q"], "gnews_queries": [], "warnings": []}
+
+    monkeypatch.setattr("workflow.nodes.collect_external_evidence", capturing)
+    return captured
+
+
+def test_evidence_search_node_enables_kipris_and_threads_dart(monkeypatch):
+    # EVID-02: KIPRIS 경쟁근거 기본 ON, DART corp_code는 user_input로 전달.
+    captured = _capture_collect_external_evidence(monkeypatch)
+    state = PatentWorkflowState(
+        user_input={"no_save": True, "dart_corp_code": "00126380"},
+        patent_structured={"application_number": "10-2024-0000001"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={},
+    )
+
+    evidence_search_node(state)
+
+    assert captured["include_kipris"] is True
+    assert captured["dart_corp_code"] == "00126380"
+
+
+def test_evidence_search_node_kipris_can_be_disabled(monkeypatch):
+    captured = _capture_collect_external_evidence(monkeypatch)
+    state = PatentWorkflowState(
+        user_input={"no_save": True, "include_kipris_competitor": False},
+        patent_structured={"application_number": "10-2024-0000001"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={},
+    )
+
+    evidence_search_node(state)
+
+    assert captured["include_kipris"] is False
+    assert captured["dart_corp_code"] is None

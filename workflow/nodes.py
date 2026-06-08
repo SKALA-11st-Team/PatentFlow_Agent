@@ -278,7 +278,12 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         query_limit_per_axis=MAX_SEARCH_QUERIES,
         include_naver=not skip_news_evidence,
         include_gnews=not skip_news_evidence,
-        include_kipris=False,
+        # EVID-02: 경쟁특허 근거(KIPRIS)를 기본 수집한다(application_number 있을 때만 실효).
+        # DART 재무근거는 corp_code 자동추출이 불가하므로 user_input로 주입될 때만(opt-in) 수집한다.
+        include_kipris=state.user_input.get("include_kipris_competitor", True),
+        dart_corp_code=state.user_input.get("dart_corp_code"),
+        dart_bgn_de=state.user_input.get("dart_bgn_de"),
+        dart_end_de=state.user_input.get("dart_end_de"),
         ko_queries_override=query_plan.get("ko_queries", []),
         en_queries_override=query_plan.get("en_queries", []),
         output_dir=artifact_subdir(state, "api_evidence"),
