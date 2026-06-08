@@ -23,7 +23,7 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         axis=AXIS,
     )
     result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
-    result = reconcile_legal_scores(result)
+    result = reconcile_legal_scores(result, state=state)
     return attach_legal_context(result, payload=payload, state=state)
 
 
@@ -34,20 +34,40 @@ LEGAL_SUBSCORE_MAX = {
 }
 
 
-def reconcile_legal_scores(result: dict[str, Any]) -> dict[str, Any]:
+FOREIGN_LEGAL_EXCLUDED_DETAILS = {"prior_art_overlap"}
+LEGAL_DETAIL_MAX = {
+    "prior_art_overlap": 25,
+    "claim_structure_stability": 10,
+}
+
+
+def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState) -> dict[str, Any]:
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     reconciled: dict[str, Any] = {}
     total = 0
+    total_max = 0
+    foreign_patent = is_foreign_patent(state)
     for key, max_score in LEGAL_SUBSCORE_MAX.items():
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
-        detail_sum = sum_detail_scores(details)
+        effective_max_score = max_score
+        if foreign_patent and key == "right_stability":
+            effective_max_score = legal_subscore_max_without_details(
+                max_score=max_score,
+                details=details,
+                excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS,
+            )
+        detail_sum = sum_detail_scores(
+            details,
+            excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS if foreign_patent and key == "right_stability" else None,
+        )
         raw_score = coerce_int(item.get("score"))
         score = detail_sum if detail_sum is not None else raw_score
-        score = max(0, min(max_score, score or 0))
-        reconciled[key] = {**item, "score": score, "max_score": max_score}
+        score = max(0, min(effective_max_score, score or 0))
+        reconciled[key] = {**item, "score": score, "max_score": effective_max_score}
         total += score
-    total = max(0, min(100, total))
+        total_max += effective_max_score
+    total = normalize_score_to_100(total, total_max)
     return {
         **result,
         "subscores": {**subscores, **reconciled},
@@ -56,14 +76,40 @@ def reconcile_legal_scores(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def sum_detail_scores(details: dict[str, Any]) -> int | None:
+def sum_detail_scores(details: dict[str, Any], excluded_detail_keys: set[str] | None = None) -> int | None:
     values: list[int] = []
-    for detail in details.values():
+    for key, detail in details.items():
+        if excluded_detail_keys and key in excluded_detail_keys:
+            continue
         if isinstance(detail, dict) and "score" in detail:
             value = coerce_int(detail.get("score"))
             if value is not None:
                 values.append(value)
     return sum(values) if values else None
+
+
+def legal_subscore_max_without_details(
+    *,
+    max_score: int,
+    details: dict[str, Any],
+    excluded_detail_keys: set[str],
+) -> int:
+    excluded_total = 0
+    for key in excluded_detail_keys:
+        if key in details:
+            excluded_total += LEGAL_DETAIL_MAX.get(key, 0)
+    return max(0, max_score - excluded_total)
+
+
+def normalize_score_to_100(score: int, max_score: int) -> int:
+    if max_score <= 0:
+        return 0
+    return max(0, min(100, round(score * 100 / max_score)))
+
+
+def is_foreign_patent(state: PatentWorkflowState) -> bool:
+    country = normalize_text((state.patent_structured or {}).get("country"))
+    return bool(country and country.upper() != "KR")
 
 
 def coerce_int(value: Any) -> int | None:

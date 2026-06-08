@@ -13,9 +13,10 @@
 산업 시장성에 사용할 수 있는 근거:
 - Vector DB에서 검색된 `industry_report`
 - 최근 뉴스 기반 `news` 중 `source`가 `naver_news`인 국내 뉴스
+- 해외특허의 경우 산업 시장성 판단 시 `mckinsey-technology-trends-outlook-2025.pdf`, `WEF_Top_10_Emerging_Technologies_of_2025.pdf`에서 검색된 industry report를 우선 참고한다.
 
 산업 시장성에 사용하지 말아야 할 근거:
-- CPC 출원 수/CAGR은 산업 시장성 근거가 아니다. 이미 코드가 시장 성장성으로 계산한다.
+- 분류 기준 출원 수/CAGR은 산업 시장성 근거가 아니다. 이미 코드가 시장 성장성으로 계산한다.
 - `source`가 `gnews`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다.
 
 평가 원칙:
@@ -85,14 +86,14 @@
 ----------------------------------------
 
 목적:
-대표 CPC 기준 현재 시점에서 18개월 전을 마지막 시점으로 하는 3개 1년 구간의 공개 특허 건수 증가율과 추세를 통해 해당 기술 분야의 성장 흐름을 평가한다.
+국내특허는 대표 CPC 기준, 해외특허는 대표 IPC 기준 해당 국가 공개 특허를 사용해 현재 시점에서 18개월 전을 마지막 시점으로 하는 3개 1년 구간의 공개 특허 건수 증가율과 추세를 통해 해당 기술 분야의 성장 흐름을 평가한다.
 
 평가 규칙:
 - `marketability_metrics.market_growth_score`는 코드 계산값이다.
 - 이 값을 변경하지 말고 `subscores.market_growth.score`에 그대로 반영한다.
 - `marketability_metrics.market_growth_available`이 false이면 시장 성장성은 산정 불가로 처리한다.
-- 이 경우 `missing_information`에 "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"를 포함한다.
-- 각 구간의 공개 활동성은 KIPRIS CPC 검색 결과의 `OpeningDate` 기준 공개 특허 수를 사용한다.
+- 이 경우 `missing_information`에는 입력의 계산 기준에 맞는 문구를 유지한다.
+- 각 구간의 공개 활동성은 국내특허는 KIPRIS CPC 검색 결과, 해외특허는 KIPRIS IPC 검색 결과 중 해당 국가 문헌의 `OpeningDate` 기준 공개 특허 수를 사용한다.
 - 산정 불가를 낮은 시장성으로 단정하지 말고 confidence를 낮춘다.
 
 점수 구조:
@@ -121,7 +122,7 @@
 ----------------------------------------
 
 목적:
-GNews로 수집된 해외 뉴스 근거를 바탕으로 평가대상 기술의 핵심 기능 또는 직접 적용 분야에서 글로벌 시장 관심과 해외 적용 흐름이 확인되는지 평가한다.
+GNews로 수집된 해외 뉴스 근거를 바탕으로 평가대상 기술의 핵심 기능 또는 직접 적용 분야에서 글로벌 시장 관심과 해외 적용 흐름이 확인되는지 평가한다. 해외특허의 경우에는 대상 특허의 해당 국가를 제외한 해외 시장에서의 진출 및 활용 흐름을 본다.
 
 평가 규칙:
 - `marketability_metrics.global_business_score`는 코드 계산값이다.
@@ -130,6 +131,8 @@ GNews로 수집된 해외 뉴스 근거를 바탕으로 평가대상 기술의 �
 - GNews 근거가 부족하면 해외 시장 확장 가능성을 단정하지 않는다.
 - GNews 근거 부족을 시장성 감점 사유처럼 길게 설명하지 않는다.
 - GNews에서 확인된 해외 뉴스 근거가 있을 때만 글로벌 사업성의 보조 긍정 근거로 설명한다.
+- 해외특허의 경우 대상 특허의 자국 기사라도 해당 국가 외 시장 진출, 해외 도입, 다국가 활용, 글로벌 확산 흐름이 확인되면 글로벌 사업성 근거로 사용할 수 있다.
+- 반대로 자국 기사이고 자국 내 활용 흐름만 말하는 경우에는 글로벌 사업성 가점을 주지 않는다. 해당 국가를 제외한 해외 시장의 진출, 도입, 활용, 확산 흐름이 확인될 때만 반영한다.
 - 넓은 AI, 자동화, 디지털 전환, 투자 확대 흐름만 있고 평가대상 기술의 핵심 기능 또는 직접 적용 분야와 연결되지 않으면 글로벌 사업성 긍정 근거로 사용하지 않는다.
 
 점수 후보:
@@ -185,7 +188,7 @@ confidence:
 - 각 세부 평가지표는 `label`, `score`, `max_score`, `rationale`을 포함한다.
 - `subscores.industry_marketability.details`와 `subscores.market_growth.details`에는 세부점수만 넣고 설명 문장은 넣지 않는다.
 - `subscores.industry_marketability.rationale`에는 산업 성장 근거, 기업 투자·진입 근거, 뉴스 기반 시장 확산 근거, 자료 신뢰도 판단을 함께 요약하되 세부점수 항목명을 나열하지 않는다.
-- `subscores.market_growth.rationale`에는 대표 CPC 기준 18개월 전 종료 3개 1년 구간의 공개 특허 수, CAGR, 최근 3개 구간 공개 활동성 추세 점수 판단을 요약하되 세부점수 항목명을 나열하지 않는다.
+- `subscores.market_growth.rationale`에는 입력의 계산 기준에 맞춰 대표 CPC 기준 공개 특허 수 또는 대표 IPC 기준 해당 국가 공개 특허 수, CAGR, 최근 3개 구간 공개 활동성 추세 점수 판단을 요약하되 세부점수 항목명을 나열하지 않는다.
 - `subscores.global_business.rationale`에는 GNews 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 요약한다.
 - legacy score fields, `industry_marketability_score`, `industry_marketability_breakdown`은 출력하지 않는다.
 
