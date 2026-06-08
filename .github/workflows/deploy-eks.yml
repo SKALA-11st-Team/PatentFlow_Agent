@@ -5,7 +5,7 @@ name: Deploy Agent to EKS
 on:
   push:
     branches:
-      - Seeun
+      - main
   workflow_dispatch:
 
 env:

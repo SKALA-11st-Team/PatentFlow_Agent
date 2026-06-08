@@ -6,8 +6,9 @@ http://team11-patentflow-agent-svc:8000` 으로 호출한다. (에이전트 미�
 in-memory 폴백으로 동작한다.)
 
 ## 트리거
-- `Seeun` 브랜치 push 또는 GitHub Actions `Deploy Agent to EKS` 수동 실행(workflow_dispatch).
-- 즉 분야 추천 기능을 라이브로 올리려면 feature PR을 **Seeun에 머지**한 뒤 워크플로가 돌면 된다.
+- `main` 브랜치 push 또는 GitHub Actions `Deploy Agent to EKS` 수동 실행(workflow_dispatch).
+- BE(`PatentFlow_BE`)도 main 배포라 일관성을 맞춘다. 브랜치 흐름: feature → `dev`(통합) → `main`(배포).
+- 즉 분야 추천 기능을 라이브로 올리려면 `dev`를 거쳐 **`main`에 머지**되면 워크플로가 돈다.
 
 ## 사전 등록 필요 — GitHub Actions Secrets (Repo Settings → Secrets and variables → Actions)
 BE 레포에 이미 있는 값들을 **에이전트 레포에도** 등록해야 한다(레포별로 분리 저장됨).
