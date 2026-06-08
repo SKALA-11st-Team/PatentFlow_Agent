@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 import json
@@ -14,7 +13,6 @@ from app.config import settings
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.evidence.api_normalizers import (
-    normalize_dart_disclosures,
     normalize_gnews_response,
     normalize_kipris_patent_results,
     normalize_naver_news_response,
@@ -106,9 +104,6 @@ def collect_external_evidence(
     include_naver: bool = True,
     include_gnews: bool = True,
     include_kipris: bool = False,
-    dart_corp_code: str | None = None,
-    dart_bgn_de: str | None = None,
-    dart_end_de: str | None = None,
     missing_evidence: list[str] | None = None,
     previous_queries: list[str] | None = None,
     use_llm_rewrite: bool = True,
@@ -217,30 +212,6 @@ def collect_external_evidence(
                 saved_paths.append(str(path))
         except requests.RequestException as exc:
             warnings.append(f"kipris call failed for application_number '{application_number}': {exc}")
-
-    if dart_corp_code:
-        try:
-            bgn_de, end_de = resolve_dart_date_range(dart_bgn_de, dart_end_de)
-            raw = request_json(
-                api_base_url,
-                "/dart/disclosure",
-                {"corp_code": dart_corp_code, "bgn_de": bgn_de, "end_de": end_de},
-            )
-            query = f"corp_code:{dart_corp_code}"
-            items = normalize_dart_disclosures(raw, query=query)
-            sources.append(items)
-            if save:
-                path = save_evidence_collection(
-                    source_type="company_disclosure",
-                    source="dart",
-                    items=items,
-                    query=query,
-                    patent_id=patent_id,
-                    output_dir=output_dir or settings.output_dir / "api_evidence",
-                )
-                saved_paths.append(str(path))
-        except requests.RequestException as exc:
-            warnings.append(f"dart call failed for corp_code '{dart_corp_code}': {exc}")
 
     merged = merge_evidence_sources(sources, prefix="api")
 
@@ -493,18 +464,6 @@ def with_response_detail(exc: requests.HTTPError) -> requests.HTTPError:
         return exc
     detail = exc.response.text[:300]
     return requests.HTTPError(f"{exc}; response={detail}", response=exc.response)
-
-
-def resolve_dart_date_range(
-    bgn_de: str | None,
-    end_de: str | None,
-) -> tuple[str, str]:
-    if bgn_de and end_de:
-        return bgn_de, end_de
-    today = datetime.now()
-    end_value = end_de or today.strftime("%Y%m%d")
-    bgn_value = bgn_de or (today - timedelta(days=365)).strftime("%Y%m%d")
-    return bgn_value, end_value
 
 
 def contains_hangul(value: str) -> bool:

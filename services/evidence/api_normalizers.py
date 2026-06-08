@@ -79,47 +79,6 @@ def normalize_gnews_response(
     return evidence
 
 
-def normalize_dart_disclosures(
-    raw: dict[str, Any] | list[dict[str, Any]],
-    *,
-    query: str | None = None,
-    collected_at: str | None = None,
-) -> list[dict[str, Any]]:
-    collected_at = collected_at or now_iso()
-    reports = raw if isinstance(raw, list) else raw.get("list", [])
-    evidence = []
-    for rank, report in enumerate(reports, start=1):
-        published_at = parse_yyyymmdd(report.get("rcept_dt"))
-        corp_name = report.get("corp_name")
-        report_name = report.get("report_nm")
-        evidence.append(
-            {
-                "evidence_id": None,
-                "source_type": "company_disclosure",
-                "source": "dart",
-                "title": report_name,
-                "url": build_dart_url(report.get("rcept_no")),
-                "published_at": published_at,
-                "collected_at": collected_at,
-                "content": " - ".join(part for part in (corp_name, report_name) if part),
-                "related_axis": ["market", "strategy"],
-                "confidence": None,
-                "metadata": {
-                    "query": query,
-                    "rank": rank,
-                    "corp_code": report.get("corp_code"),
-                    "corp_name": corp_name,
-                    "stock_code": report.get("stock_code"),
-                    "corp_cls": report.get("corp_cls"),
-                    "report_name": report_name,
-                    "receipt_no": report.get("rcept_no"),
-                    "raw_receipt_date": report.get("rcept_dt"),
-                },
-            }
-        )
-    return evidence
-
-
 def normalize_kipris_patent_results(
     raw: dict[str, Any] | list[dict[str, Any]],
     *,
@@ -214,12 +173,6 @@ def parse_dot_date(value: Any) -> str | None:
         return None
     year, month, day = match.groups()
     return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
-
-
-def build_dart_url(receipt_no: Any) -> str | None:
-    if not receipt_no:
-        return None
-    return f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt_no}"
 
 
 def extract_kipris_items(raw: dict[str, Any]) -> list[dict[str, Any]]:

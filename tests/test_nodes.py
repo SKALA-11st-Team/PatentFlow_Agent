@@ -29,7 +29,7 @@ def test_evidence_check_requires_at_least_three_news_items():
         evidence_bundle=[
             {"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스 본문"},
             {"evidence_id": "rag_001", "source": "industry_report.pdf", "source_type": "industry_report", "context": "산업 보고서 청크"},
-            {"evidence_id": "dart_001", "source": "dart", "source_type": "company_disclosure", "content": "공시 본문"},
+            {"evidence_id": "disclosure_001", "source": "sk_group_owned_media", "source_type": "company_disclosure", "content": "공시 본문"},
         ]
     )
 

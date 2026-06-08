@@ -10,7 +10,7 @@ def test_select_compression_candidates_keeps_news_and_high_score_rag():
         {"evidence_id": "news_1", "source_type": "news", "content": "뉴스"},
         {"evidence_id": "rag_high", "source_type": "industry_report", "score": 0.5, "context": "청크"},
         {"evidence_id": "rag_low", "source_type": "industry_report", "score": 0.49, "context": "청크"},
-        {"evidence_id": "dart_1", "source_type": "company_disclosure", "content": "공시"},
+        {"evidence_id": "disclosure_1", "source_type": "company_disclosure", "content": "공시"},
     ]
 
     candidates, skipped = select_compression_candidates(items, rag_score_threshold=0.5)

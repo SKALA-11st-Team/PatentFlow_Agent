@@ -6,7 +6,6 @@ import pytest
 
 from schemas.evidence import Evidence
 from services.evidence.api_normalizers import (
-    normalize_dart_disclosures,
     normalize_gnews_response,
     normalize_naver_news_response,
 )
@@ -23,7 +22,7 @@ from services.evidence.external_search_service import (
 )
 
 
-def test_normalize_news_and_dart_to_common_evidence_shape():
+def test_normalize_news_to_common_evidence_shape():
     naver = {
         "items": [
             {
@@ -46,28 +45,15 @@ def test_normalize_news_and_dart_to_common_evidence_shape():
             }
         ]
     }
-    dart = {
-        "list": [
-            {
-                "corp_code": "001",
-                "corp_name": "샘플회사",
-                "report_nm": "사업보고서",
-                "rcept_no": "202605050001",
-                "rcept_dt": "20260505",
-            }
-        ]
-    }
-
     merged = merge_evidence_sources(
         [
             normalize_naver_news_response(naver, query="AI 자산배분 시장"),
             normalize_gnews_response(gnews, query="AI 자산배분 시장"),
-            normalize_dart_disclosures(dart, query="AI 자산배분 시장"),
         ],
         prefix="api",
     )
 
-    assert len(merged) == 3
+    assert len(merged) == 2
     assert merged[0]["evidence_id"].startswith("api_")
     assert merged[0]["source_type"] == "news"
     assert merged[0]["title"] == "AI 자산배분 시장 성장"
@@ -76,8 +62,6 @@ def test_normalize_news_and_dart_to_common_evidence_shape():
     assert "summary" not in merged[0]
     assert "raw_text" not in merged[0]
     assert "published_at_precision" not in merged[0]
-    assert merged[2]["source_type"] == "company_disclosure"
-    assert merged[2]["published_at"] == "2026-05-05"
 
 
 def test_evidence_schema_content_alias_and_save(tmp_path):
