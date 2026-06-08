@@ -33,6 +33,9 @@
 - 권리성, 기술성, 시장성, 포트폴리오 가치는 평가하지 않는다.
 - 자료 부족은 `missing_information`과 `confidence`에 반영하고, 낮은 사업 가치로 자동 해석하지 않는다.
 - 실제 확인된 약점만 `risk_factors`에 작성한다.
+- 청구항 또는 초록의 제공 여부는 사업 연계성 점수의 평가 요소가 아니며 `risk_factors`나 `missing_information`에 작성하지 않는다.
+- 대상 특허의 문서 제공 상태를 언급해야 하는 경우 `business_fit_context.target_source_status`만 최신 기준으로 사용한다.
+- `portfolio_context`에 포함된 대상 특허의 청구항·초록 제공 여부 설명은 수집 시점이 다를 수 있으므로 사용하지 않는다.
 - `score`는 반드시 세 하위 항목 점수 합계와 일치해야 한다.
 - `subscores`의 각 detail score는 아래 점수 후보 중 하나만 사용한다.
 
@@ -49,6 +52,9 @@
   - solution_or_core_technology
   - use_case_or_application
   - key_terms
+- `business_fit_context.target_source_status`
+  - 최신 전처리 결과의 청구항·초록·상세설명 제공 상태
+  - 사업 연계성 점수 산정용 정보가 아니라 오래된 포트폴리오 문서 상태 설명을 배제하기 위한 기준
 - `business_fit_context.skax_official_evidence`
   - evidence_id
   - title

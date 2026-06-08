@@ -645,6 +645,45 @@ def default_search_client() -> SearchClient:
     return GoogleHtmlSearchClient()
 
 
+def search_with_default_fallback(
+    query: str,
+    *,
+    max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
+) -> dict[str, Any]:
+    clients: list[SearchClient] = []
+    if TavilySearchClient.has_config():
+        clients.append(TavilySearchClient())
+    if GoogleCustomSearchClient.has_config():
+        clients.append(GoogleCustomSearchClient())
+    clients.append(GoogleHtmlSearchClient())
+
+    attempts: list[dict[str, Any]] = []
+    last_response: dict[str, Any] = {"results": [], "diagnostics": build_empty_search_diagnostics(query)}
+    for client in clients:
+        try:
+            response = client.search(query, max_results=max_results)
+        except Exception as exc:
+            response = {
+                "results": [],
+                "diagnostics": build_search_error_diagnostics(query, exc),
+            }
+        results = list(response.get("results", []))
+        diagnostics = dict(response.get("diagnostics") or {})
+        attempts.append(
+            {
+                "search_provider": diagnostics.get("search_provider") or client.__class__.__name__,
+                "result_count": len(results),
+                "search_failure_reason": diagnostics.get("search_failure_reason"),
+            }
+        )
+        diagnostics["fallback_attempts"] = attempts
+        diagnostics["fallback_used"] = len(attempts) > 1
+        last_response = {"results": results, "diagnostics": diagnostics}
+        if results:
+            return last_response
+    return last_response
+
+
 def build_related_media_queries(base_queries: list[str], *, max_queries: int = DEFAULT_MAX_QUERIES) -> list[str]:
     related_queries: list[str] = []
     for base_query in base_queries[: max(1, int(max_queries))]:

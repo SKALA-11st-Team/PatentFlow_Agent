@@ -17,6 +17,7 @@ class PatentWorkflowState(BaseModel):
     citation_evidence: dict[str, Any] = Field(default_factory=dict)
     pdf_paths: list[str] = Field(default_factory=list)
     parsed_pdf: dict[str, Any] | None = None
+    prior_art_context: dict[str, Any] | None = None
 
     # Patent markdown/preprocessed content
     preprocessed_patent: dict[str, Any] | None = None

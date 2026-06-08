@@ -1,14 +1,21 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import contextvars
+import re
 
 from app.config import settings
 from services.patent.kipris_patent_service import (
     download_and_parse_patent_pdf,
+    fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
     get_patent,
+    resolve_foreign_prior_art_evidence,
 )
 from services.patent.markdown_preprocess_service import build_preprocessed_patent
+from services.patent.prior_art_patent_service import (
+    build_prior_art_patent_context,
+    prior_art_context_citation_documents,
+)
 from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
 from services.evidence.compression_service import (
     DEFAULT_RAG_SCORE_THRESHOLD,
@@ -36,7 +43,20 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
     )
     state.patent_structured = patent
     if patent and (state.user_input.get("collect_kipris_api") or state.user_input.get("collect_pdf")):
-        state.kipris_api_data = fetch_kipris_bibliography(patent["application_number"])
+        country = str(patent.get("country") or "").strip().upper()
+        if country and country != "KR":
+            state.kipris_api_data = fetch_foreign_patent_rights_data(
+                patent,
+                output_dir=artifact_subdir(state, "patent_markdown"),
+                collect_pdf=True,
+            )
+            parsed_pdf = state.kipris_api_data.get("parsed_pdf") or {}
+            if parsed_pdf:
+                state.parsed_pdf = parsed_pdf
+                pdf_path = parsed_pdf.get("pdf_path")
+                state.pdf_paths = [pdf_path] if pdf_path else []
+        else:
+            state.kipris_api_data = fetch_kipris_bibliography(patent["application_number"])
         state.kipris_family_patents = state.kipris_api_data.get("family_patents", [])
         state.citation_evidence = state.kipris_api_data.get("citation_evidence", {})
         state.patent_structured = {
@@ -50,7 +70,8 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 "citing_stats": state.kipris_api_data.get("citing_stats", {}),
             },
         }
-    if patent and state.user_input.get("collect_pdf"):
+    patent_country = str((patent or {}).get("country") or "").strip().upper()
+    if patent and state.user_input.get("collect_pdf") and not state.parsed_pdf and patent_country in {"", "KR"}:
         try:
             parsed_pdf = download_and_parse_patent_pdf(
                 patent["application_number"],
@@ -167,12 +188,161 @@ def common_preprocess_node(state: PatentWorkflowState) -> PatentWorkflowState:
         db_metadata=patent,
         api_data=state.kipris_api_data,
     )
+    country = str((preprocessed.get("metadata") or {}).get("country") or "").upper()
+    prior_art = (preprocessed.get("metadata") or {}).get("prior_art") or []
+    if country and country != "KR" and prior_art:
+        enriched = resolve_foreign_prior_art_evidence(prior_art)
+        citation_evidence = {
+            **(state.citation_evidence or {}),
+            "foreign_claim_lookup_candidates": enriched["foreign_claim_lookup_candidates"],
+            "foreign_citation_documents": enriched["foreign_citation_documents"],
+            "foreign_identifier_only_documents": enriched["foreign_identifier_only_documents"],
+            "prior_art_collection": enriched["prior_art_collection"],
+            "warnings": [
+                *((state.citation_evidence or {}).get("warnings") or []),
+                *enriched["warnings"],
+            ],
+        }
+        state.citation_evidence = citation_evidence
+        if state.kipris_api_data is not None:
+            state.kipris_api_data["citation_evidence"] = citation_evidence
     state.preprocessed_patent = preprocessed
     if state.parsed_pdf:
         state.parsed_pdf = {key: value for key, value in state.parsed_pdf.items() if key != "markdown_text"}
     state.patent_structured = patent
     state.current_stage = "patent_check"
     return state
+
+
+@trace(run_type="tool")
+def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    if state.prior_art_context is not None:
+        return state
+    preprocessed = state.preprocessed_patent or {}
+    metadata = preprocessed.get("metadata") if isinstance(preprocessed.get("metadata"), dict) else {}
+    if not metadata.get("prior_art"):
+        state.prior_art_context = {
+            "comparison_mode": "prior-art",
+            "candidate_count": 0,
+            "similar_patents": [],
+            "prior_art_patents": [],
+            "warnings": ["prior_art_candidates_not_found"],
+        }
+        return state
+
+    artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
+    output_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
+    try:
+        state.prior_art_context = build_prior_art_patent_context(
+            target_metadata=metadata,
+            kipris_api_data=state.kipris_api_data,
+            collect_pdf=bool(output_dir),
+            output_dir=output_dir,
+            pdf_text_limit=None,
+        )
+    except Exception as exc:
+        state.prior_art_context = {
+            "comparison_mode": "prior-art",
+            "candidate_count": len(metadata.get("prior_art") or []),
+            "similar_patents": [],
+            "prior_art_patents": [],
+            "warnings": [f"prior_art_fulltext_collection_failed:{exc.__class__.__name__}"],
+        }
+        return state
+    fulltext_documents = prior_art_context_citation_documents(state.prior_art_context)
+    if fulltext_documents:
+        state.citation_evidence = merge_prior_art_citation_evidence(
+            state.citation_evidence,
+            fulltext_documents,
+            candidate_count=int(state.prior_art_context.get("candidate_count") or 0),
+        )
+        if state.kipris_api_data is not None:
+            state.kipris_api_data["citation_evidence"] = state.citation_evidence
+    return state
+
+
+def merge_prior_art_citation_evidence(
+    evidence: dict | None,
+    fulltext_documents: list[dict],
+    *,
+    candidate_count: int,
+) -> dict:
+    merged = dict(evidence or {})
+    by_number = {
+        prior_art_document_key(item): dict(item)
+        for item in merged.get("foreign_citation_documents") or []
+        if isinstance(item, dict)
+    }
+    for document in fulltext_documents:
+        key = prior_art_document_key(document)
+        existing = by_number.get(key, {})
+        by_number[key] = {
+            **existing,
+            **document,
+            "abstract": document.get("abstract") or existing.get("abstract"),
+            "representative_claims": document.get("representative_claims") or existing.get("representative_claims") or [],
+        }
+    documents = list(by_number.values())
+    for item in documents:
+        if item.get("representative_claims"):
+            item["comparison_status"] = "claim_comparison_ready"
+        elif item.get("comparison_status") in {None, "comparison_ready"} and item.get("abstract"):
+            item["comparison_status"] = "abstract_only"
+    claim_ready_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("comparison_status") == "claim_comparison_ready"
+    }
+    abstract_only_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("comparison_status") == "abstract_only"
+    }
+    claims_unparsed_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("comparison_status") == "fulltext_claims_unparsed"
+    }
+    resolved_numbers = claim_ready_numbers | abstract_only_numbers | claims_unparsed_numbers
+    unresolved = [
+        item
+        for item in merged.get("foreign_claim_lookup_candidates") or []
+        if prior_art_document_key(item) not in resolved_numbers
+    ]
+    merged.update(
+        {
+            "foreign_citation_documents": documents,
+            "foreign_identifier_only_documents": unresolved,
+            "prior_art_collection": {
+                "candidate_count": candidate_count,
+                "comparison_ready_count": len(claim_ready_numbers),
+                "claim_comparison_ready_count": len(claim_ready_numbers),
+                "abstract_only_count": len(abstract_only_numbers),
+                "fulltext_claims_unparsed_count": len(claims_unparsed_numbers),
+                "identifier_only_count": max(0, candidate_count - len(resolved_numbers)),
+                "comparison_status": (
+                    "claim_comparison_ready"
+                    if claim_ready_numbers
+                    else "abstract_only"
+                    if abstract_only_numbers
+                    else "fulltext_claims_unparsed"
+                    if claims_unparsed_numbers
+                    else "unknown"
+                ),
+            },
+        }
+    )
+    return merged
+
+
+def prior_art_document_key(item: dict) -> str:
+    display_number = item.get("display_number")
+    if display_number:
+        return re.sub(r"[^0-9A-Z]", "", str(display_number).upper())
+    return "|".join(
+        str(item.get(key) or "").upper()
+        for key in ("country_code", "document_number", "kind_code")
+    )
 
 
 @trace(run_type="tool")
@@ -693,6 +863,17 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
         total_score_max = valuation.get("total_score_max", 300)
         if isinstance(total_score, int) and f"{total_score}/{total_score_max}" not in markdown:
             issues.append(f"Final report total score does not match valuation total_score ({total_score})")
+        recommendation = str(valuation.get("recommendation") or "").strip()
+        if recommendation:
+            match = re.search(
+                r"(?m)^\|\s*종합 검토 의견\s*\|\s*([^|]+?)\s*\|$",
+                markdown,
+            )
+            report_recommendation = match.group(1).strip() if match else None
+            if report_recommendation != recommendation:
+                issues.append(
+                    f"Final report recommendation does not match valuation recommendation ({recommendation})"
+                )
     # Forbidden expressions / evaluator tone are judged by the LLM final check
     # (it reads the report body), not by brittle substring matching here.
     passed = not issues

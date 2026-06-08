@@ -15,18 +15,24 @@ def build_similar_patent_context(
     *,
     target_metadata: dict[str, Any],
     representative_cpc: str | None,
+    representative_ipc: str | None = None,
+    country_code: str | None = None,
     top_k: int = 3,
     max_candidates: int = 80,
     collect_pdf: bool = False,
     output_dir: str | Path | None = None,
     pdf_text_limit: int | None = None,
 ) -> dict[str, Any]:
-    if not representative_cpc:
+    classification_code = representative_ipc if country_code else representative_cpc
+    classification_label = "ipc" if country_code else "cpc"
+    if not classification_code:
         return {
             "representative_cpc": None,
+            "representative_ipc": representative_ipc,
+            "country_code": country_code,
             "candidate_count": 0,
             "similar_patents": [],
-            "warnings": ["representative_cpc_not_found"],
+            "warnings": [f"representative_{classification_label}_not_found"],
         }
 
     filing_date = parse_date(
@@ -40,6 +46,8 @@ def build_similar_patent_context(
     if not filing_date:
         return {
             "representative_cpc": representative_cpc,
+            "representative_ipc": representative_ipc,
+            "country_code": country_code,
             "candidate_count": 0,
             "similar_patents": [],
             "warnings": ["target_filing_date_not_found"],
@@ -52,6 +60,8 @@ def build_similar_patent_context(
     if not target_text:
         return {
             "representative_cpc": representative_cpc,
+            "representative_ipc": representative_ipc,
+            "country_code": country_code,
             "candidate_count": 0,
             "similar_patents": [],
             "warnings": ["target_claims_not_found"],
@@ -59,6 +69,8 @@ def build_similar_patent_context(
 
     candidates = collect_similar_patent_candidates(
         representative_cpc=representative_cpc,
+        representative_ipc=representative_ipc,
+        country_code=country_code,
         filing_date=filing_date,
         target_application_number=target_application_number,
         max_candidates=max_candidates,
@@ -66,6 +78,8 @@ def build_similar_patent_context(
     if not candidates:
         return {
             "representative_cpc": representative_cpc,
+            "representative_ipc": representative_ipc,
+            "country_code": country_code,
             "candidate_count": 0,
             "similar_patents": [],
             "warnings": ["similar_patent_candidates_not_found"],
@@ -93,6 +107,8 @@ def build_similar_patent_context(
         warnings.append("similarity_scoring_disabled")
     return {
         "representative_cpc": representative_cpc,
+        "representative_ipc": representative_ipc,
+        "country_code": country_code,
         "candidate_count": len(candidates),
         "similar_patents": similar_patents,
         "warnings": warnings,
@@ -149,14 +165,18 @@ def collect_similar_patent_pdfs(
 def collect_similar_patent_candidates(
     *,
     representative_cpc: str,
+    representative_ipc: str | None,
+    country_code: str | None,
     filing_date: date,
     target_application_number: str | None,
     max_candidates: int,
     page_size: int = 500,
 ) -> list[dict[str, Any]]:
     client = KiprisClient()
-    raw = client.search_by_cpc(
-        representative_cpc,
+    search_fn = client.search_by_ipc if country_code else client.search_by_cpc
+    classification_code = representative_ipc if country_code else representative_cpc
+    raw = search_fn(
+        classification_code,
         patent=True,
         utility=False,
         docsCount=page_size,
@@ -167,6 +187,11 @@ def collect_similar_patent_candidates(
     candidates = []
     seen = set()
     for item in items:
+        item_country_code = normalize_text(
+            first_present(item, "publicationCountryCode", "countryCode", "applicationCountryCode", "country")
+        ).upper()
+        if country_code and item_country_code != country_code:
+            continue
         application_number = normalize_digits(first_present(item, "ApplicationNumber", "applicationNumber"))
         if not application_number or application_number == target_application_number:
             continue
@@ -197,6 +222,7 @@ def collect_similar_patent_candidates(
                 "applicant": str(first_present(item, "Applicant", "applicantName") or ""),
                 "status": status,
                 "ipc": str(first_present(item, "InternationalpatentclassificationNumber", "ipcNumber") or ""),
+                "country_code": item_country_code or None,
                 "similarity_text": similarity_text,
                 "raw": item,
             }

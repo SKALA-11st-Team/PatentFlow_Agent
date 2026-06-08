@@ -254,7 +254,10 @@
 
 - 최종 점수와 최종 종합 지표는 입력의 종합 평가 결과를 사용하세요.
 - final report 작성 단계에서 점수 기준으로 새로운 최종 판단을 임의 생성하지 마세요.
-- `종합 검토 의견`은 입력의 `valuation_result.final_indicator` 값을 우선 사용하세요.
+- `종합 검토 의견`은 입력의 `valuation_result.recommendation` 값을 그대로 사용하세요.
+- `valuation_result.final_indicator`는 점수 구간을 설명하는 내부 종합 지표이며, AI 권고 라벨을 대신하지 않습니다.
+- 대상 특허의 기술·권리 특징은 `patent.summary_result`와 `patent.rights_scope_context`에서 확인되는 내용만 서술하세요.
+- 평가축의 선행문헌 비교 설명에만 등장하는 기술요소를 대상 특허의 구성이나 차별점으로 옮겨 적지 마세요.
 - 종합 점수는 권리성·기술성·시장성 3개 축만으로 산정합니다. 사업 연계성(business_fit)은 합산에 넣지 마세요.
 - `종합 점수`는 반드시 3축 합산 점수와 평균 점수를 함께 쓰되, 합산 분모는 입력의 `valuation_result.total_score_max`(=300)를 사용하세요.
   - 예: `228/300점, 평균 76.0/100점`

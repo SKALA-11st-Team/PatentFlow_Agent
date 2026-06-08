@@ -183,3 +183,328 @@ def test_preprocess_prefers_ordered_drawing_section_image_over_cover_thumbnail()
     assert representative["figure_number"] == "도4"
     assert representative["image_path"] == "1020210131424_images/imageFile8.png"
     assert representative["image_source"] == "drawing_section_order"
+
+
+def test_preprocess_extracts_chinese_patent_sections():
+    raw_text = """
+(57)摘要
+
+提供了一种测量控制方法和系统。
+
+技术领域
+
+[0001] 本公开涉及半导体测量相关技术。
+
+背景技术
+
+[0002] 固定周期测量没有考虑设备质量。
+
+发明内容
+
+[0003] 本公开提供基于设备可靠性指数的动态测量方法。
+
+附图说明
+
+[0004] 图1是流程图。
+
+具体实施方式
+
+[0005] 系统实时计算风险分数。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "CN",
+            "application_number": "201880038342.9",
+            "registration_number": "CN110770661B",
+            "title_final": "测量控制方法和系统",
+        },
+        api_data={
+            "metadata": {"country": "CN"},
+            "claims": [
+                {
+                    "claim_no": 1,
+                    "text": "一种测量控制方法。",
+                    "is_independent": True,
+                    "dependency": None,
+                }
+            ],
+            "claim_stats": {"active_claim_count": 1},
+        },
+    )
+
+    assert result["sections"]["abstract"] == "提供了一种测量控制方法和系统。"
+    assert "半导体测量相关技术" in result["sections"]["technical_field"]
+    assert "固定周期测量" in result["sections"]["background_art"]
+    assert "设备可靠性指数" in result["sections"]["solution"]
+    assert "实时计算风险分数" in result["sections"]["detailed_description"]
+    assert "sections.claims_text" not in result["validation"]["missing_fields"]
+
+
+def test_preprocess_uses_first_chinese_drawing_as_representative():
+    raw_text = """
+附图说明
+
+图1是控制方法的流程图。
+
+### 图1
+
+![image 28](<CN110770661B_images/imageFile28.png>)
+
+### 图2
+
+![image 31](<CN110770661B_images/imageFile31.png>)
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        source={"markdown_paths": ["/tmp/CN110770661B.md"]},
+    )
+
+    representative = result["drawing_context"]["representative_drawing"]
+    assert representative == {
+        "figure_number": "도1",
+        "image_path": "CN110770661B_images/imageFile28.png",
+        "image_source": "foreign_drawing_section",
+        "markdown_path": "/tmp/CN110770661B.md",
+    }
+
+
+def test_preprocess_extracts_japanese_inline_bracket_sections():
+    raw_text = """
+(57)【特許請求の範囲】 【請求項１】 計測制御方法。
+【発明の詳細な説明】 【技術分野】 【０００１】 本発明は半導体計測に関する。
+【背景技術】 【０００２】 固定周期の計測には問題がある。
+【発明の概要】 【発明が解決しようとする課題】 【０００３】 動的な計測を提供する。
+【課題を解決するための手段】 【０００４】 装備信頼指数を算定する。
+【発明の効果】 【０００５】 品質を向上できる。
+【発明を実施するための形態】 【０００６】 リスクスコアを計算する。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "JP",
+            "application_number": "2019-565924",
+            "registration_number": "6947850",
+            "title_final": "計測制御方法及びシステム",
+        },
+        api_data={
+            "metadata": {"country": "JP"},
+            "sections": {"abstract": "装備信頼指数に基づく計測制御技術。"},
+            "claims": [
+                {
+                    "claim_no": 1,
+                    "text": "計測制御方法。",
+                    "is_independent": True,
+                    "dependency": None,
+                }
+            ],
+            "claim_stats": {"active_claim_count": 1},
+        },
+    )
+
+    assert "半導体計測" in result["sections"]["technical_field"]
+    assert "固定周期" in result["sections"]["background_art"]
+    assert "動的な計測" in result["sections"]["problem"]
+    assert "装備信頼指数" in result["sections"]["solution"]
+    assert "品質を向上" in result["sections"]["effect"]
+    assert "リスクスコア" in result["sections"]["detailed_description"]
+    assert result["validation"]["is_valid"] is True
+
+
+def test_preprocess_extracts_us_patent_sections():
+    raw_text = """
+(57) ABSTRACT
+
+A system identifies associations from document data.
+
+FIELD OF THE INVENTION
+
+The invention relates to document analysis.
+
+BACKGROUND OF THE INVENTION
+
+Existing systems do not explain associations.
+
+SUMMARY OF THE INVENTION
+
+The system extracts factors and identifies an association.
+
+BRIEF DESCRIPTION OF THE DRAWINGS
+
+FIG. 1 is a system diagram.
+
+DETAILED DESCRIPTION OF THE EMBODIMENTS
+
+The processor analyzes document data.
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "US",
+            "application_number": "18/020,829",
+            "registration_number": "12,417,849",
+            "title_final": "Method for Identifying Association",
+        },
+        api_data={
+            "metadata": {"country": "US"},
+            "claims": [
+                {
+                    "claim_no": 1,
+                    "text": "A system comprising a processor.",
+                    "is_independent": True,
+                    "dependency": None,
+                }
+            ],
+            "claim_stats": {"active_claim_count": 1},
+        },
+    )
+
+    assert result["sections"]["abstract"] == "A system identifies associations from document data."
+    assert "document analysis" in result["sections"]["technical_field"]
+    assert "do not explain associations" in result["sections"]["background_art"]
+    assert "extracts factors" in result["sections"]["solution"]
+    assert "processor analyzes" in result["sections"]["detailed_description"]
+
+
+def test_preprocess_extracts_us_html_claims_when_api_claims_are_empty():
+    raw_text = """
+## ABSTRACT
+
+A method controls dynamic lot measurement using equipment reliability.
+
+## DETAILED DESCRIPTION
+
+A processor calculates a lot risk score and controls semiconductor measurement.
+
+## CLAIMS
+
+1. A method comprising calculating an equipment reliability index.
+
+2. The method of claim 1, further comprising determining whether to measure a lot.
+
+## FIG.1
+
+![image 1](<US11782432B2_images/imageFile1.png>)
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        source={"markdown_paths": ["/tmp/US11782432B2.md"]},
+        db_metadata={
+            "country": "US",
+            "application_number": "16/622,097",
+            "registration_number": "11,782,432",
+            "title_final": "Dynamic lot measurement control",
+        },
+        api_data={
+            "metadata": {"country": "US"},
+            "claims": [],
+            "claim_stats": {"active_claim_count": 0},
+        },
+    )
+
+    assert [claim["claim_no"] for claim in result["claims"]] == [1, 2]
+    assert result["claims"][1]["dependency"] == 1
+    assert result["claim_stats"]["active_claim_count"] == 2
+    assert result["drawing_context"]["representative_drawing"]["image_path"].endswith("imageFile1.png")
+    assert result["validation"]["is_valid"] is True
+
+
+def test_preprocess_extracts_japanese_bracket_claims_and_removes_self_prior_art():
+    raw_text = """
+# JP 6947850 B2 2021.10.13
+
+(57)【特許請求の範囲】 【請求項１】 半導体製造において、装備信頼指数を算定するステップと、
+リスクスコアに基づいて計測を行うか否かを決定するステップと、を含む計測制御方法。
+【請求項２】 装備信頼指数は、次の数式を用いて算定されることを特徴とする請求項１に記載の計測制御方法。
+
+【発明の詳細な説明】 【技術分野】 【０００１】 本発明は、半導体計測関連の技術に関する。
+【背景技術】 【０００２】 半導体製造において計測が行われている。
+【発明の概要】 【発明が解決しようとする課題】 【０００３】 動的ロット計測制御方法を提供する。
+【課題を解決するための手段】 【０００４】 装備信頼指数に基づいてリスクスコアを算定する。
+【発明の効果】 【０００５】 品質のモニタリングが可能になる。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "JP",
+            "application_number": "2019-565924",
+            "registration_number": "6947850",
+            "title_final": "動的ロット計測制御方法",
+        },
+        api_data={
+            "metadata": {"country": "JP"},
+            "claims": [],
+            "claim_stats": {"active_claim_count": 0},
+        },
+    )
+
+    assert [claim["claim_no"] for claim in result["claims"]] == [1, 2]
+    assert result["claims"][0]["is_independent"] is True
+    assert result["claims"][1]["dependency"] == 1
+    assert result["claim_stats"]["active_claim_count"] == 2
+    assert result["metadata"]["prior_art"] == []
+
+
+def test_preprocess_detects_japanese_dependency_variants():
+    raw_text = """
+(57)【特許請求の範囲】
+【請求項１】 基準データを用いて変動を検知する方法。
+【請求項２】 請求項１記載の方法。
+【請求項３】 請求項１又は２に記載の方法。
+【請求項４】 請求項１ないし３のいずれか１項に記載の方法。
+【請求項５】 請求項１記載の方法を実行するシステムであって、プロセッサを含むシステム。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={"country": "JP", "registration_number": "6757846"},
+    )
+
+    assert result["claim_stats"]["independent_claim_numbers"] == [1, 5]
+    assert result["claim_stats"]["dependent_claim_numbers"] == [2, 3, 4]
+    assert [claim["dependency"] for claim in result["claims"][1:]] == [1, 1, 1, None]
+
+
+def test_preprocess_normalizes_japanese_and_us_reference_formats():
+    raw_text = """
+(56)参考文献
+特開平１１−３４５７５２（ＪＰ，Ａ）
+特開２００２−３７３０１４（ＪＰ，Ａ）
+米国特許出願公開第２００９／０３０６８０３（ＵＳ，Ａ１）
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={"country": "JP", "registration_number": "6947850"},
+    )
+
+    assert result["metadata"]["prior_art"] == [
+        "JP1999345752 A",
+        "JP2002373014 A",
+        "US20090306803 A1",
+    ]
+
+
+def test_preprocess_extracts_us_what_is_claimed_section():
+    result = build_preprocessed_patent(
+        """
+(57) ABSTRACT
+Semiconductor process control.
+
+What is claimed is:
+
+- 1. A method comprising measuring a semiconductor wafer.
+- 2. The method of claim 1, further comprising changing a sampling rate.
+""",
+        db_metadata={"country": "US"},
+    )
+
+    assert [claim["claim_no"] for claim in result["claims"]] == [1, 2]
+    assert result["claims"][0]["is_independent"] is True
+    assert result["claims"][1]["dependency"] == 1

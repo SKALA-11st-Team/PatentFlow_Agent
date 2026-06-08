@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: team11-patentflow-agent-svc
+  namespace: patentflow
+spec:
+  type: ClusterIP
+  selector:
+    app: team11-patentflow-agent
+  ports:
+    # BE는 http://team11-patentflow-agent-svc:8000 으로 호출하므로 서비스 포트도 8000으로 맞춘다.
+    - name: http
+      port: 8000
+      targetPort: http

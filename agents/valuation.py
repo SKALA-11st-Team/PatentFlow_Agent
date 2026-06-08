@@ -92,8 +92,23 @@ def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, An
     raw = call_llm(prompt, model=settings.openai_valuation_model, temperature=0)
     parsed = parse_json_object(raw)
     if not parsed:
+        raw = call_llm(build_json_repair_prompt(axis=axis, raw=raw))
+        parsed = parse_json_object(raw)
+    if not parsed:
         raise RuntimeError(f"LLM valuation response for {axis} was not valid JSON.")
     return normalize_axis_llm_result(axis, parsed, evidence=evidence)
+
+
+def build_json_repair_prompt(*, axis: str, raw: str) -> str:
+    return (
+        "아래 LLM 응답을 특허 가치평가 축 결과 JSON 객체 하나로만 다시 출력하세요.\n"
+        "설명, 마크다운 코드블록, 접두사, 접미사를 쓰지 말고 JSON만 출력하세요.\n"
+        "필수 필드: score, grade, rationale, confidence, evidence_ids, risk_factors, missing_information.\n"
+        "권리성 축이면 가능한 경우 prior_art_references도 포함하세요.\n"
+        f"평가축: {axis}\n\n"
+        "원본 응답:\n"
+        f"{raw}"
+    )
 
 
 def build_axis_prompt(

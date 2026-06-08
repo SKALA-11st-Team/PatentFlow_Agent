@@ -12,7 +12,13 @@ from workflow.state import PatentWorkflowState
 AXIS = "market"
 LABEL = "시장성"
 PROMPT_PATH = "valuation/valuation_market.md"
-MARKET_GROWTH_MISSING_MESSAGE = "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"
+MARKET_GROWTH_MISSING_MESSAGE = "분류 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"
+FOREIGN_MARKET_PRIORITY_REPORTS = (
+    "mckinsey-technology-trends-outlook-2025.pdf",
+    "wef_top_10_emerging_technologies_of_2025.pdf",
+)
+
+
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = build_input_payload(state=state, evidence=evidence)
@@ -31,13 +37,15 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
-    del state
-    return select_by_types_or_axes(
+    selected = select_by_types_or_axes(
         items,
         source_types={"industry_report", "news"},
         axes={AXIS},
         limit=None,
     )
+    if is_foreign_patent(state):
+        return prioritize_foreign_market_reports(selected)
+    return selected
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
@@ -45,11 +53,19 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
 
 
 def build_marketability_metrics(state: PatentWorkflowState, *, evidence: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    foreign_patent = is_foreign_patent(state)
     representative_cpc = extract_representative_cpc(state)
-    growth = build_market_growth_metrics(representative_cpc)
-    global_business = build_global_business_metrics(evidence or [])
+    representative_ipc = extract_representative_ipc(state)
+    growth = build_market_growth_metrics(
+        representative_code=representative_ipc if foreign_patent else representative_cpc,
+        use_ipc=foreign_patent,
+        country_code=extract_patent_country(state) if foreign_patent else None,
+    )
+    global_business = build_global_business_metrics(evidence or [], patent_country=extract_patent_country(state))
     return {
         "representative_cpc": representative_cpc,
+        "representative_ipc": representative_ipc,
+        "market_growth_code_type": "ipc" if foreign_patent else "cpc",
         **growth,
         **global_business,
     }
@@ -76,6 +92,25 @@ def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, li
     return groups
 
 
+def prioritize_foreign_market_reports(evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def sort_key(item: dict[str, Any]) -> tuple[int, float]:
+        source_type = normalize_text(item.get("source_type")).lower()
+        if source_type != "industry_report":
+            return (2, 0.0)
+        source_name = industry_report_source_name(item)
+        if source_name in FOREIGN_MARKET_PRIORITY_REPORTS:
+            return (0, -float(item.get("score") or item.get("retrieval_score") or 0.0))
+        return (1, -float(item.get("score") or item.get("retrieval_score") or 0.0))
+
+    return sorted(evidence, key=sort_key)
+
+
+def industry_report_source_name(item: dict[str, Any]) -> str:
+    metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+    source_name = normalize_text(metadata.get("source_name")) or normalize_text(item.get("source"))
+    return source_name.lower()
+
+
 def extract_representative_cpc(state: PatentWorkflowState) -> str | None:
     sources = [
         ((state.preprocessed_patent or {}).get("metadata") or {}).get("cpc"),
@@ -91,13 +126,38 @@ def extract_representative_cpc(state: PatentWorkflowState) -> str | None:
     return None
 
 
-def build_market_growth_metrics(representative_cpc: str | None) -> dict[str, Any]:
-    if not representative_cpc:
-        return missing_market_growth("representative_cpc_not_found", [])
+def extract_representative_ipc(state: PatentWorkflowState) -> str | None:
+    sources = [
+        ((state.preprocessed_patent or {}).get("metadata") or {}).get("ipc"),
+        ((state.kipris_api_data or {}).get("metadata") or {}).get("ipc"),
+        (state.patent_structured or {}).get("ipc"),
+    ]
+    for value in sources:
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            text = normalize_text(item)
+            if text:
+                return text
+    return None
+
+
+def build_market_growth_metrics(
+    representative_code: str | None,
+    *,
+    use_ipc: bool = False,
+    country_code: str | None = None,
+) -> dict[str, Any]:
+    if not representative_code:
+        return missing_market_growth("representative_ipc_not_found" if use_ipc else "representative_cpc_not_found", [])
 
     windows = market_growth_windows()
     try:
-        counts = collect_cpc_window_application_counts(representative_cpc, windows=windows)
+        counts = collect_classification_window_application_counts(
+            representative_code,
+            windows=windows,
+            use_ipc=use_ipc,
+            country_code=country_code,
+        )
     except Exception as exc:
         return missing_market_growth(f"kipris_search_failed:{exc.__class__.__name__}", windows)
 
@@ -107,11 +167,11 @@ def build_market_growth_metrics(representative_cpc: str | None) -> dict[str, Any
     first_count = int(counts[0]["count"] or 0)
     last_count = int(counts[-1]["count"] or 0)
     if first_count <= 0:
-        # CAGR needs a non-zero base year. A CPC reclassified into a new code
+        # CAGR needs a non-zero base year. A classification reclassified into a new code
         # (e.g. G06F 17/50 -> G06F 30/xx) goes empty in recent windows, so the
         # base window is 0. Keep the real counts and flag the likely cause.
         total = sum(int(item.get("count") or 0) for item in counts)
-        reason = "cpc_inactive_or_reclassified" if total == 0 else "cagr_start_count_zero"
+        reason = ("ipc_inactive_or_reclassified" if use_ipc else "cpc_inactive_or_reclassified") if total == 0 else "cagr_start_count_zero"
         return unavailable_market_growth(reason, counts)
 
     cagr = (last_count / first_count) ** (1 / (len(counts) - 1)) - 1
@@ -127,6 +187,7 @@ def build_market_growth_metrics(representative_cpc: str | None) -> dict[str, Any
         "trend_status": trend_status,
         "trend_score": trend_score,
         "market_growth_score": cagr_score + trend_score,
+        "market_growth_country_code": country_code,
         "missing_reason": None,
     }
 
@@ -173,10 +234,12 @@ def missing_market_growth(reason: str, windows: list[dict[str, Any]]) -> dict[st
     }
 
 
-def collect_cpc_window_application_counts(
-    representative_cpc: str,
+def collect_classification_window_application_counts(
+    representative_code: str,
     *,
     windows: list[dict[str, Any]] | None = None,
+    use_ipc: bool = False,
+    country_code: str | None = None,
     page_size: int = 500,
     max_pages: int = 5,
 ) -> list[dict[str, Any]]:
@@ -190,8 +253,9 @@ def collect_cpc_window_application_counts(
     client = KiprisClient()
     for page_no in range(1, max_pages + 1):
         docs_start = ((page_no - 1) * page_size) + 1
-        raw = client.search_by_cpc(
-            representative_cpc,
+        search_fn = client.search_by_ipc if use_ipc else client.search_by_cpc
+        raw = search_fn(
+            representative_code,
             patent=True,
             utility=False,
             docsCount=page_size,
@@ -207,6 +271,8 @@ def collect_cpc_window_application_counts(
         for item in items:
             opening_date = cpc_item_opening_date(item)
             if opening_date is None:
+                continue
+            if country_code and normalize_text(first_present(item, "publicationCountryCode", "countryCode", "applicationCountryCode", "country")).upper() != country_code:
                 continue
             if opening_date < earliest_start:
                 should_stop = True
@@ -235,6 +301,23 @@ def collect_cpc_window_application_counts(
         }
         for item in target_windows
     ]
+
+
+def collect_cpc_window_application_counts(
+    representative_cpc: str,
+    *,
+    windows: list[dict[str, Any]] | None = None,
+    page_size: int = 500,
+    max_pages: int = 5,
+) -> list[dict[str, Any]]:
+    return collect_classification_window_application_counts(
+        representative_cpc,
+        windows=windows,
+        use_ipc=False,
+        country_code=None,
+        page_size=page_size,
+        max_pages=max_pages,
+    )
 
 
 def cpc_item_opening_date(item: dict[str, Any]) -> date | None:
@@ -294,9 +377,21 @@ def score_recent_trend(counts: list[int]) -> tuple[str, int]:
     return "flat_or_mixed", 0
 
 
-def build_global_business_metrics(evidence: list[dict[str, Any]]) -> dict[str, Any]:
+FOREIGN_COUNTRY_HINTS = {
+    "US": ("united states", "u.s.", "u.s.a.", "usa", "american", "america"),
+    "JP": ("japan", "japanese", "tokyo"),
+    "CN": ("china", "chinese", "beijing", "shanghai"),
+    "EP": ("europe", "european", "eu", "e.u."),
+    "KR": ("korea", "korean", "seoul"),
+}
+
+
+def build_global_business_metrics(evidence: list[dict[str, Any]], *, patent_country: str | None = None) -> dict[str, Any]:
     gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "gnews"]
-    quality_items = [item for item in gnews_items if has_global_market_signal_content(item)]
+    if patent_country and patent_country != "KR":
+        quality_items = [item for item in gnews_items if has_foreign_global_business_signal(item, patent_country=patent_country)]
+    else:
+        quality_items = [item for item in gnews_items if has_global_market_signal_content(item)]
     quality_count = len(quality_items)
     if quality_count >= 3:
         score = 20
@@ -313,6 +408,7 @@ def build_global_business_metrics(evidence: list[dict[str, Any]]) -> dict[str, A
         "gnews_evidence_ids": [item.get("evidence_id") for item in quality_items if item.get("evidence_id")],
         "global_business_status": status,
         "global_business_score": score,
+        "global_business_excluded_country": patent_country if patent_country and patent_country != "KR" else None,
     }
 
 
@@ -354,6 +450,69 @@ def has_global_market_signal_content(item: dict[str, Any]) -> bool:
     return any(keyword in combined for keyword in signal_keywords)
 
 
+def has_foreign_global_business_signal(item: dict[str, Any], patent_country: str) -> bool:
+    if not has_global_market_signal_content(item):
+        return False
+    if not matches_patent_country_signal(item, patent_country):
+        return True
+    return has_other_country_or_global_signal(item, patent_country)
+
+
+def matches_patent_country_signal(item: dict[str, Any], patent_country: str) -> bool:
+    country = normalize_text(patent_country).upper()
+    if not country:
+        return False
+    hints = FOREIGN_COUNTRY_HINTS.get(country, ())
+    if not hints:
+        return False
+    texts = [
+        normalize_text(item.get("title")),
+        normalize_text(item.get("url")),
+        normalize_text(item.get("content")),
+        normalize_text(item.get("compressed_summary")),
+        normalize_text(((item.get("metadata") or {}) if isinstance(item.get("metadata"), dict) else {}).get("publisher")),
+    ]
+    combined = " ".join(texts).lower()
+    return any(hint in combined for hint in hints)
+
+
+def has_other_country_or_global_signal(item: dict[str, Any], patent_country: str) -> bool:
+    excluded = normalize_text(patent_country).upper()
+    texts = [
+        normalize_text(item.get("title")),
+        normalize_text(item.get("url")),
+        normalize_text(item.get("content")),
+        normalize_text(item.get("compressed_summary")),
+        normalize_text(((item.get("metadata") or {}) if isinstance(item.get("metadata"), dict) else {}).get("publisher")),
+    ]
+    combined = " ".join(texts).lower()
+    global_hints = (
+        "global",
+        "international",
+        "worldwide",
+        "across europe",
+        "across asia",
+        "across markets",
+        "overseas",
+        "cross-border",
+        "multi-country",
+        "multinational",
+        "유럽",
+        "아시아",
+        "글로벌",
+        "국가",
+        "해외",
+    )
+    if any(hint in combined for hint in global_hints):
+        return True
+    for country_code, hints in FOREIGN_COUNTRY_HINTS.items():
+        if country_code == excluded:
+            continue
+        if any(hint in combined for hint in hints):
+            return True
+    return False
+
+
 def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     industry_breakdown = normalize_industry_marketability_breakdown(
         result.get("industry_marketability_breakdown")
@@ -373,8 +532,9 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
         score += int(market_growth_score)
     metrics = dict(metrics)
     missing_information = list(result.get("missing_information") or [])
-    if market_growth_score is None and MARKET_GROWTH_MISSING_MESSAGE not in missing_information:
-        missing_information.append(MARKET_GROWTH_MISSING_MESSAGE)
+    missing_message = market_growth_missing_message(metrics)
+    if market_growth_score is None and missing_message not in missing_information:
+        missing_information.append(missing_message)
     confidence = float(result.get("confidence") or 0)
     if market_growth_score is None:
         confidence = min(confidence, 0.49)
@@ -433,7 +593,7 @@ def build_market_subscores(
                 "trend_score": nullable_int(metrics.get("trend_score")),
             },
             "rationale": normalize_text(market_growth.get("rationale"))
-            or "대표 CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 증가율 및 추세로 산정된 코드 계산값입니다.",
+            or market_growth_rationale(metrics),
         },
         "global_business": {
             "label": "글로벌 사업성",
@@ -548,6 +708,33 @@ def patent_item_key(item: dict[str, Any]) -> str:
 
 def normalize_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def extract_patent_country(state: PatentWorkflowState) -> str | None:
+    country = normalize_text((state.patent_structured or {}).get("country")).upper()
+    return country or None
+
+
+def is_foreign_patent(state: PatentWorkflowState) -> bool:
+    country = extract_patent_country(state)
+    return bool(country and country != "KR")
+
+
+def market_growth_code_label(metrics: dict[str, Any]) -> str:
+    return "대표 IPC 기준 해당 국가 공개 특허 수" if metrics.get("market_growth_code_type") == "ipc" else "대표 CPC 기준 공개 특허 수"
+
+
+def market_growth_rationale(metrics: dict[str, Any]) -> str:
+    label = market_growth_code_label(metrics)
+    if metrics.get("market_growth_code_type") == "ipc" and metrics.get("market_growth_country_code"):
+        return f"{label} 증가율 및 추세로 산정된 코드 계산값입니다."
+    return f"{label} 증가율 및 추세로 산정된 코드 계산값입니다."
+
+
+def market_growth_missing_message(metrics: dict[str, Any]) -> str:
+    if metrics.get("market_growth_code_type") == "ipc" and metrics.get("market_growth_country_code"):
+        return "IPC 기준 해당 국가 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"
+    return "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요"
 
 
 def first_present(item: dict[str, Any], *keys: str) -> Any:

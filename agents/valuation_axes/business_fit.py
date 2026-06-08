@@ -90,6 +90,7 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
     sk_owned_media_evidence = build_sk_owned_media_evidence_summary(evidence, state=state)
     payload["business_fit_context"] = {
         "patent_description": patent_description,
+        "target_source_status": build_target_source_status(state),
         "skax_official_evidence": skax_evidence,
         "sk_owned_media_evidence": sk_owned_media_evidence,
         "quantitative_metrics": build_business_fit_quantitative_metrics(
@@ -99,6 +100,31 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
         ),
     }
     return payload
+
+
+def build_target_source_status(state: PatentWorkflowState) -> dict[str, Any]:
+    preprocessed = state.preprocessed_patent or {}
+    claims = preprocessed.get("claims") if isinstance(preprocessed.get("claims"), list) else []
+    sections = preprocessed.get("sections") if isinstance(preprocessed.get("sections"), dict) else {}
+    claim_stats = preprocessed.get("claim_stats") if isinstance(preprocessed.get("claim_stats"), dict) else {}
+    active_claim_count = coerce_int(claim_stats.get("active_claim_count"))
+    if active_claim_count is None:
+        active_claim_count = len([claim for claim in claims if normalize_text(claim.get("text"))])
+    description_fields = (
+        sections.get("technical_field"),
+        sections.get("background"),
+        sections.get("problem"),
+        sections.get("solution"),
+        sections.get("effect"),
+        sections.get("detailed_description"),
+    )
+    return {
+        "claims_available": active_claim_count > 0,
+        "active_claim_count": active_claim_count,
+        "abstract_available": bool(normalize_text(sections.get("abstract"))),
+        "description_available": any(normalize_text(value) for value in description_fields),
+        "authority": "preprocessed_patent",
+    }
 
 
 def build_business_fit_patent_description(state: PatentWorkflowState) -> dict[str, Any]:

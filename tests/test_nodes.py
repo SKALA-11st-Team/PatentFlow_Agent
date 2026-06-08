@@ -1,4 +1,12 @@
-from workflow.nodes import evidence_compression_node, evidence_search_node, final_merge_node, patent_fetch_node, query_rewriting_node
+from workflow.nodes import (
+    common_preprocess_node,
+    evidence_compression_node,
+    evidence_search_node,
+    final_merge_node,
+    patent_fetch_node,
+    prior_art_fulltext_node,
+    query_rewriting_node,
+)
 from workflow.supervisor import check_evidence_bundle
 from workflow.state import PatentWorkflowState
 
@@ -83,6 +91,208 @@ def test_patent_fetch_continues_when_kipris_pdf_is_missing(monkeypatch):
     assert result.patent_structured["kipris_api"]["citation_stats"] == {"total_count": 1}
     assert result.parsed_pdf is None
     assert result.patent_structured["pdf"]["warning"].startswith("pdf_fetch_failed:RuntimeError")
+
+
+def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.get_patent",
+        lambda **kwargs: {
+            "id": 45,
+            "management_number": "P202012001-US0",
+            "country": "US",
+            "application_number": "18/020,829",
+            "registration_number": "12,417,849",
+            "status": "등록",
+        },
+    )
+
+    def fail_domestic_fetch(application_number):
+        raise AssertionError("domestic KIPRIS fetch should not be used for foreign patents")
+
+    monkeypatch.setattr("workflow.nodes.fetch_kipris_bibliography", fail_domestic_fetch)
+    captured_kwargs = {}
+
+    def fake_foreign_fetch(patent, **kwargs):
+        captured_kwargs.update(kwargs)
+        return {
+            "source_type": "kipris_foreign_patent",
+            "metadata": {"country": "US", "application_number": patent["application_number"]},
+            "claim_stats": {"active_claim_count": 1},
+            "family_patents": [],
+            "citation_evidence": {},
+            "citation_stats": {"total_count": 0},
+            "citing_stats": {"total_count": 0},
+        }
+
+    monkeypatch.setattr("workflow.nodes.fetch_foreign_patent_rights_data", fake_foreign_fetch)
+
+    state = PatentWorkflowState(user_input={"management_number": "P202012001-US0", "collect_kipris_api": True})
+
+    result = patent_fetch_node(state)
+
+    assert result.kipris_api_data["source_type"] == "kipris_foreign_patent"
+    assert result.kipris_api_data["metadata"]["country"] == "US"
+    assert result.patent_structured["kipris_api"]["metadata"]["country"] == "US"
+    assert captured_kwargs["collect_pdf"] is True
+
+
+def test_patent_fetch_accepts_foreign_html_fulltext_without_pdf_path(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.get_patent",
+        lambda **kwargs: {
+            "id": 70,
+            "management_number": "P201702001-US0",
+            "country": "US",
+            "application_number": "16/622,097",
+            "registration_number": "11,782,432",
+            "status": "등록",
+        },
+    )
+    monkeypatch.setattr(
+        "workflow.nodes.fetch_foreign_patent_rights_data",
+        lambda patent, **kwargs: {
+            "source_type": "kipris_foreign_patent",
+            "metadata": {"country": "US", "application_number": patent["application_number"]},
+            "claim_stats": {"active_claim_count": 1},
+            "family_patents": [],
+            "citation_evidence": {},
+            "citation_stats": {"total_count": 0},
+            "citing_stats": {"total_count": 0},
+            "parsed_pdf": {
+                "selected_type": "GOOGLE_PATENTS_HTML_FULLTEXT",
+                "pdf_path": None,
+                "markdown_paths": ["/tmp/US11782432B2.md"],
+                "markdown_text": "## CLAIMS\n\n1. A method comprising a processor.",
+            },
+        },
+    )
+
+    result = patent_fetch_node(
+        PatentWorkflowState(
+            user_input={"management_number": "P201702001-US0", "collect_kipris_api": True}
+        )
+    )
+
+    assert result.parsed_pdf["selected_type"] == "GOOGLE_PATENTS_HTML_FULLTEXT"
+    assert result.pdf_paths == []
+
+
+def test_common_preprocess_enriches_foreign_pdf_prior_art(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.resolve_foreign_prior_art_evidence",
+        lambda prior_art: {
+            "foreign_claim_lookup_candidates": [{"display_number": prior_art[0]}],
+            "foreign_citation_documents": [
+                {
+                    "display_number": prior_art[0],
+                    "representative_claims": [{"claim_no": 1, "text": "Prior art claim"}],
+                }
+            ],
+            "foreign_identifier_only_documents": [],
+            "prior_art_collection": {
+                "candidate_count": 1,
+                "comparison_ready_count": 1,
+                "identifier_only_count": 0,
+                "comparison_status": "comparison_ready",
+            },
+            "warnings": [],
+        },
+    )
+    state = PatentWorkflowState(
+        patent_structured={
+            "country": "CN",
+            "application_number": "201880038342.9",
+            "registration_number": "CN110770661B",
+            "title_final": "测量控制方法和系统",
+        },
+        kipris_api_data={
+            "metadata": {"country": "CN"},
+            "claims": [{"claim_no": 1, "text": "Target claim", "is_independent": True}],
+            "claim_stats": {"active_claim_count": 1},
+            "citation_evidence": {},
+        },
+        parsed_pdf={
+            "markdown_text": "(56)对比文件 US 2010241261 A1\n技术领域\n半导体测量技术\n发明内容\n动态测量。",
+            "markdown_paths": ["/tmp/CN110770661B.md"],
+            "pdf_path": "/tmp/CN110770661B.pdf",
+        },
+    )
+
+    result = common_preprocess_node(state)
+
+    assert result.citation_evidence["foreign_citation_documents"][0]["representative_claims"][0]["text"] == "Prior art claim"
+    assert result.citation_evidence["prior_art_collection"]["comparison_ready_count"] == 1
+
+
+def test_prior_art_fulltext_node_merges_pdf_claims_into_citation_evidence(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "workflow.nodes.build_prior_art_patent_context",
+        lambda **kwargs: {
+            "comparison_mode": "prior-art",
+            "candidate_count": 2,
+            "similar_patents": [],
+            "prior_art_patents": [
+                {
+                    "display_number": "US 20100249974 A1",
+                    "country_code": "US",
+                    "document_number": "20100249974",
+                    "kind_code": "A1",
+                    "title": "Advanced process control",
+                    "abstract": "Sampling rate based on process capability.",
+                    "representative_claims": [
+                        {
+                            "claim_no": 1,
+                            "is_independent": True,
+                            "dependency": None,
+                            "text": "A semiconductor manufacturing method comprising determining a sampling rate.",
+                        }
+                    ],
+                    "lookup_status": "resolved",
+                    "lookup_source": "prior_art_pdf_fulltext",
+                    "comparison_status": "claim_comparison_ready",
+                }
+            ],
+            "warnings": [],
+        },
+    )
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path)},
+        preprocessed_patent={
+            "metadata": {
+                "country": "JP",
+                "prior_art": ["US20100249974 A1", "JP1999345752 A"],
+            }
+        },
+        citation_evidence={
+            "foreign_claim_lookup_candidates": [
+                {"display_number": "US 20100249974 A1"},
+                {"display_number": "JP 1999345752 A"},
+            ],
+            "foreign_citation_documents": [
+                {
+                    "display_number": "US20100249974 A1",
+                    "abstract": "기존 KIPRIS 초록",
+                    "representative_claims": [],
+                }
+            ],
+        },
+    )
+
+    result = prior_art_fulltext_node(state)
+
+    document = result.citation_evidence["foreign_citation_documents"][0]
+    assert len(result.citation_evidence["foreign_citation_documents"]) == 1
+    assert document["lookup_source"] == "prior_art_pdf_fulltext"
+    assert document["representative_claims"][0]["claim_no"] == 1
+    assert result.citation_evidence["prior_art_collection"] == {
+        "candidate_count": 2,
+        "comparison_ready_count": 1,
+        "claim_comparison_ready_count": 1,
+        "abstract_only_count": 0,
+        "fulltext_claims_unparsed_count": 0,
+        "identifier_only_count": 1,
+        "comparison_status": "claim_comparison_ready",
+    }
 
 
 def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
@@ -557,3 +767,19 @@ def test_report_validation_flags_missing_sections_and_score_mismatch():
     assert result["passed"] is False
     assert any("missing required sections" in i for i in result["issues"])
     assert any("total score" in i for i in result["issues"])
+
+
+def test_report_validation_flags_recommendation_mismatch():
+    from workflow.nodes import report_validation_node
+
+    md = (
+        "\n".join(f"## {i}. 섹션" for i in range(1, 7))
+        + "\n| 종합 검토 의견 | 조건부 유지 |\n종합 점수 223/400점"
+    )
+    state = _report_state(md)
+    state.valuation_result["recommendation"] = "추가 정보 필요"
+
+    result = report_validation_node(state).report_validation_result
+
+    assert result["passed"] is False
+    assert any("recommendation" in issue for issue in result["issues"])

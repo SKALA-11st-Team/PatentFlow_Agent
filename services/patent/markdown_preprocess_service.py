@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any
 import re
+import unicodedata
 
 
 STRUCTURAL_HEADERS = {
@@ -45,6 +46,33 @@ SECTION_ALIASES = {
     "도면의 간단한 설명": "figure_description",
     "발명을 실시하기 위한 구체적인 내용": "detailed_description",
     "부호의 설명": "reference_signs",
+    "摘要": "abstract",
+    "权利要求书": "claims_text",
+    "技术领域": "technical_field",
+    "背景技术": "background_art",
+    "发明内容": "solution",
+    "附图说明": "figure_description",
+    "具体实施方式": "detailed_description",
+    "要約": "abstract",
+    "特許請求の範囲": "claims_text",
+    "技術分野": "technical_field",
+    "背景技術": "background_art",
+    "発明が解決しようとする課題": "problem",
+    "課題を解決するための手段": "solution",
+    "発明の効果": "effect",
+    "図面の簡単な説明": "figure_description",
+    "発明を実施するための形態": "detailed_description",
+    "ABSTRACT": "abstract",
+    "CLAIMS": "claims_text",
+    "FIELD OF THE INVENTION": "technical_field",
+    "TECHNICAL FIELD": "technical_field",
+    "BACKGROUND": "background_art",
+    "BACKGROUND OF THE INVENTION": "background_art",
+    "SUMMARY": "solution",
+    "SUMMARY OF THE INVENTION": "solution",
+    "BRIEF DESCRIPTION OF THE DRAWINGS": "figure_description",
+    "DETAILED DESCRIPTION": "detailed_description",
+    "DETAILED DESCRIPTION OF THE EMBODIMENTS": "detailed_description",
 }
 
 HEADER_NORMALIZE_MAP = {
@@ -53,6 +81,24 @@ HEADER_NORMALIZE_MAP = {
     "배 경 기 술": "배경기술",
 }
 
+FOREIGN_BRACKET_HEADINGS = {
+    "特許請求の範囲",
+    "発明の詳細な説明",
+    "技術分野",
+    "背景技術",
+    "発明の概要",
+    "発明が解決しようとする課題",
+    "課題を解決するための手段",
+    "発明の効果",
+    "図面の簡単な説明",
+    "発明を実施するための形態",
+}
+
+STRUCTURAL_HEADERS.update(SECTION_ALIASES)
+STRUCTURAL_HEADERS.update({"発明の詳細な説明", "発明の概要"})
+SECTION_HEADINGS.update(SECTION_ALIASES)
+SECTION_HEADINGS.update({"発明の詳細な説明", "発明の概要"})
+
 IMAGE_MARKDOWN_RE = re.compile(r"!\[image\s+(\d+)\]\(<([^>]+)>\)")
 REPRESENTATIVE_FIGURE_RE = re.compile(
     r"(?:대\s*표\s*도|대표도)\s*[-:]\s*도\s*(\d+)",
@@ -60,6 +106,9 @@ REPRESENTATIVE_FIGURE_RE = re.compile(
 REPRESENTATIVE_LABEL_RE = re.compile(r"(?:대\s*표\s*도|대표도)")
 DRAWING_SECTION_HEADING_RE = re.compile(r"(?:^|\n)#?\s*도면\s*(?:\n|$)")
 DRAWING_ITEM_RE = re.compile(r"^\s*-?\s*도면\s*(\d+)\s*$", re.MULTILINE)
+FOREIGN_DRAWING_HEADING_RE = re.compile(
+    r"(?im)^(?:#{1,6}\s*)?(?:图|図|FIG\.?)\s*([1１])\s*$"
+)
 
 
 def remove_image_markdown(text: str) -> str:
@@ -75,7 +124,21 @@ def extract_representative_drawing(
     if not representative_match:
         representative_label_match = REPRESENTATIVE_LABEL_RE.search(raw_text or "")
         if not representative_label_match:
-            return None
+            foreign_drawing_match = FOREIGN_DRAWING_HEADING_RE.search(raw_text or "")
+            if not foreign_drawing_match:
+                return None
+            image_match = IMAGE_MARKDOWN_RE.search(raw_text, foreign_drawing_match.end())
+            if not image_match:
+                return None
+            markdown_paths = (source or {}).get("markdown_paths") or []
+            drawing = {
+                "figure_number": "도1",
+                "image_path": image_match.group(2),
+                "image_source": "foreign_drawing_section",
+            }
+            if markdown_paths:
+                drawing["markdown_path"] = str(markdown_paths[0])
+            return drawing
         image_match = IMAGE_MARKDOWN_RE.search(raw_text, representative_label_match.end())
         if not image_match:
             return None
@@ -230,6 +293,9 @@ def remove_duplicate_registration_title(text: str, max_scan_lines: int = 40) -> 
 def normalize_headers(text: str) -> str:
     for src, dst in HEADER_NORMALIZE_MAP.items():
         text = text.replace(src, dst)
+    for heading in FOREIGN_BRACKET_HEADINGS:
+        text = text.replace(f"【{heading}】", f"\n{heading}\n")
+    text = re.sub(r"(?im)^\s*What\s+is\s+claimed\s+is\s*:\s*$", "\nCLAIMS\n", text)
     return text
 
 
@@ -266,6 +332,8 @@ def is_structural_line(line: str) -> bool:
     if header in STRUCTURAL_HEADERS:
         return True
     if re.match(r"^-?\s*청구항\s+\d+", stripped):
+        return True
+    if re.match(r"^-?\s*\d+\s*[.)]\s+", stripped):
         return True
     if re.match(r"^\[\d{4}\]", stripped):
         return True
@@ -342,21 +410,24 @@ def build_preprocessed_patent(
         if api_sections.get("abstract"):
             sections["abstract"] = postprocess_agent_text(api_sections["abstract"])
         api_claims = api_data.get("claims") or []
-        claims = [
-            {
-                "claim_no": claim["claim_no"],
-                "text": postprocess_agent_text(claim["text"]),
-                "is_independent": claim.get("is_independent", False),
-                "dependency": claim.get("dependency"),
-            }
-            for claim in api_claims
-        ]
+        if api_claims:
+            claims = [
+                {
+                    "claim_no": claim["claim_no"],
+                    "text": postprocess_agent_text(claim["text"]),
+                    "is_independent": claim.get("is_independent", False),
+                    "dependency": claim.get("dependency"),
+                }
+                for claim in api_claims
+            ]
+        else:
+            claims = extract_claims(sections.get("claims_text", ""))
         claim_stats = {
             key: value
             for key, value in (api_data.get("claim_stats") or {}).items()
             if key != "deleted_claim_numbers"
         }
-        if not claim_stats:
+        if not claim_stats or (claims and not claim_stats.get("active_claim_count")):
             claim_stats = build_claim_stats(metadata.get("reported_claim_count"), claims)
     else:
         metadata = extract_pdf_fallback_metadata(cleaned_text, db_metadata=db_metadata)
@@ -364,6 +435,7 @@ def build_preprocessed_patent(
         claim_stats = build_claim_stats(metadata.get("claim_count"), claims)
 
     metadata = merge_db_context_metadata(metadata, db_metadata=db_metadata)
+    metadata["prior_art"] = remove_self_prior_art(metadata.get("prior_art") or [], metadata)
     metadata["claim_count"] = claim_stats["active_claim_count"] or metadata.get("claim_count")
     metadata["assignee_count"] = len(metadata.get("assignee") or [])
     metadata["has_co_assignee"] = metadata["assignee_count"] > 1
@@ -375,8 +447,9 @@ def build_preprocessed_patent(
         source.get("application_number") if source else None,
     )
 
+    country_prefix = str(metadata.get("country") or db_metadata.get("country") or "KR").upper()
     result = {
-        "patent_id": f"KR{patent_id}" if patent_id else None,
+        "patent_id": f"{country_prefix}{patent_id}" if patent_id else None,
         "source": {
             "source_type": "kipris_api_plus_pdf_markdown" if api_data else "kipris_pdf_markdown",
             **(source or {}),
@@ -551,13 +624,20 @@ def extract_sections(text: str) -> dict[str, str]:
 def extract_claims(claims_text: str) -> list[dict[str, Any]]:
     claims_text = truncate_at_next_major_section(claims_text)
     matches = list(re.finditer(r"(?m)^-?\s*청구항\s+(\d+)\s*(.*)$", claims_text))
+    if not matches:
+        matches = list(re.finditer(r"【請求項\s*([0-9０-９]+)】\s*(.*?)(?=【請求項\s*[0-9０-９]+】|$)", claims_text, re.S))
+    if not matches:
+        matches = list(re.finditer(r"(?m)^-?\s*(\d+)\s*[.)]\s*(.*)$", claims_text))
     claims: list[dict[str, Any]] = []
     for index, match in enumerate(matches):
-        claim_no = int(match.group(1))
+        claim_no = int(normalize_fullwidth_digits(match.group(1)))
         first_line = match.group(2).strip()
-        start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(claims_text)
-        body = claims_text[start:end].strip()
+        if match.re.flags & re.S:
+            body = ""
+        else:
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(claims_text)
+            body = claims_text[start:end].strip()
         text = postprocess_agent_text(f"{first_line}\n{body}".strip())
         dependency = _extract_claim_dependency(text)
         claims.append(
@@ -572,7 +652,49 @@ def extract_claims(claims_text: str) -> list[dict[str, Any]]:
 
 
 def _extract_claim_dependency(text: str) -> int | None:
-    return _extract_int(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
+    dependency = _extract_int(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
+    if dependency is not None:
+        return dependency
+    dependency = _extract_int(r"claims?\s*(\d+)", text)
+    if dependency is not None:
+        return dependency
+    compact_japanese = re.sub(r"\s+", "", text)
+    if re.match(
+        r"請求項[0-9０-９]+(?:(?:又は|若しくは|ないし|乃至|～|〜|-)[0-9０-９]+)?"
+        r"記載の.+?(?:システム|装置|プログラム|記録媒体)であって",
+        compact_japanese,
+        re.S,
+    ):
+        return None
+    value = _search_group(
+        r"請求項([0-9０-９]+)"
+        r"(?:(?:又は|若しくは|ないし|乃至|～|〜|-)[0-9０-９]+)?"
+        r"(?:のいずれか(?:１|1)項)?"
+        r"(?:に記載|記載)",
+        compact_japanese,
+    )
+    return int(normalize_fullwidth_digits(value)) if value else None
+
+
+def normalize_fullwidth_digits(value: str | None) -> str:
+    return str(value or "").translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
+
+def remove_self_prior_art(values: list[str], metadata: dict[str, Any]) -> list[str]:
+    country = str(metadata.get("country") or "").upper()
+    registration = normalize_document_identifier(metadata.get("registration_number"))
+    if not country or not registration:
+        return values
+    target_prefix = f"{country}{registration}"
+    return [
+        value
+        for value in values
+        if not normalize_document_identifier(value).startswith(target_prefix)
+    ]
+
+
+def normalize_document_identifier(value: Any) -> str:
+    return re.sub(r"[^0-9A-Z]", "", str(value or "").upper())
 
 
 def build_claim_stats(reported_claim_count: int | None, claims: list[dict[str, Any]]) -> dict[str, Any]:
@@ -679,7 +801,17 @@ def validate_preprocessed_patent(
     for field in ["title", "application_number", "registration_number"]:
         if not metadata.get(field):
             missing_fields.append(f"metadata.{field}")
-    for field in ["abstract", "claims_text", "technical_field"]:
+    country = str(metadata.get("country") or "KR").upper()
+    required_sections = []
+    if country in {"", "KR"} or not any(
+        sections.get(field) for field in ("technical_field", "solution", "detailed_description")
+    ):
+        required_sections.append("technical_field")
+    if country in {"", "KR"} or not sections.get("solution"):
+        required_sections.append("abstract")
+    if not claims:
+        required_sections.append("claims_text")
+    for field in required_sections:
         if not sections.get(field):
             missing_fields.append(f"sections.{field}")
     if not claims:
@@ -705,15 +837,24 @@ def validate_preprocessed_patent(
 
 
 def _find_section_headings(text: str) -> list[tuple[str, int]]:
-    pattern = re.compile(
-        r"(?m)^#?\s*(명세서|청구범위|발명의 설명|기술분야|배경기술|발명의 내용|해결하려는 과제|과제의 해결 수단|발명의 효과|도면의 간단한 설명|발명을 실시하기 위한 구체적인 내용|부호의 설명)\s*$"
+    headings = "|".join(
+        sorted((re.escape(heading) for heading in SECTION_ALIASES), key=len, reverse=True)
     )
+    pattern = re.compile(rf"(?im)^#{{0,6}}\s*({headings})\s*$")
     return [(match.group(1), match.start()) for match in pattern.finditer(text)]
 
 
 def _extract_abstract(text: str) -> str:
-    match = re.search(r"\(57\)\s*요\s*약\s*(.+?)(?=\n#{0,6}\s*명세서|\n청구범위|\n####|\n명세서)", text, re.S)
-    return normalize_blank_lines(match.group(1)) if match else ""
+    patterns = [
+        r"\(57\)\s*요\s*약\s*(.+?)(?=\n#{0,6}\s*명세서|\n청구범위|\n####|\n명세서)",
+        r"\(57\)\s*摘要\s*(.+?)(?=\n(?:CN\s*\d+\s*[A-Z]?|1\.\s*一种|权利要求书|技术领域|背景技术|发明内容|附图说明|具体实施方式)\s*$)",
+        r"\(57\)\s*ABSTRACT\s*(.+?)(?=\n#{0,6}\s*(?:BACKGROUND|FIELD OF THE INVENTION|TECHNICAL FIELD|CLAIMS?)\s*$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.S | re.M | re.I)
+        if match:
+            return normalize_blank_lines(match.group(1))
+    return ""
 
 
 def strip_section_heading_lines(text: str) -> str:
@@ -750,22 +891,23 @@ def postprocess_claims_text(text: str) -> str:
         if not stripped:
             result.append("")
             continue
-        if re.match(r"^-?\s*청구항\s+\d+", stripped):
+        if re.match(r"^-?\s*(?:청구항\s+)?\d+\s*[.)]?", stripped):
             result.append(stripped)
             continue
-        if result and result[-1] and not re.match(r"^-?\s*청구항\s+\d+", result[-1]):
+        if result and result[-1] and not re.match(r"^-?\s*(?:청구항\s+)?\d+\s*[.)]?", result[-1]):
             result[-1] = result[-1].rstrip() + " " + stripped
         else:
             result.append(stripped)
     merged = "\n".join(result)
-    merged = re.sub(r"([가-힣A-Za-z0-9])\n{2,}([가-힣A-Za-z0-9])", r"\1\2", merged)
-    merged = re.sub(r"\s{2,}", " ", merged)
+    merged = re.sub(r"([가-힣A-Za-z0-9])\n{2,}([가-힣A-Za-z0-9])", r"\1\n\2", merged)
+    merged = re.sub(r"[ \t]{2,}", " ", merged)
     return normalize_blank_lines(merged)
 
 
 def remove_paragraph_numbers(text: str) -> str:
     text = re.sub(r"(?m)^-?\s*\[(\d{4})\]\s*", "", text)
     text = re.sub(r"(?m)^\[(\d{4})\]\s*", "", text)
+    text = re.sub(r"【[０-９]{4}】\s*", "", text)
     return text
 
 
@@ -823,6 +965,7 @@ def _extract_classifications(text: str, label: str) -> list[str]:
 
 
 def _extract_prior_art(text: str) -> list[str]:
+    normalized_text = unicodedata.normalize("NFKC", text).replace("−", "-").replace("–", "-")
     patterns = [
         r"\bKR\s*\d{7,13}\s*[A-Z]\d?\*?",
         r"\bJP\s*\d{7,13}\s*[A-Z]\d?\*?",
@@ -831,8 +974,29 @@ def _extract_prior_art(text: str) -> list[str]:
     ]
     values: list[str] = []
     for pattern in patterns:
-        values.extend(re.findall(pattern, text))
-    return _dedupe([re.sub(r"\s+", " ", value) for value in values])
+        values.extend(re.findall(pattern, normalized_text))
+
+    for era, year, serial in re.findall(r"特開(?:(昭|平|令))?(\d{1,4})-(\d{5,7})", normalized_text):
+        publication_year = _japanese_publication_year(era, int(year))
+        values.append(f"JP{publication_year}{serial} A")
+
+    for year, serial, kind in re.findall(
+        r"米国特許出願公開第(\d{4})/(\d{6,8})\s*\(\s*US\s*,\s*(A\d?)\s*\)",
+        normalized_text,
+        flags=re.IGNORECASE,
+    ):
+        values.append(f"US{year}{serial} {kind.upper()}")
+
+    return _dedupe([re.sub(r"\s+", " ", value).replace("*", "") for value in values])
+
+
+def _japanese_publication_year(era: str, year: int) -> int:
+    era_start_years = {
+        "昭": 1925,
+        "平": 1988,
+        "令": 2018,
+    }
+    return era_start_years.get(era, 0) + year if era else year
 
 
 def _extract_assignee_list(text: str) -> list[str]:
