@@ -364,6 +364,7 @@ def run_single_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         raw = call_llm(
             build_axis_supervisor_check_prompt(state, axis=axis),
             model=settings.openai_supervisor_model,
+            temperature=0,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -676,6 +677,7 @@ def run_writing_quality_check(state: PatentWorkflowState, key: str) -> dict[str,
         raw = call_llm(
             f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}",
             model=settings.openai_supervisor_model,
+            temperature=0,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -842,6 +844,7 @@ def run_llm_supervisor_check(
         raw = call_llm(
             build_supervisor_judge_prompt(state, prompt_name=prompt_name),
             model=settings.openai_supervisor_model,
+            temperature=0,
         )
         parsed = parse_json_object(raw)
         if not parsed:

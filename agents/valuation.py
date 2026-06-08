@@ -84,7 +84,7 @@ def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
 
 
 def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    raw = call_llm(prompt)
+    raw = call_llm(prompt, model=settings.openai_valuation_model, temperature=0)
     parsed = parse_json_object(raw)
     if not parsed:
         raise RuntimeError(f"LLM valuation response for {axis} was not valid JSON.")

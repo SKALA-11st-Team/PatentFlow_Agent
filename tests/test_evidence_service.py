@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 
 import pytest
 
@@ -341,6 +343,53 @@ def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
 
     assert result["gnews_queries"] == ["reinforcement learning finance", "AI asset allocation"]
     assert saved_queries == result["gnews_queries"]
+
+
+def test_collect_external_evidence_searches_news_queries_concurrently(monkeypatch):
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_request_json(base_url, path, params, *, timeout=20):
+        nonlocal active, max_active
+        del base_url, timeout
+        assert path == "/api/news/search"
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        query = params["query"]
+        return {
+            "items": [
+                {
+                    "title": query,
+                    "originallink": f"https://example.com/{query}",
+                    "description": "뉴스 본문",
+                    "pubDate": "Tue, 05 May 2026 09:30:00 +0900",
+                }
+            ]
+        }
+
+    monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
+
+    result = collect_external_evidence(
+        preprocessed_patent={"metadata": {"title": "스마트팩토리"}, "sections": {"abstract": "공장 자동화"}},
+        patent_id=1,
+        include_naver=True,
+        include_gnews=False,
+        include_kipris=False,
+        ko_queries_override=["스마트팩토리 레이아웃", "제조 자동화"],
+        en_queries_override=[],
+        query_limit_per_axis=2,
+        fetch_news_full_text=False,
+        save=False,
+    )
+
+    assert max_active > 1
+    assert result["queries"] == ["스마트팩토리 레이아웃", "제조 자동화"]
+    assert [item["title"] for item in result["items"]] == ["스마트팩토리 레이아웃", "제조 자동화"]
 
 
 def test_collect_external_evidence_uses_configured_news_results_per_query(monkeypatch, tmp_path):

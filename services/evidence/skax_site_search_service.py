@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from typing import Any, Callable
 from html import unescape as html_unescape
@@ -10,6 +11,7 @@ import re
 
 import requests
 
+from app.config import settings
 from services.evidence.store_service import ensure_evidence_ids, now_iso
 
 
@@ -30,7 +32,8 @@ DEFAULT_MAX_RESULTS_PER_QUERY = 5
 DEFAULT_MAX_FETCH_PAGES = 5
 DEFAULT_MAX_EVIDENCE_ITEMS = 3
 DEFAULT_MAX_CONTENT_CHARS = 5000
-DEFAULT_SEARCH_TIMEOUT_SECONDS = 5
+DEFAULT_SEARCH_WORKERS = 4
+DEFAULT_SEARCH_TIMEOUT_SECONDS = settings.skax_search_timeout_seconds
 DEFAULT_SEARCH_HTML_PREVIEW_CHARS = 800
 DEFAULT_API_ERROR_BODY_PREVIEW_CHARS = 1000
 GOOGLE_SEARCH_URL = "https://www.google.com/search"
@@ -523,38 +526,14 @@ def collect_skax_site_evidence(
     fetched_url_count = 0
     truncated_content_count = 0
 
-    for query in queries:
-        if search_client:
-            try:
-                search_response = search_client.search(query, max_results=max_results_per_query)
-                results = list(search_response.get("results", []))[: max(1, int(max_results_per_query))]
-                search_diagnostics.append(
-                    normalize_search_diagnostics(
-                        query,
-                        search_response.get("diagnostics"),
-                        results,
-                    )
-                )
-            except Exception as exc:
-                results = []
-                search_diagnostics.append(build_search_error_diagnostics(query, exc))
-        elif searcher:
-            try:
-                results = searcher(query)[: max(1, int(max_results_per_query))]
-                search_diagnostics.append(build_injected_search_diagnostics(query, results))
-            except Exception as exc:
-                results = []
-                search_diagnostics.append(build_search_error_diagnostics(query, exc))
-        else:
-            search_response = default_search_client().search(query, max_results=max_results_per_query)
-            results = list(search_response.get("results", []))[: max(1, int(max_results_per_query))]
-            search_diagnostics.append(
-                normalize_search_diagnostics(
-                    query,
-                    search_response.get("diagnostics"),
-                    results,
-                )
-            )
+    active_search_client = search_client or (None if searcher else default_search_client())
+    for query, results, diagnostics in search_queries_concurrently(
+        queries,
+        search_client=active_search_client,
+        searcher=searcher,
+        max_results_per_query=max_results_per_query,
+    ):
+        search_diagnostics.append(diagnostics)
         searched_result_count += len(results)
         for result in results:
             normalized = normalize_search_result(result, query)
@@ -616,6 +595,46 @@ def collect_skax_site_evidence(
         "failed_urls": failed_urls,
         "search_diagnostics": search_diagnostics,
     }
+
+
+def search_queries_concurrently(
+    queries: list[str],
+    *,
+    search_client: SearchClient | None,
+    searcher: Searcher | None,
+    max_results_per_query: int,
+) -> list[tuple[str, list[dict[str, Any]], dict[str, Any]]]:
+    if not queries:
+        return []
+
+    result_limit = max(1, int(max_results_per_query))
+
+    def search_query(query: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        if search_client:
+            try:
+                search_response = search_client.search(query, max_results=result_limit)
+                results = list(search_response.get("results", []))[:result_limit]
+                diagnostics = normalize_search_diagnostics(
+                    query,
+                    search_response.get("diagnostics"),
+                    results,
+                )
+                return query, results, diagnostics
+            except Exception as exc:
+                return query, [], build_search_error_diagnostics(query, exc)
+        if searcher:
+            try:
+                results = searcher(query)[:result_limit]
+                return query, results, build_injected_search_diagnostics(query, results)
+            except Exception as exc:
+                return query, [], build_search_error_diagnostics(query, exc)
+        return query, [], build_empty_search_diagnostics(query)
+
+    max_workers = min(DEFAULT_SEARCH_WORKERS, len(queries))
+    if max_workers <= 1:
+        return [search_query(query) for query in queries]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(search_query, queries))
 
 
 def default_search_client() -> SearchClient:

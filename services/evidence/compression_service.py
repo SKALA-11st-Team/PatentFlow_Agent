@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+from concurrent.futures import ThreadPoolExecutor
+import contextvars
 import json
 
 from app.config import settings
@@ -14,6 +16,7 @@ DEFAULT_COMPRESSED_EVIDENCE_DIR = settings.output_dir / "compressed_evidence"
 DEFAULT_RAG_SCORE_THRESHOLD = 0.5
 ALLOWED_AXES = {"legal", "technology", "market", "business_fit", "strategy"}
 DEFAULT_TEXT_LIMIT = 6000
+DEFAULT_COMPRESSION_WORKERS = 3
 
 
 def compress_evidence_items(
@@ -28,13 +31,14 @@ def compress_evidence_items(
     warnings: list[str] = []
     rejected_by_llm = 0
 
-    for item in candidates:
-        try:
-            compressed_item = compress_single_evidence(item, preprocessed_patent=preprocessed_patent, llm=llm)
-        except Exception as exc:
-            warnings.append(f"{item.get('evidence_id')}:compression_failed:{exc.__class__.__name__}:{str(exc)[:200]}")
+    for item, compressed_item, warning in compress_candidates_concurrently(
+        candidates,
+        preprocessed_patent=preprocessed_patent,
+        llm=llm,
+    ):
+        if warning:
+            warnings.append(warning)
             continue
-
         if compressed_item.get("is_relevant") is False:
             rejected_by_llm += 1
             continue
@@ -53,6 +57,38 @@ def compress_evidence_items(
             "rag_score_threshold": rag_score_threshold,
         },
     }
+
+
+def compress_candidates_concurrently(
+    candidates: list[dict[str, Any]],
+    *,
+    preprocessed_patent: dict[str, Any],
+    llm: Callable[[str], str],
+) -> list[tuple[dict[str, Any], dict[str, Any], str | None]]:
+    if not candidates:
+        return []
+
+    def compress_candidate(item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+        try:
+            compressed_item = compress_single_evidence(item, preprocessed_patent=preprocessed_patent, llm=llm)
+            return item, compressed_item, None
+        except Exception as exc:
+            warning = f"{item.get('evidence_id')}:compression_failed:{exc.__class__.__name__}:{str(exc)[:200]}"
+            return item, {}, warning
+
+    max_workers = min(DEFAULT_COMPRESSION_WORKERS, len(candidates))
+    if max_workers <= 1:
+        return [compress_candidate(item) for item in candidates]
+    # Propagate the current context (incl. the active LangSmith run tree, which is
+    # stored in contextvars) into each worker thread so the per-item compression
+    # LLM calls nest under the evidence_compression node instead of appearing as
+    # separate root traces. copy_context() is evaluated here on the calling thread.
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(contextvars.copy_context().run, compress_candidate, item)
+            for item in candidates
+        ]
+        return [future.result() for future in futures]
 
 
 def select_compression_candidates(

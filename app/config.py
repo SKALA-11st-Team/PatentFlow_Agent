@@ -28,6 +28,10 @@ class Settings(BaseModel):
     openai_api_key: str | None = getenv("OPENAI_API_KEY")
     openai_chat_model: str = getenv("OPENAI_CHAT_MODEL") or getenv("OPENAI_MODEL", "gpt-5-mini")
     openai_supervisor_model: str | None = getenv("OPENAI_SUPERVISOR_MODEL")
+    # 채점(가치평가 축) 전용 모델. 미설정 시 openai_chat_model로 폴백.
+    # 점수 결정성이 필요하면 temperature를 지원하는 모델(gpt-4.1-mini 등)을 지정한다.
+    openai_valuation_model: str | None = getenv("OPENAI_VALUATION_MODEL")
+    openai_request_timeout_seconds: float = float(getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "90"))
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Spring Boot(BE) 통신용 기본 주소.
@@ -38,6 +42,9 @@ class Settings(BaseModel):
     news_results_per_query: int = int(getenv("NEWS_RESULTS_PER_QUERY", "3"))
     industry_rag_query_count: int = int(getenv("INDUSTRY_RAG_QUERY_COUNT", "1"))
     industry_rag_top_k: int = int(getenv("INDUSTRY_RAG_TOP_K", "3"))
+    # SK AX(Tavily/Google) 사이트 검색 HTTP 타임아웃(초). raw_content 수집 때문에
+    # 5초로는 자주 ReadTimeout이 나므로 기본을 넉넉히 둔다.
+    skax_search_timeout_seconds: int = int(getenv("SKAX_SEARCH_TIMEOUT_SECONDS", "20"))
     max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
     enable_shared_db_fallback: bool = getenv("ENABLE_SHARED_DB_FALLBACK", "false").lower() == "true"
