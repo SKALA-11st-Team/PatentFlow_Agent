@@ -413,6 +413,11 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
             ],
             "available_in_input": available_prior_art_identifiers(state),
         }
+    elif axis == "business_fit":
+        payload["business_fit_context"] = build_business_fit_supervisor_context(
+            state,
+            cited_ids=cited_ids,
+        )
     return payload
 
 
@@ -508,6 +513,9 @@ def build_rule_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         if not axis_payload["has_rationale"]:
             status = "valuation_retry"
             issues.append(f"{axis} missing rationale")
+        if axis == "business_fit" and status == "passed":
+            status, business_fit_issues = check_business_fit_axis_rules(state, axis_result)
+            issues.extend(business_fit_issues)
 
     return axis_supervisor_check_result(
         axis=axis,
@@ -516,6 +524,124 @@ def build_rule_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         reason="축별 평가 구조와 근거 연결을 rule 기반으로 확인했습니다.",
         source="rule",
     )
+
+
+def build_business_fit_supervisor_context(
+    state: PatentWorkflowState,
+    *,
+    cited_ids: list[str],
+) -> dict[str, Any]:
+    from agents.valuation_axes.business_fit import (
+        build_input_payload,
+        is_sk_ax_official_evidence,
+        is_sk_owned_media_evidence,
+        select_evidence,
+    )
+
+    selected = select_evidence(state.evidence_bundle or [], state)
+    context = build_input_payload(state=state, evidence=selected).get("business_fit_context") or {}
+    cited = []
+    cited_id_set = set(cited_ids)
+    for item in state.evidence_bundle or []:
+        evidence_id = str(item.get("evidence_id") or "")
+        if evidence_id not in cited_id_set:
+            continue
+        cited.append(
+            {
+                "evidence_id": evidence_id,
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "source": item.get("source"),
+                "source_type": item.get("source_type"),
+                "is_sk_ax_official": is_sk_ax_official_evidence(item),
+                "is_sk_owned_media": is_sk_owned_media_evidence(item),
+            }
+        )
+    return {
+        **context,
+        "cited_evidence": cited,
+    }
+
+
+def check_business_fit_axis_rules(
+    state: PatentWorkflowState,
+    axis_result: dict[str, Any],
+) -> tuple[str, list[str]]:
+    from agents.valuation_axes.business_fit import (
+        BUSINESS_FIT_SUBSCORE_MAX,
+        has_sk_ax_or_cnc_mention,
+        is_sk_ax_official_evidence,
+        is_sk_owned_media_evidence,
+    )
+
+    issues: list[str] = []
+    evidence_by_id = {
+        str(item.get("evidence_id")): item
+        for item in state.evidence_bundle or []
+        if item.get("evidence_id")
+    }
+    cited_items = [
+        evidence_by_id[str(evidence_id)]
+        for evidence_id in axis_result.get("evidence_ids") or []
+        if str(evidence_id) in evidence_by_id
+    ]
+    available_business_evidence = [
+        item
+        for item in state.evidence_bundle or []
+        if is_sk_ax_official_evidence(item)
+        or (is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item))
+    ]
+    cited_business_evidence = [
+        item
+        for item in cited_items
+        if is_sk_ax_official_evidence(item)
+        or (is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item))
+    ]
+    improper_citations = [
+        str(item.get("evidence_id"))
+        for item in cited_items
+        if not is_sk_ax_official_evidence(item)
+        and not (is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item))
+        and item.get("source_type") != "portfolio_context"
+    ]
+
+    if not available_business_evidence:
+        return "query_rewriting", ["business_fit에 SK AX 공식 또는 SK 계열 운영 매체 근거가 없습니다."]
+    if not cited_business_evidence:
+        issues.append("business_fit이 수집된 SK AX 공식/계열 근거를 evidence_ids에 사용하지 않았습니다.")
+    if improper_citations:
+        issues.append(
+            "business_fit이 일반 뉴스/외부 자료를 직접 근거로 사용했습니다: "
+            + ", ".join(improper_citations)
+        )
+
+    subscores = axis_result.get("subscores") if isinstance(axis_result.get("subscores"), dict) else {}
+    subscore_total = 0
+    allowed_subscores = {
+        "official_business_evidence": {0, 8, 16, 24, 30},
+        "product_function_direct_match": {0, 12, 24, 36, 45},
+        "business_context_fit": {0, 4, 10, 18, 25},
+    }
+    for key, max_score in BUSINESS_FIT_SUBSCORE_MAX.items():
+        item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
+        score = item.get("score")
+        if not isinstance(score, int) or score not in allowed_subscores[key]:
+            issues.append(f"business_fit subscore 허용값이 아닙니다: {key}")
+            continue
+        subscore_total += score
+    if subscore_total != axis_result.get("score"):
+        issues.append("business_fit 총점이 세부 점수 합계와 일치하지 않습니다.")
+
+    forbidden_source_terms = ("청구항", "초록", "명세서", "원문 pdf", "원문 PDF")
+    source_status_text = " ".join(
+        str(item)
+        for field in ("risk_factors", "missing_information")
+        for item in (axis_result.get(field) or [])
+    )
+    if any(term in source_status_text for term in forbidden_source_terms):
+        issues.append("business_fit이 청구항·초록·명세서 제공 상태를 위험 또는 부족 정보로 사용했습니다.")
+
+    return ("valuation_retry" if issues else "passed"), issues
 
 
 def normalize_axis_supervisor_check(axis: str, parsed: dict[str, Any], *, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -937,6 +1063,13 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
     valuation = state.valuation_result or {}
     final_report_markdown = valuation.get("final_report_markdown")
     summary_markdown = summary.get("summary_markdown")
+    from agents.writing.final_report import build_evidence_references
+
+    business_fit_references = [
+        reference
+        for reference in build_evidence_references(state, valuation)
+        if "business_fit" in (reference.get("cited_by_axes") or [])
+    ]
     return {
         "current_stage": state.current_stage,
         "patent": patent_metadata_payload(state),
@@ -976,6 +1109,7 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "missing_evidence": limit_list((state.validation_result or {}).get("missing_evidence"), 10),
         },
         "evidence": evidence_summary_payload(state, include_samples=False),
+        "business_fit_evidence_references": business_fit_references,
         "retry_count": state.retry_count,
     }
 
@@ -1307,4 +1441,3 @@ def check_valuation_result(state: PatentWorkflowState) -> SupervisorDecision:
         issues=issues,
         reason="Valuation structure and evidence-id check completed.",
     )
-
