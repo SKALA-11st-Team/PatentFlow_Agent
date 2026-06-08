@@ -356,6 +356,7 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
     payload = {
         "current_stage": state.current_stage,
         "axis": axis,
+        "retry_count": state.retry_count,
         "patent": patent_metadata_payload(state),
         "evidence": evidence_summary_payload(state, include_samples=True, priority_evidence_ids=cited_ids),
         "valuation_axis": valuation_axis_payload(axis, axis_result, known_ids),
@@ -602,21 +603,109 @@ def check_writing_result(state: PatentWorkflowState) -> SupervisorDecision:
     )
 
 
+def summary_quality_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    summary = state.summary_result or {}
+    return {
+        "patent": patent_metadata_payload(state),
+        "summary": {
+            "available": bool(summary),
+            "title": summary.get("title"),
+            "plain_summary": preview_text(summary.get("plain_summary"), 1500),
+            "key_points": limit_list(summary.get("key_points"), 10),
+            "summary_markdown": preview_text(summary.get("summary_markdown"), 4000),
+        },
+        "preprocess_validation": preprocess_validation_payload(state.preprocessed_patent or {}),
+    }
+
+
+WRITING_QUALITY_PROMPTS = {
+    "summary": "supervisor/supervisor_summary_check.md",
+    "report": "supervisor/supervisor_final_check.md",
+}
+
+
+def run_writing_quality_check(state: PatentWorkflowState, key: str) -> dict[str, Any]:
+    """Dedicated LLM content-quality check for one writing artifact (summary or
+    report). Returns {"passed": bool, "issues": [...]}. Without the LLM judge it
+    trusts the deterministic validation and returns passed."""
+    if not state.user_input.get("use_llm_supervisor", False):
+        return {"passed": True, "issues": []}
+    prompt_name = WRITING_QUALITY_PROMPTS[key]
+    try:
+        template = load_prompt(prompt_name).strip()
+        payload = summary_quality_payload(state) if key == "summary" else final_supervisor_payload(state)
+        raw = call_llm(
+            f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}",
+            model=settings.openai_supervisor_model,
+        )
+        parsed = parse_json_object(raw)
+        if not parsed:
+            return {"passed": True, "issues": []}
+        return {
+            "passed": normalize_bool(parsed.get("passed"), True),
+            "issues": normalize_text_list(parsed.get("issues"), []),
+        }
+    except Exception as exc:
+        return {"passed": True, "issues": [f"{key}_quality_check_warning:{exc.__class__.__name__}"]}
+
+
 @trace(name="writing_supervisor_agent", run_type="chain")
 def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "writing"
-    decision = check_writing_result(state)
-    decision = run_llm_supervisor_check(
-        state,
-        decision,
-        prompt_name="supervisor/supervisor_final_check.md",
-        allowed_next_actions={"final_merge", "summary", "final_report", "writing_team"},
-        team_action_map={
-            "final_merge": ("final", "final_merge"),
-            "summary": ("writing", "summary"),
-            "final_report": ("writing", "final_report"),
-            "writing_team": ("writing", "writing_team"),
-        },
+    summary_markdown = (state.summary_result or {}).get("summary_markdown")
+    report_markdown = (state.valuation_result or {}).get("final_report_markdown")
+    summary_validation = state.summary_validation_result or {}
+    report_validation = state.report_validation_result or {}
+
+    summary_issues: list[str] = []
+    report_issues: list[str] = []
+    summary_failed = False
+    report_failed = False
+
+    # Rule: existence + deterministic validation
+    if not summary_markdown:
+        summary_issues.append("Missing summary_markdown")
+        summary_failed = True
+    elif state.summary_validation_result and not summary_validation.get("passed"):
+        summary_issues.extend(summary_validation.get("issues") or ["Summary validation has not passed"])
+        summary_failed = True
+    if not report_markdown:
+        report_issues.append("Missing final_report_markdown")
+        report_failed = True
+    elif state.report_validation_result and not report_validation.get("passed"):
+        report_issues.extend(report_validation.get("issues") or ["Report validation has not passed"])
+        report_failed = True
+
+    # Dedicated LLM content checks: summary and report each get their own judge.
+    if summary_markdown and not summary_failed:
+        verdict = run_writing_quality_check(state, "summary")
+        if not verdict["passed"]:
+            summary_issues.extend(verdict["issues"] or ["요약 내용 품질 보완 필요"])
+            summary_failed = True
+    if report_markdown and not report_failed:
+        verdict = run_writing_quality_check(state, "report")
+        if not verdict["passed"]:
+            report_issues.extend(verdict["issues"] or ["보고서 내용 품질 보완 필요"])
+            report_failed = True
+
+    if summary_failed and report_failed:
+        next_action = "writing_team"
+    elif summary_failed:
+        next_action = "summary"
+    elif report_failed:
+        next_action = "final_report"
+    else:
+        next_action = "final_merge"
+
+    passed = not (summary_failed or report_failed)
+    decision = SupervisorDecision(
+        passed=passed,
+        current_team="writing",
+        next_team="final" if passed else "writing",
+        stage="writing_check",
+        next_action=next_action,
+        issues=summary_issues + report_issues,
+        reason="요약과 가치평가 보고서를 각각 평가했습니다.",
     )
     decision = apply_supervisor_retry_limit(
         state,
@@ -626,8 +715,8 @@ def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
         retry_limit=WRITING_SUPERVISOR_RETRY_LIMIT,
         fallback_team="final",
         fallback_action="final_merge",
-        fallback_reason="Writing supervisor retry limit reached; final report markdown is structurally present.",
-        allow_fallback=check_writing_result(state).passed,
+        fallback_reason="Writing supervisor retry limit reached; outputs are structurally present.",
+        allow_fallback=bool(summary_markdown and report_markdown),
     )
     state.validation_result = {
         "passed": decision.passed,
@@ -842,7 +931,6 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "summary_issues": limit_list((state.summary_validation_result or {}).get("issues"), 10),
             "report_passed": (state.report_validation_result or {}).get("passed"),
             "report_issues": limit_list((state.report_validation_result or {}).get("issues"), 10),
-            "report_warnings": limit_list((state.report_validation_result or {}).get("warnings"), 10),
             "missing_evidence": limit_list((state.validation_result or {}).get("missing_evidence"), 10),
         },
         "evidence": evidence_summary_payload(state, include_samples=False),
