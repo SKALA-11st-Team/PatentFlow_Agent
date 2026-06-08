@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from open_api import api_server
+from open_api.kipris_client import KiprisError, raise_for_kipris_body_error
 
 
 def test_gnews_search_preserves_upstream_http_status(monkeypatch):
@@ -24,6 +25,43 @@ def test_gnews_search_preserves_upstream_http_status(monkeypatch):
 
     assert exc_info.value.status_code == 403
     assert "test-key" not in exc_info.value.detail
+
+
+def test_unified_api_key_middleware_blocks_missing_key(monkeypatch):
+    monkeypatch.setenv("UNIFIED_API_KEY", "gateway-secret")
+
+    response = TestClient(api_server.app).get("/api/news/search", params={"query": "AI"})
+
+    assert response.status_code == 401
+
+
+def test_unified_api_key_middleware_accepts_matching_key(monkeypatch):
+    monkeypatch.setenv("UNIFIED_API_KEY", "gateway-secret")
+    monkeypatch.setenv("NAVER_CLIENT_ID", "client")
+    monkeypatch.setenv("NAVER_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(api_server.requests, "get", Mock(return_value=Mock(json=lambda: {"items": []}, raise_for_status=lambda: None)))
+
+    response = TestClient(api_server.app).get(
+        "/api/news/search",
+        params={"query": "AI"},
+        headers={"X-API-Key": "gateway-secret"},
+    )
+
+    assert response.status_code == 200
+
+
+def test_kipris_body_level_error_is_raised():
+    with pytest.raises(KiprisError, match="INVALID REQUEST"):
+        raise_for_kipris_body_error(
+            {
+                "response": {
+                    "header": {
+                        "resultCode": "03",
+                        "resultMsg": "INVALID REQUEST",
+                    }
+                }
+            }
+        )
 
 
 def test_citation_info_v3_route_uses_access_key(monkeypatch):

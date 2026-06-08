@@ -38,6 +38,24 @@ class KiprisError(RuntimeError):
     """KIPRISPlus 호출 또는 응답 파싱 오류."""
 
 
+KIPRIS_BODY_ERROR_CODES = {
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "10",
+    "11",
+    "12",
+    "20",
+    "22",
+    "30",
+    "31",
+    "32",
+    "99",
+}
+
+
 def _resolve_service_keys(explicit: str | None = None) -> list[str]:
     """KIPRIS 키 목록을 구성한다. 한도(쿼터) 분산을 위해 다중 키를 지원한다.
 
@@ -108,6 +126,42 @@ def parse_xml_response(xml_text: str) -> dict[str, Any]:
     except ET.ParseError as exc:
         raise KiprisError(f"XML 파싱 실패: {exc}") from exc
     return {_strip_namespace(root.tag): _element_to_obj(root)}
+
+
+def raise_for_kipris_body_error(data: Mapping[str, Any]) -> None:
+    """KIPRISPlus가 HTTP 200 본문에 담아 돌려주는 오류를 표면화합니다."""
+    result_code = first_nested_value(data, ("resultCode", "returnCode", "errorCode"))
+    result_msg = first_nested_value(data, ("resultMsg", "returnMsg", "errorMsg", "message"))
+    if result_code is None:
+        return
+
+    code = str(result_code).strip()
+    message = str(result_msg or "").strip()
+    if code in {"", "00", "0", "000", "SUCCESS", "success"}:
+        return
+    if code in KIPRIS_BODY_ERROR_CODES or message:
+        detail = f"KIPRIS 응답 오류(resultCode={code})"
+        if message:
+            detail = f"{detail}: {message}"
+        raise KiprisError(detail)
+
+
+def first_nested_value(value: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(value, Mapping):
+        for key in keys:
+            found = value.get(key)
+            if found not in (None, ""):
+                return found
+        for nested in value.values():
+            found = first_nested_value(nested, keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = first_nested_value(item, keys)
+            if found not in (None, ""):
+                return found
+    return None
 
 
 def _get_nested(data: Mapping[str, Any], *keys: str) -> Any:
@@ -205,7 +259,9 @@ class KiprisClient:
             text = response.text.strip()
             if not parse_xml:
                 return text
-            return parse_xml_response(text)
+            parsed = parse_xml_response(text)
+            raise_for_kipris_body_error(parsed)
+            return parsed
 
         raise KiprisError(
             f"KIPRIS 호출 실패(키 {count}개 모두 실패): {last_exc}"

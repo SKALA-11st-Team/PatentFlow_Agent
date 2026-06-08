@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlparse
+import ipaddress
 import re
 
 import requests
@@ -20,6 +22,8 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "metadata.google.internal"}
+BLOCKED_LINK_LOCAL_IP = ipaddress.ip_address("169.254.169.254")
 
 
 class ParagraphHTMLParser(HTMLParser):
@@ -166,15 +170,21 @@ def enrich_news_items_with_full_text(
 
 
 def fetch_article_text(url: str) -> dict[str, str | None]:
+    blocked_reason = validate_article_url(url)
+    if blocked_reason:
+        return {"text": None, "title": None, "error": blocked_reason, "source": None}
     try:
         response = requests.get(
             url,
             headers={"User-Agent": USER_AGENT},
             timeout=ARTICLE_TIMEOUT_SECONDS,
+            allow_redirects=False,
         )
         response.raise_for_status()
     except requests.RequestException as exc:
         return {"text": None, "title": None, "error": f"{exc.__class__.__name__}: {exc}", "source": None}
+    if 300 <= getattr(response, "status_code", 200) < 400:
+        return {"text": None, "title": None, "error": "article_redirect_blocked", "source": None}
 
     article_title = extract_article_title(response.text)
     trafilatura_text = extract_with_trafilatura(response.text, url=url)
@@ -192,6 +202,24 @@ def fetch_article_text(url: str) -> dict[str, str | None]:
     if not is_valid_article_text(text):
         return {"text": None, "title": article_title, "error": classify_article_failure(text), "source": None}
     return {"text": text[:ARTICLE_MAX_CHARS], "title": article_title, "error": None, "source": "full_text_fallback_parser"}
+
+
+def validate_article_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return "article_url_blocked:invalid_url"
+    if parsed.username or parsed.password:
+        return "article_url_blocked:userinfo_not_allowed"
+    host = parsed.hostname.strip().lower()
+    if host in BLOCKED_HOSTNAMES:
+        return "article_url_blocked:blocked_hostname"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return None
+    if ip.is_loopback or ip.is_private or ip.is_link_local or ip == BLOCKED_LINK_LOCAL_IP:
+        return "article_url_blocked:private_or_link_local_ip"
+    return None
 
 
 def extract_article_title(html_text: str) -> str | None:

@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
+import ipaddress
 import json
+import os
 import re
 import time
 
@@ -19,6 +22,7 @@ from services.evidence.api_normalizers import (
     normalize_naver_news_response,
 )
 from services.evidence.news_article_extraction_service import enrich_news_items_with_full_text
+from services.evidence.news_filter_service import extract_keywords
 from services.evidence.store_service import (
     merge_evidence_sources,
     save_evidence_collection,
@@ -30,6 +34,8 @@ MAX_SEARCH_QUERIES = settings.search_query_count
 MAX_INDUSTRY_RAG_QUERIES = settings.industry_rag_query_count
 API_REQUEST_MAX_ATTEMPTS = 3
 API_REQUEST_RETRY_STATUS_CODES = {502, 503, 504}
+BLOCKED_HOSTNAMES = {"localhost.localdomain", "metadata.google.internal"}
+BLOCKED_LINK_LOCAL_IP = ipaddress.ip_address("169.254.169.254")
 
 
 def rewrite_search_queries(
@@ -245,6 +251,8 @@ def collect_external_evidence(
             warnings.append(f"dart call failed for corp_code '{dart_corp_code}': {exc}")
 
     merged = merge_evidence_sources(sources, prefix="api")
+    quality = annotate_evidence_quality(merged, preprocessed_patent=preprocessed_patent)
+    warnings.extend(quality["warnings"])
 
     return {
         "ko_queries": ko_queries,
@@ -414,12 +422,13 @@ def request_json(
     *,
     timeout: int = 20,
 ) -> Any:
+    validate_unified_api_base_url(base_url)
     url = f"{base_url.rstrip('/')}{path}"
     last_error: requests.RequestException | None = None
     for attempt in range(1, API_REQUEST_MAX_ATTEMPTS + 1):
         time.sleep(0.5)
         try:
-            response = requests.get(url, params=params, timeout=timeout)
+            response = requests.get(url, params=params, headers=unified_api_headers(), timeout=timeout)
             response.raise_for_status()
             return response.json()
         except requests.HTTPError as exc:
@@ -435,6 +444,80 @@ def request_json(
     if last_error:
         raise last_error
     raise requests.RequestException(f"API request failed: {url}")
+
+
+def validate_unified_api_base_url(base_url: str) -> None:
+    parsed = urlparse(base_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise requests.RequestException(f"blocked_unified_api_base_url: invalid URL '{base_url}'")
+    if parsed.username or parsed.password:
+        raise requests.RequestException("blocked_unified_api_base_url: userinfo is not allowed")
+    host = parsed.hostname.strip().lower()
+    if host in BLOCKED_HOSTNAMES:
+        raise requests.RequestException(f"blocked_unified_api_base_url: blocked host '{host}'")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if ip == BLOCKED_LINK_LOCAL_IP:
+        raise requests.RequestException("blocked_unified_api_base_url: metadata service IP is not allowed")
+
+
+def unified_api_headers() -> dict[str, str]:
+    api_key = os.getenv("UNIFIED_API_KEY")
+    return {"X-API-Key": api_key} if api_key else {}
+
+
+def annotate_evidence_quality(
+    items: list[dict[str, Any]],
+    *,
+    preprocessed_patent: dict[str, Any],
+) -> dict[str, list[str]]:
+    reference_text = evidence_reference_text(preprocessed_patent)
+    patent_keywords = extract_keywords(reference_text)
+    warnings: list[str] = []
+    if not patent_keywords:
+        warnings.append("evidence_quality_keywords_unavailable")
+        return {"warnings": warnings}
+
+    for item in items:
+        text = " ".join(str(item.get(key) or "") for key in ("title", "content"))
+        matched_keywords = sorted(extract_keywords(text) & patent_keywords)
+        metadata = item.setdefault("metadata", {})
+        metadata["matched_keywords"] = matched_keywords
+        metadata["matched_keyword_count"] = len(matched_keywords)
+        if not matched_keywords:
+            metadata["quality_warning"] = "no_patent_keyword_match"
+            warnings.append(f"{item.get('evidence_id') or 'unknown'}:evidence_quality_low:no_patent_keyword_match")
+        elif len(matched_keywords) == 1:
+            metadata["quality_warning"] = "weak_patent_keyword_match"
+            warnings.append(f"{item.get('evidence_id') or 'unknown'}:evidence_quality_weak:single_keyword_match")
+    return {"warnings": compact_queries(warnings)}
+
+
+def evidence_reference_text(preprocessed_patent: dict[str, Any]) -> str:
+    metadata = preprocessed_patent.get("metadata") or {}
+    sections = preprocessed_patent.get("sections") or {}
+    parts: list[str] = []
+    for key in (
+        "title",
+        "title_final",
+        "title_eng",
+        "related_product",
+        "technology_area",
+        "business_area",
+        "ipc",
+        "cpc",
+    ):
+        value = metadata.get(key)
+        if isinstance(value, list):
+            parts.extend(str(item) for item in value if item)
+        elif value:
+            parts.append(str(value))
+    for key in ("abstract", "technical_field", "problem", "solution", "effect"):
+        if sections.get(key):
+            parts.append(str(sections[key]))
+    return "\n".join(parts)
 
 
 def with_response_detail(exc: requests.HTTPError) -> requests.HTTPError:

@@ -1,7 +1,8 @@
-from services.evidence.news_article_extraction_service import enrich_news_items_with_full_text
+from services.evidence.news_article_extraction_service import enrich_news_items_with_full_text, fetch_article_text
 
 
 class FakeResponse:
+    status_code = 200
     text = """
     <html>
       <head>
@@ -43,3 +44,18 @@ def test_enrich_news_items_updates_title_from_crawled_article(monkeypatch):
     assert enriched[0]["title"] == "AI 자산관리 시장 경쟁 확대와 투자 서비스 변화"
     assert enriched[0]["metadata"]["original_title"] == "AI 자산관리 시장..."
     assert enriched[0]["metadata"]["content_source"] in {"full_text_fallback_parser", "snippet"}
+
+
+def test_fetch_article_text_blocks_private_ip_url(monkeypatch):
+    called = False
+
+    def fake_get(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr("services.evidence.news_article_extraction_service.requests.get", fake_get)
+
+    result = fetch_article_text("http://127.0.0.1/internal")
+
+    assert result["error"] == "article_url_blocked:private_or_link_local_ip"
+    assert called is False

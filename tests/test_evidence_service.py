@@ -15,8 +15,10 @@ from services.evidence.store_service import (
 )
 from services.evidence.external_search_service import (
     MAX_SEARCH_QUERIES,
+    annotate_evidence_quality,
     collect_external_evidence,
     parse_query_rewrite_response,
+    request_json,
     rewrite_search_queries,
 )
 
@@ -372,3 +374,65 @@ def test_collect_external_evidence_uses_configured_news_results_per_query(monkey
     )
 
     assert [path for path, _ in observed] == ["/api/news/search", "/api/v4/search"]
+
+
+def test_request_json_sends_unified_api_key_header(monkeypatch):
+    observed = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"ok": True}
+
+    def fake_get(url, params, headers, timeout):
+        observed["url"] = url
+        observed["params"] = params
+        observed["headers"] = headers
+        observed["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setenv("UNIFIED_API_KEY", "gateway-secret")
+    monkeypatch.setattr("services.evidence.external_search_service.requests.get", fake_get)
+
+    assert request_json("http://unified.test", "/api/news/search", {"query": "AI"}) == {"ok": True}
+    assert observed["headers"] == {"X-API-Key": "gateway-secret"}
+
+
+def test_request_json_blocks_metadata_service_base_url():
+    with pytest.raises(Exception, match="metadata"):
+        request_json("http://169.254.169.254", "/latest/meta-data", {})
+
+
+def test_annotate_evidence_quality_surfaces_low_relevance_warning():
+    items = [
+        {
+            "evidence_id": "api_001",
+            "source_type": "news",
+            "source": "gnews",
+            "title": "Unrelated retail trend",
+            "content": "Fashion store expansion and consumer goods logistics.",
+            "metadata": {},
+        },
+        {
+            "evidence_id": "api_002",
+            "source_type": "news",
+            "source": "gnews",
+            "title": "AI portfolio market expands",
+            "content": "Robo advisor and portfolio analytics adoption grows.",
+            "metadata": {},
+        },
+    ]
+
+    result = annotate_evidence_quality(
+        items,
+        preprocessed_patent={
+            "metadata": {"title": "AI portfolio robo advisor", "related_product": "portfolio analytics"},
+            "sections": {"abstract": "AI portfolio analytics for robo advisor services"},
+        },
+    )
+
+    assert any("api_001:evidence_quality_low" in warning for warning in result["warnings"])
+    assert items[0]["metadata"]["quality_warning"] == "no_patent_keyword_match"
+    assert items[1]["metadata"]["matched_keyword_count"] > 0

@@ -6,7 +6,8 @@ services:
       - "8000:8000"
     environment:
       PGVECTOR_DATABASE_URL: postgresql://patentflow:patentflow@postgres:5432/patentflow
-      UNIFIED_API_BASE_URL: ${UNIFIED_API_BASE_URL:-http://host.docker.internal:8080}
+      UNIFIED_API_BASE_URL: ${UNIFIED_API_BASE_URL:-http://unified-api:8080}
+      UNIFIED_API_KEY: ${UNIFIED_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       KIPRIS_API_KEY: ${KIPRIS_API_KEY:-}
       DART_KEY: ${DART_KEY:-}
@@ -16,6 +17,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      unified-api:
+        condition: service_started
 
   postgres:
     image: ankane/pgvector:v0.5.1
@@ -34,6 +37,23 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+
+  unified-api:
+    build: .
+    container_name: patentflow-unified-api
+    command: ["uvicorn", "open_api.api_server:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8080:8080"
+    environment:
+      UNIFIED_API_CORS_ORIGINS: ${UNIFIED_API_CORS_ORIGINS:-http://localhost:5173}
+      UNIFIED_API_KEY: ${UNIFIED_API_KEY:-}
+      KIPRIS_SERVICE_KEYS: ${KIPRIS_SERVICE_KEYS:-}
+      KIPRIS_SERVICE_KEY: ${KIPRIS_SERVICE_KEY:-}
+      KIPRIS_API_KEY: ${KIPRIS_API_KEY:-}
+      DART_KEY: ${DART_KEY:-}
+      NAVER_CLIENT_ID: ${NAVER_CLIENT_ID:-}
+      NAVER_CLIENT_SECRET: ${NAVER_CLIENT_SECRET:-}
+      GNEWS_API_KEY: ${GNEWS_API_KEY:-}
 
 volumes:
   postgres-data:

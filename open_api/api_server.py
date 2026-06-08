@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 try:
     from .kipris_client import KiprisClient, KiprisError, OVERSEAS_PATENT_SERVICE_PATH, PAT_UTI_SERVICE_PATH
@@ -45,6 +45,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next: Any) -> Any:
+    expected = os.getenv("UNIFIED_API_KEY")
+    if not expected or request.method == "OPTIONS" or request.url.path in {"/", "/docs", "/redoc", "/openapi.json"}:
+        return await call_next(request)
+    provided = request.headers.get("X-API-Key")
+    if provided != expected:
+        return JSONResponse(status_code=401, content={"detail": "유효한 X-API-Key 헤더가 필요합니다."})
+    return await call_next(request)
 
 
 def _client(service_key: str | None = None) -> KiprisClient:
@@ -417,6 +428,10 @@ def _sanitize_external_error(exc: Exception) -> str:
     text = str(exc)
     text = text.replace(os.getenv("GNEWS_API_KEY") or "", "***")
     text = text.replace(os.getenv("DART_KEY") or "", "***")
+    text = text.replace(os.getenv("KIPRIS_SERVICE_KEYS") or "", "***")
+    text = text.replace(os.getenv("KIPRIS_SERVICE_KEY") or "", "***")
+    text = text.replace(os.getenv("KIPRIS_API_KEY") or "", "***")
+    text = text.replace(os.getenv("SERVICE_KEY") or "", "***")
     return text
 
 
