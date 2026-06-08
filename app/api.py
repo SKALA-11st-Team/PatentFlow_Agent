@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timezone
+from threading import BoundedSemaphore
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -19,6 +21,10 @@ app = FastAPI(
     version="0.1.0",
     description="AI workflow serving API for PatentFlow.",
 )
+
+_EVALUATE_WORKERS = max(1, int(settings.evaluate_max_concurrency or 1))
+_EVALUATE_EXECUTOR = ThreadPoolExecutor(max_workers=_EVALUATE_WORKERS, thread_name_prefix="patent-evaluate")
+_EVALUATE_SEMAPHORE = BoundedSemaphore(_EVALUATE_WORKERS)
 
 
 class PatentEvaluationRequest(BaseModel):
@@ -114,10 +120,7 @@ def root() -> dict[str, str]:
 @app.post("/api/v1/ai/patents/{patent_id}/evaluate")
 def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentEvaluationResponse:
     initial_state = PatentWorkflowState(user_input=build_api_user_input(patent_id, request))
-    try:
-        final_state = run_workflow(initial_state)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Agent workflow failed: {exc.__class__.__name__}") from exc
+    final_state = run_workflow_guarded(initial_state)
 
     if not request.noSave:
         save_outputs(final_state)
@@ -135,7 +138,7 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         artifactDir=str(final_state.user_input.get("artifact_dir") or "") or None,
         totalScore=valuation_result.get("total_score"),
         averageScore=valuation_average_score(valuation_result),
-        finalGrade=final_grade_for_average(valuation_average_score(valuation_result)),
+        finalGrade=valuation_result.get("final_grade") or final_grade_for_average(valuation_average_score(valuation_result)),
         finalIndicator=valuation_result.get("final_indicator"),
         degraded=is_degraded(final_state, valuation_result),
         failureReason=failure_reason(final_state, valuation_result),
@@ -143,6 +146,26 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         evidenceConfidence=evidence_confidence(final_state),
         generatedAt=datetime.now(timezone.utc),
     )
+
+
+def run_workflow_guarded(initial_state: PatentWorkflowState) -> PatentWorkflowState:
+    if not _EVALUATE_SEMAPHORE.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Agent evaluate capacity exceeded.")
+    future = _EVALUATE_EXECUTOR.submit(run_workflow, initial_state)
+
+    def release_when_done(_future: Any) -> None:
+        _EVALUATE_SEMAPHORE.release()
+
+    future.add_done_callback(release_when_done)
+    try:
+        timeout_seconds = max(1, int(settings.evaluate_timeout_seconds or 1))
+        return future.result(timeout=timeout_seconds)
+    except TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="Agent workflow timed out.") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Agent workflow failed: {exc.__class__.__name__}") from exc
 
 
 def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> dict[str, Any]:
@@ -240,12 +263,20 @@ def final_grade_for_average(average_score: float | None) -> str | None:
 def is_degraded(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> bool:
     scores = valuation_scores(valuation_result)
     has_scored_axis = any(isinstance(score.score, int) for score in scores)
-    return not has_scored_axis or evidence_confidence(state) == "LOW"
+    warnings = set(workflow_warnings(state))
+    return (
+        not has_scored_axis
+        or evidence_confidence(state) == "LOW"
+        or "technology_comparison_empty" in warnings
+        or any("_failed:" in warning for warning in warnings)
+    )
 
 
 def failure_reason(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> str | None:
     if not is_degraded(state, valuation_result):
         return None
+    if "technology_comparison_empty" in workflow_warnings(state):
+        return "기술성 비교군을 확보하지 못해 제한된 근거로 AI 평가가 생성되었습니다."
     if not state.evidence_bundle:
         return "외부 근거 수집 결과가 없어 AI 평가 신뢰도가 낮습니다."
     return "일부 근거 수집 단계가 실패해 제한된 근거로 AI 평가가 생성되었습니다."
@@ -267,6 +298,7 @@ def workflow_warnings(state: PatentWorkflowState) -> list[str]:
     collect_warning_values(state.validation_result, warnings)
     collect_warning_values(state.summary_validation_result, warnings)
     collect_warning_values(state.report_validation_result, warnings)
+    collect_warning_values(state.valuation_result, warnings)
     if state.missing_evidence:
         warnings.extend(str(item) for item in state.missing_evidence if item)
     if not state.evidence_bundle:

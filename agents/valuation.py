@@ -11,6 +11,8 @@ from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.observability.langsmith_service import trace
 from agents.valuation_axes import AXIS_MODULES
+from agents.valuation_axes.common import grade_for_score
+from schemas.valuation import validate_axis_result, validate_valuation_result
 from workflow.state import PatentWorkflowState
 
 
@@ -84,11 +86,45 @@ def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
 
 
 def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    ensemble_runs = max(1, int(settings.valuation_ensemble_runs or 1))
+    if settings.valuation_seed is not None and not settings.valuation_seed_supported:
+        # gpt-5 Responses calls in this client path do not apply seed. Keep the
+        # setting explicit, but do not imply determinism that is not enforced.
+        ensemble_runs = max(ensemble_runs, 1)
+    if ensemble_runs > 1:
+        results = [run_axis_llm_once(axis=axis, prompt=prompt, evidence=evidence) for _ in range(ensemble_runs)]
+        return combine_axis_ensemble(axis, results)
+    return run_axis_llm_once(axis=axis, prompt=prompt, evidence=evidence)
+
+
+def run_axis_llm_once(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
     raw = call_llm(prompt)
     parsed = parse_json_object(raw)
     if not parsed:
         raise RuntimeError(f"LLM valuation response for {axis} was not valid JSON.")
     return normalize_axis_llm_result(axis, parsed, evidence=evidence)
+
+
+def combine_axis_ensemble(axis: str, results: list[dict[str, Any]]) -> dict[str, Any]:
+    if not results:
+        raise RuntimeError(f"LLM valuation ensemble for {axis} produced no results.")
+    ordered = sorted(results, key=lambda item: int(item.get("score") or 0))
+    selected = dict(ordered[len(ordered) // 2])
+    average_score = round(sum(int(item.get("score") or 0) for item in results) / len(results))
+    selected["score"] = max(0, min(100, int(average_score)))
+    selected["grade"] = grade_for_score(selected["score"])
+    selected["ensemble_runs"] = len(results)
+    selected["ensemble_scores"] = [int(item.get("score") or 0) for item in results]
+    selected["risk_factors"] = unique_texts(item for result in results for item in result.get("risk_factors", []))
+    selected["missing_information"] = unique_texts(
+        item for result in results for item in result.get("missing_information", [])
+    )
+    selected["evidence_ids"] = unique_texts(item for result in results for item in result.get("evidence_ids", []))
+    selected["confidence"] = round(
+        sum(float(result.get("confidence") or 0.0) for result in results) / len(results),
+        2,
+    )
+    return validate_axis_result(axis, selected)
 
 
 def build_axis_prompt(
@@ -144,7 +180,7 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         for evidence_id in normalize_list(parsed.get("evidence_ids"))
         if evidence_id in known_evidence_ids
     ]
-    required_fields = ["score", "grade", "rationale", "confidence"]
+    required_fields = ["score", "rationale", "confidence"]
     missing_fields = [field for field in required_fields if parsed.get(field) in (None, "", [])]
     if missing_fields:
         raise RuntimeError(f"LLM valuation response for {axis} is missing: {', '.join(missing_fields)}.")
@@ -153,7 +189,7 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
         "axis": axis,
         "label": AXIS_LABELS[axis],
         "score": score,
-        "grade": normalize_text(parsed.get("grade")),
+        "grade": grade_for_score(score),
         "rationale": normalize_text(parsed.get("rationale")),
         "evidence_ids": evidence_ids,
         "risk_factors": normalize_list(parsed.get("risk_factors")),
@@ -178,7 +214,7 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
     subscores = normalize_subscores(parsed.get("subscores"))
     if subscores:
         result["subscores"] = subscores
-    return result
+    return validate_axis_result(axis, result)
 
 
 def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
@@ -213,28 +249,43 @@ def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
 
 
 def build_final_valuation_result(axes: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    total_score = sum(int(axis.get("score") or 0) for axis in axes.values())
-    average_score = round(total_score / len(axes), 1) if axes else 0
-    final_indicator = total_score_to_indicator(total_score)
+    validated_axes = {axis: validate_axis_result(axis, payload) for axis, payload in axes.items()}
+    total_score = sum(int(axis.get("score") or 0) for axis in validated_axes.values())
+    average_score = round(total_score / len(validated_axes), 1) if validated_axes else 0
+    final_grade = grade_for_score(average_score)
+    final_indicator = score_to_final_recommendation(average_score)
     missing_information = unique_texts(
-        item for axis in axes.values() for item in axis.get("missing_information", [])
+        item for axis in validated_axes.values() for item in axis.get("missing_information", [])
     )
+    if missing_information:
+        final_indicator = "추가 정보 필요"
+    warnings = valuation_warnings(validated_axes)
     required_actions = []
-    business_fit = axes.get("business_fit") or {}
+    business_fit = validated_axes.get("business_fit") or {}
     if business_fit.get("missing_information"):
         required_actions.append("사업부 적용 여부 및 향후 적용 계획 확인")
     if missing_information:
         required_actions.append("부족 정보 보완 후 최종 판단 재검토")
     result = {
-        "axes": axes,
+        "axes": validated_axes,
         "total_score": total_score,
         "average_score": average_score,
+        "final_grade": final_grade,
         "final_indicator": final_indicator,
-        "recommendation": indicator_to_recommendation(final_indicator, missing_information),
-        "decision_rationale": build_decision_rationale(axes, total_score, average_score, final_indicator),
+        "recommendation": final_indicator,
+        "decision_rationale": build_decision_rationale(
+            validated_axes,
+            total_score,
+            average_score,
+            final_grade,
+            final_indicator,
+        ),
         "required_actions": unique_texts(required_actions),
         "missing_information": missing_information,
+        "warnings": warnings,
     }
+    if settings.valuation_schema_strict:
+        return validate_valuation_result(result)
     return result
 
 
@@ -255,20 +306,8 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
-def total_score_to_indicator(total_score: int) -> str:
-    if total_score >= 320:
-        return "유지"
-    if total_score >= 240:
-        return "조건부 유지"
-    if total_score >= 160:
-        return "포기 검토"
-    return "매각 후보"
-
-
-def indicator_to_recommendation(final_indicator: str, missing_information: list[str]) -> str:
-    if missing_information and final_indicator in {"유지", "조건부 유지"}:
-        return "추가 정보 필요"
-    if final_indicator in {"유지", "조건부 유지"}:
+def score_to_final_recommendation(average_score: float) -> str:
+    if average_score >= 60:
         return "유지 권고"
     return "포기 검토"
 
@@ -277,15 +316,28 @@ def build_decision_rationale(
     axes: dict[str, dict[str, Any]],
     total_score: int,
     average_score: float,
+    final_grade: str,
     final_indicator: str,
 ) -> list[str]:
     strongest = max(axes.values(), key=lambda axis: axis.get("score", 0))
     weakest = min(axes.values(), key=lambda axis: axis.get("score", 0))
     return [
-        f"4개 평가축 합산 점수는 {total_score}/400점, 평균 점수는 {average_score:g}/100점이며 최종 종합 지표는 {final_indicator}이다.",
+        f"4개 평가축 합산 점수는 {total_score}/400점, 평균 점수는 {average_score:g}/100점, 종합 등급은 {final_grade}이다.",
+        f"AI 권고 라벨은 {final_indicator}이다.",
         f"가장 강한 축은 {strongest.get('label')}({strongest.get('score')}점)이다.",
         f"보완이 필요한 축은 {weakest.get('label')}({weakest.get('score')}점)이다.",
     ]
+
+
+def valuation_warnings(axes: dict[str, dict[str, Any]]) -> list[str]:
+    warnings: list[str] = []
+    technology_metrics = (axes.get("technology") or {}).get("technology_metrics") or {}
+    warnings.extend(str(item) for item in technology_metrics.get("warnings") or [] if item)
+    target_count = int(technology_metrics.get("target_count") or 0)
+    comparison_count = len(technology_metrics.get("similar_patents") or [])
+    if target_count > 0 and comparison_count == 0:
+        warnings.append("technology_comparison_empty")
+    return unique_texts(warnings)
 
 
 def normalize_text(value: Any) -> str:

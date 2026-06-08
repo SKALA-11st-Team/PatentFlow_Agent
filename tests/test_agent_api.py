@@ -69,6 +69,27 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     assert "rawMarkdown" not in body
 
 
+def test_degraded_reflects_technology_comparison_warning():
+    from app.api import failure_reason, is_degraded, workflow_warnings
+
+    state = PatentWorkflowState(
+        evidence_bundle=[{"evidence_id": "e1"}],
+        valuation_result={
+            "warnings": ["technology_comparison_empty"],
+            "axes": {
+                "legal": {"label": "권리성", "score": 70, "grade": "B", "rationale": "r"},
+                "technology": {"label": "기술성", "score": 70, "grade": "B", "rationale": "r"},
+                "market": {"label": "시장성", "score": 70, "grade": "B", "rationale": "r"},
+                "business_fit": {"label": "사업 연계성", "score": 70, "grade": "B", "rationale": "r"},
+            },
+        },
+    )
+
+    assert "technology_comparison_empty" in workflow_warnings(state)
+    assert is_degraded(state, state.valuation_result) is True
+    assert failure_reason(state, state.valuation_result).startswith("기술성 비교군")
+
+
 def test_evaluate_patent_builds_patent_id_input(monkeypatch):
     captured = {}
 

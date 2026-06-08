@@ -31,6 +31,10 @@ class PatentWorkflowState(BaseModel):
 
     # Valuation and report markdown
     valuation_result: dict[str, Any] | None = None
+    valuation_axis_legal: dict[str, Any] | None = None
+    valuation_axis_technology: dict[str, Any] | None = None
+    valuation_axis_market: dict[str, Any] | None = None
+    valuation_axis_business_fit: dict[str, Any] | None = None
     valuation_retry_axes: list[str] = Field(default_factory=list)
     final_report: dict[str, Any] | None = None
 

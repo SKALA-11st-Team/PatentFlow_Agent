@@ -40,6 +40,12 @@ class Settings(BaseModel):
     industry_rag_top_k: int = int(getenv("INDUSTRY_RAG_TOP_K", "3"))
     max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
     workflow_recursion_limit: int = int(getenv("WORKFLOW_RECURSION_LIMIT", "80"))
+    evaluate_timeout_seconds: int = int(getenv("EVALUATE_TIMEOUT_SECONDS", "180"))
+    evaluate_max_concurrency: int = int(getenv("EVALUATE_MAX_CONCURRENCY", "2"))
+    valuation_schema_strict: bool = getenv("VALUATION_SCHEMA_STRICT", "true").lower() == "true"
+    valuation_ensemble_runs: int = int(getenv("VALUATION_ENSEMBLE_RUNS", "1"))
+    valuation_seed: int | None = int(getenv("VALUATION_SEED")) if getenv("VALUATION_SEED") else None
+    valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "false").lower() == "true"
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
     enable_shared_db_fallback: bool = getenv("ENABLE_SHARED_DB_FALLBACK", "false").lower() == "true"
     

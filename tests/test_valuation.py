@@ -140,6 +140,69 @@ def test_run_valuation_agent_sets_result():
     assert "final_report_markdown" not in result.valuation_result
 
 
+def test_final_valuation_result_validates_schema_and_uses_domain_recommendation_labels():
+    from agents.valuation import build_final_valuation_result
+
+    axes = {
+        "legal": {
+            "axis": "legal",
+            "label": "권리성",
+            "score": 70,
+            "grade": "B",
+            "rationale": "권리성 근거",
+            "confidence": 0.7,
+        },
+        "technology": {
+            "axis": "technology",
+            "label": "기술성",
+            "score": 70,
+            "grade": "B",
+            "rationale": "기술성 근거",
+            "confidence": 0.7,
+            "technology_metrics": {"target_count": 5, "similar_patents": []},
+        },
+        "market": {
+            "axis": "market",
+            "label": "시장성",
+            "score": 70,
+            "grade": "B",
+            "rationale": "시장성 근거",
+            "confidence": 0.7,
+        },
+        "business_fit": {
+            "axis": "business_fit",
+            "label": "사업 연계성",
+            "score": 70,
+            "grade": "B",
+            "rationale": "사업 연계성 근거",
+            "confidence": 0.7,
+        },
+    }
+
+    result = build_final_valuation_result(axes)
+
+    assert result["total_score"] == 280
+    assert result["average_score"] == 70.0
+    assert result["final_grade"] == "B"
+    assert result["final_indicator"] == "유지 권고"
+    assert result["recommendation"] == "유지 권고"
+    assert "technology_comparison_empty" in result["warnings"]
+
+
+def test_final_valuation_result_rejects_missing_or_deprecated_axis():
+    from agents.valuation import build_final_valuation_result
+
+    axes = {
+        "legal": {"axis": "legal", "label": "권리성", "score": 70, "grade": "B", "rationale": "r", "confidence": 0.7},
+        "technology": {"axis": "technology", "label": "기술성", "score": 70, "grade": "B", "rationale": "r", "confidence": 0.7},
+        "market": {"axis": "market", "label": "시장성", "score": 70, "grade": "B", "rationale": "r", "confidence": 0.7},
+        "strategy": {"axis": "strategy", "label": "전략성", "score": 70, "grade": "B", "rationale": "r", "confidence": 0.7},
+    }
+
+    with pytest.raises(RuntimeError, match="Valuation axis schema invalid for strategy"):
+        build_final_valuation_result(axes)
+
+
 def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     captured_prompts = []
 

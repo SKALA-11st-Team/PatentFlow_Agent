@@ -301,3 +301,15 @@ def test_query_rewriting_reeval_targets_preserve_self_contained_axes():
     assert reset["valuation_axis_business_fit"] is None
     assert "valuation_axis_legal" not in reset
     assert "valuation_axis_technology" not in reset
+
+
+def test_workflow_state_preserves_valuation_axis_channels_on_round_trip():
+    payload = PatentWorkflowState(
+        valuation_axis_legal={"axis": "legal", "score": 80, "grade": "A"},
+        valuation_axis_technology={"axis": "technology", "score": 70, "grade": "B"},
+    ).model_dump()
+
+    round_tripped = workflow_graph._as_state(payload).model_dump()
+
+    assert round_tripped["valuation_axis_legal"]["score"] == 80
+    assert round_tripped["valuation_axis_technology"]["grade"] == "B"
