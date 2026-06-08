@@ -46,6 +46,8 @@ class Settings(BaseModel):
     news_results_per_query: int = int(getenv("NEWS_RESULTS_PER_QUERY", "3"))
     industry_rag_query_count: int = int(getenv("INDUSTRY_RAG_QUERY_COUNT", "1"))
     industry_rag_top_k: int = int(getenv("INDUSTRY_RAG_TOP_K", "3"))
+    # 산업 리포트 RAG 근거 채택 최소 유사도. 이 값 미만이면 압축 후보에서 제외한다.
+    rag_score_threshold: float = float(getenv("RAG_SCORE_THRESHOLD", "0.5"))
     # SK AX(Tavily/Google) 사이트 검색 HTTP 타임아웃(초). raw_content 수집 때문에
     # 5초로는 자주 ReadTimeout이 나므로 기본을 넉넉히 둔다.
     skax_search_timeout_seconds: int = int(getenv("SKAX_SEARCH_TIMEOUT_SECONDS", "20"))

@@ -13,7 +13,7 @@ from services.llm.prompt_service import load_prompt
 
 
 DEFAULT_COMPRESSED_EVIDENCE_DIR = settings.output_dir / "compressed_evidence"
-DEFAULT_RAG_SCORE_THRESHOLD = 0.5
+DEFAULT_RAG_SCORE_THRESHOLD = settings.rag_score_threshold
 ALLOWED_AXES = {"legal", "technology", "market", "business_fit", "strategy"}
 DEFAULT_TEXT_LIMIT = 6000
 DEFAULT_COMPRESSION_WORKERS = 3
