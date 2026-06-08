@@ -54,8 +54,8 @@ HEADER_NORMALIZE_MAP = {
 }
 
 IMAGE_MARKDOWN_RE = re.compile(r"!\[image\s+(\d+)\]\(<([^>]+)>\)")
-US_CLASSIFICATION_RE = re.compile(r"[A-HY]\d{2}[A-Z]\s*\d+\s*/\s*\d+")
-US_CLASSIFICATION_CANDIDATE_RE = re.compile(r"\b[A-HY][0-9OIGQ]{2}[A-Z]\s*\d+\s*/\s*\d+\b", re.I)
+US_CLASSIFICATION_RE = re.compile(r"[A-HY]\d{2}[A-Z]\s*\d+\s*/?\s*\d+")
+US_CLASSIFICATION_CANDIDATE_RE = re.compile(r"\b[A-HY][0-9OIGQS]{2}[A-Z]\s*\d+\s*/?\s*\d+\b", re.I)
 USPTO_LABEL_STOP_PATTERN = (
     r"^(?:\(\d{2}\)\s*)?(?:"
     r"Patent No\.?|Date of Patent|U\.S\. Cl\.|CPC|Int\. Cl\.|Applicant|Assignee|Inventors?|Appl\.?\s*No\.?|Filed|PCT Filed|"
@@ -346,7 +346,7 @@ def build_preprocessed_patent(
     if country and country != "KR":
         sections = merge_foreign_sections(
             sections,
-            extract_us_patent_sections(raw_text, cleaned_text=cleaned_text),
+            extract_us_patent_sections(cleaned_text, cleaned_text=cleaned_text),
         )
     drawing_context = build_drawing_context(raw_text, sections, source=source)
 
@@ -357,7 +357,9 @@ def build_preprocessed_patent(
         )
         api_sections = api_data.get("sections") or {}
         if api_sections.get("abstract"):
-            sections["abstract"] = postprocess_agent_text(api_sections["abstract"])
+            api_abstract = postprocess_agent_text(api_sections["abstract"])
+            if not sections.get("abstract") or len(api_abstract) > len(sections.get("abstract") or ""):
+                sections["abstract"] = api_abstract
         api_claims = api_data.get("claims") or []
         claims = [
             {
@@ -599,7 +601,9 @@ def extract_sections(text: str) -> dict[str, str]:
 def merge_foreign_sections(base: dict[str, str], foreign: dict[str, str]) -> dict[str, str]:
     merged = dict(base)
     for key, value in foreign.items():
-        if value and not merged.get(key):
+        if key == "abstract" and value:
+            merged[key] = value
+        elif value and not merged.get(key):
             merged[key] = value
     return merged
 
@@ -853,8 +857,8 @@ def _extract_uspto_abstract(text: str) -> str:
     lines = text.splitlines()
     capture = False
     collected: list[str] = []
-    consecutive_noise = 0
     continued_mode = False
+    skip_until_page_two = False
     for raw_line in lines:
         line = raw_line.strip()
         if not capture:
@@ -868,24 +872,23 @@ def _extract_uspto_abstract(text: str) -> str:
             break
         if re.search(r"(?i)^\(?Continued\)?$", line):
             continued_mode = True
-            consecutive_noise = 0
+            skip_until_page_two = True
             continue
+        if skip_until_page_two:
+            if re.search(r"(?i)(?:\bUS\s+\d[\d,]*\s*[A-Z]\d?\s+Page\s+2\b|\bSheet\s+2\s+of\b)", line):
+                skip_until_page_two = False
+                continue
+            if line and re.match(r"(?i)^(?:and|modified|wherein|when|while|by|for|to|of|in)\b", line):
+                skip_until_page_two = False
+            else:
+                continue
         if continued_mode and re.search(r"(?i)^(?:U\.S\.\s+Patent\b.*|US\s+\d[\d,]*\s*[A-Z]\d?.*\bPage\s+\d+\b|Sheet\s+\d+\s+of\s+\d+.*)$", line):
             continue
         if _is_uspto_abstract_noise_line(line):
-            if collected:
-                consecutive_noise += 1
-                if consecutive_noise >= 2:
-                    break
             continue
         line = _clean_uspto_abstract_line(line)
         if not line:
-            if collected:
-                consecutive_noise += 1
-                if consecutive_noise >= 2:
-                    break
             continue
-        consecutive_noise = 0
         collected.append(line)
     return normalize_blank_lines("\n".join(collected))
 
@@ -970,8 +973,12 @@ def extract_paragraph_numbers(text: str) -> list[str]:
 
 
 def merge_section_broken_lines(text: str) -> str:
+    text = re.sub(r"([A-Za-z])-\s*\n\s*([a-z])", r"\1\2", text)
+    text = re.sub(r"([A-Za-z])/\s*\n\s*([a-z])", r"\1/\2", text)
     text = re.sub(r"([가-힣A-Za-z0-9])\n{2,}([가-힣A-Za-z0-9])", r"\1\2", text)
-    text = re.sub(r"([가-힣A-Za-z0-9,;:.])\n([가-힣A-Za-z0-9])", r"\1 \2", text)
+    text = re.sub(r"([가-힣A-Za-z0-9,;:./])\n([가-힣A-Za-z0-9])", r"\1 \2", text)
+    text = re.sub(r"([A-Za-z])-\s+([a-z])", r"\1\2", text)
+    text = re.sub(r"([A-Za-z])/\s+([a-z])", r"\1/\2", text)
     text = re.sub(r"\s{2,}", " ", text)
     text = re.sub(r"\s+([,;.])", r"\1", text)
     return text
@@ -1080,13 +1087,13 @@ def _extract_foreign_classifications(text: str, label: str) -> list[str]:
     for raw_line in lines:
         line = _normalize_uspto_classification_ocr(raw_line.strip())
         if not capture:
-            if re.match(r"(?i)^(?:\(\s*51\s*\)\s*)?Int\.?\s*Cl\.?\b", line):
+            if re.search(r"(?i)(?:\(\s*51\s*\)\s*)?Int\.?\s*C[lh]\.?\b", line):
                 capture = True
-                values.extend(US_CLASSIFICATION_RE.findall(line))
+                values.extend(US_CLASSIFICATION_RE.findall(_ipc_line_before_next_uspto_label(line)))
             continue
         if _is_ipc_stop_line(line):
             break
-        values.extend(US_CLASSIFICATION_RE.findall(line))
+        values.extend(US_CLASSIFICATION_RE.findall(_ipc_line_before_next_uspto_label(line)))
     return _normalize_us_classification_values(values)
 
 
@@ -1097,20 +1104,29 @@ def _extract_foreign_representative_ipc(text: str) -> str:
     for raw_line in lines:
         line = _normalize_uspto_classification_ocr(raw_line.strip())
         if not capture:
-            if re.match(r"(?i)^(?:\(\s*51\s*\)\s*)?Int\.?\s*Cl\.?\b", line):
+            if re.search(r"(?i)(?:\(\s*51\s*\)\s*)?Int\.?\s*C[lh]\.?\b", line):
                 capture = True
-                matches = US_CLASSIFICATION_RE.findall(line)
+                matches = US_CLASSIFICATION_RE.findall(_ipc_line_before_next_uspto_label(line))
                 if matches:
                     normalized = _normalize_us_classification_values(matches)
                     return normalized[0] if normalized else ""
             continue
         if _is_ipc_stop_line(line):
             break
-        matches = US_CLASSIFICATION_RE.findall(line)
+        matches = US_CLASSIFICATION_RE.findall(_ipc_line_before_next_uspto_label(line))
         if matches:
             normalized = _normalize_us_classification_values(matches)
             return normalized[0] if normalized else ""
     return ""
+
+
+def _ipc_line_before_next_uspto_label(line: str) -> str:
+    return re.split(
+        r"(?i)\(\s*52\s*\)\s*U\.?S\.?\s*C[IL]\b|\(\s*58\s*\)\s*Field\s+of\s+Classification|"
+        r"\(\s*56\s*\)\s*References\s+Cited|\bCPC\b",
+        line,
+        maxsplit=1,
+    )[0]
 
 
 def _extract_foreign_classification_fallback(text: str) -> list[str]:
@@ -1200,6 +1216,7 @@ def _is_uspto_abstract_stop_line(line: str) -> bool:
             r"(?i)^(?:\(\s*\d{2}\s*\)\s*)?(?:References Cited|What is claimed is|The invention claimed is|TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|BRIEF DESCRIPTION OF DRAWINGS|DESCRIPTION|DETAILED DESCRIPTION)\b",
             line,
         )
+        or re.search(r"(?i)^\(\s*(?:51|52|56|58)\s*\)\s*$", line)
         or re.search(r"(?i)\b\d+\s+Claims\b", line)
         or re.search(r"(?i)\bDrawing Sheets\b", line)
         or re.search(r"(?i)\bFIG\.\s*\d+\b", line)
@@ -1233,16 +1250,21 @@ def _clean_uspto_abstract_line(line: str) -> str:
     if not line:
         return ""
     line = re.sub(r"(?i)^.*?\bABSTRACT\b[:\s]*", "", line).strip()
+    line = re.sub(r"(?i)\bUS\s+\d[\d,]*\s*[A-Z]\d?\s+Page\s+\d+\b", " ", line)
     line = re.sub(r"(?i)\bUS\s+\d{4}/\d+\s+A[I1l]\b\s+[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}", " ", line)
     line = re.sub(r"(?i)\(\s*30\s*\)\s*Foreign Application Priority Data", " ", line)
     line = re.sub(r"(?i)\(\s*65\s*\)\s*Prior Publication Data", " ", line)
     line = re.sub(r"(?i)[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\([A-Z]{2}\)\s+[0-9A-Za-z,\-]+", " ", line)
-    line = re.sub(r"(?i)\(\s*51\s*\)\s*Int\.?\s*Ch?\.?.*$", "", line)
-    line = re.sub(r"(?i)\bInt\.?\s*Cl\.?\b.*$", "", line)
+    line = re.sub(r"\b10-\d{4}-\d{7}\b", " ", line)
+    line = re.sub(r"(?i)\(\s*51\s*\)\s*Int\.?\s*Ch?\.?", " ", line)
+    line = re.sub(r"(?i)\bInt\.?\s*Cl\.?\b", " ", line)
     line = re.sub(US_CLASSIFICATION_RE, " ", line)
-    line = re.sub(r"(?i)\(?Continued\)?", " ", line)
+    line = re.sub(r"(?i)\(?Continued\)?.*?\bUS\s+\d[\d,]*\s*[A-Z]\d?\s+Page\s+2", " ", line)
+    line = re.sub(r"(?i)\(?Continued\)?.*$", " ", line)
+    line = re.sub(r"\(\s*\d{4}\.\d{2}\s*\)", " ", line)
     line = re.sub(r"(?i)\b\d+\s+Claims\b.*$", "", line)
     line = re.sub(r"(?i)\bDrawing Sheets\b.*$", "", line)
+    line = re.sub(r"\s+\d+\s*$", "", line)
     line = re.sub(r"\s+", " ", line).strip(" ,;:-")
     return line
 
@@ -1303,8 +1325,11 @@ def _extract_foreign_labeled_block(
 def _normalize_us_classification_values(values: list[str]) -> list[str]:
     cleaned = []
     for value in values:
+        value = _normalize_uspto_classification_ocr(value)
         normalized = re.sub(r"\(\d{4}\.\d{2}\)", "", value)
         normalized = re.sub(r"\s*/\s*", "/", normalized)
+        normalized = re.sub(r"\b(G06F)\s+1130\b", r"\1 11/30", normalized)
+        normalized = re.sub(r"\b(G06F)\s+11/734\b", r"\1 11/34", normalized)
         normalized = re.sub(r"\s+", " ", normalized).strip()
         cleaned.append(normalized)
     return _dedupe(cleaned)
@@ -1321,11 +1346,16 @@ def _normalize_uspto_classification_ocr(text: str) -> str:
             "GO6F": "G06F",
             "GOOF": "G06F",
             "GO6N": "G06N",
+            "GOON": "G06N",
             "GOGN": "G06N",
+            "GOGF": "G06F",
+            "GOSB": "G05B",
+            "GOIR": "G01R",
+            "HOIL": "H01L",
             "A6IB": "A61B",
         }
         for wrong, correct in replacements.items():
-            fixed = re.sub(rf"\b{wrong}(?=\s*\d+\s*/\s*\d+)", correct, fixed, flags=re.I)
+            fixed = re.sub(rf"\b{wrong}(?=\s*\d+\s*/?\s*\d+)", correct, fixed, flags=re.I)
         return fixed
 
     return US_CLASSIFICATION_CANDIDATE_RE.sub(replace, text)

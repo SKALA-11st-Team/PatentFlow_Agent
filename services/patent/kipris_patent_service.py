@@ -475,17 +475,44 @@ def extract_pdf_text_with_ocr(pdf_path: str | Path) -> str:
         if not image_paths:
             raise RuntimeError("ocr_page_render_failed")
         texts: list[str] = []
-        for image_path in image_paths:
-            result = subprocess.run(
-                [tesseract_cmd, str(image_path), "stdout"],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            page_text = str(result.stdout or "").strip()
+        for index, image_path in enumerate(image_paths):
+            if index == 0:
+                page_text = ocr_first_page_halves(image_path, tesseract_cmd=tesseract_cmd, temp_dir=Path(temp_dir))
+            else:
+                page_text = ocr_image_text(image_path, tesseract_cmd=tesseract_cmd)
             if page_text:
                 texts.append(page_text)
         return "\n\n".join(texts)
+
+
+def ocr_first_page_halves(image_path: Path, *, tesseract_cmd: str, temp_dir: Path) -> str:
+    from PIL import Image
+
+    with Image.open(image_path) as image:
+        width, height = image.size
+        midpoint = width // 2
+        crops = [
+            ("left", image.crop((0, 0, midpoint, height))),
+            ("right", image.crop((midpoint, 0, width, height))),
+        ]
+        page_parts: list[str] = []
+        for label, crop in crops:
+            crop_path = temp_dir / f"{image_path.stem}_{label}.png"
+            crop.save(crop_path)
+            text = ocr_image_text(crop_path, tesseract_cmd=tesseract_cmd).strip()
+            if text:
+                page_parts.append(text)
+        return "\n\n".join(page_parts)
+
+
+def ocr_image_text(image_path: Path, *, tesseract_cmd: str) -> str:
+    result = subprocess.run(
+        [tesseract_cmd, str(image_path), "stdout"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return str(result.stdout or "").strip()
 
 
 def _kipris_client() -> Any:
