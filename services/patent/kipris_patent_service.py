@@ -4,6 +4,9 @@ import sqlite3
 from typing import Any
 import io
 import re
+import shutil
+import subprocess
+import tempfile
 
 import requests
 
@@ -229,16 +232,26 @@ def fetch_foreign_patent_rights_data(
         elif not claims:
             result["warnings"].append("foreign_pdf_claims_not_extracted")
     except Exception as exc:
+        missing_reason = classify_foreign_pdf_failure(exc)
         result["pdf_collection"] = {
             "status": "manual_upload_required",
             "source": None,
             "manual_upload_required": True,
-            "missing_reason": "kipris_and_google_patents_pdf_not_found",
+            "missing_reason": missing_reason,
         }
         result["warnings"].append(
             f"foreign_pdf_manual_upload_required:{exc.__class__.__name__}:{str(exc)[:300]}"
         )
     return result
+
+
+def classify_foreign_pdf_failure(exc: Exception) -> str:
+    message = str(exc or "").strip()
+    if message == "Could not find foreign fulltext PDF from KIPRIS or Google Patents.":
+        return "kipris_and_google_patents_pdf_not_found"
+    if message:
+        return message[:300]
+    return exc.__class__.__name__
 
 
 def foreign_pdf_source(selected_type: Any) -> str | None:
@@ -398,10 +411,81 @@ def parse_single_patent_pdf(
         after = sorted(output_dir.rglob("*.md"))
 
     markdown_text = "\n\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in after)
+    if should_run_ocr_fallback(markdown_text):
+        ocr_text = extract_pdf_text_with_ocr(pdf_path)
+        if not has_meaningful_pdf_text(ocr_text):
+            raise RuntimeError("foreign_pdf_text_extraction_failed_after_ocr")
+        markdown_text = ocr_text
     return {
         "markdown_paths": [str(path) for path in after],
         "markdown_text": markdown_text,
     }
+
+
+def has_meaningful_pdf_text(text: str | None) -> bool:
+    normalized = str(text or "").strip()
+    if re.search(r"\babstract\b", normalized, re.I):
+        return True
+    if re.search(r"\bclaims?\b", normalized, re.I):
+        return True
+    if re.search(r"\b\d+\.\s+\S+", normalized):
+        return True
+    if len(normalized) < 200:
+        return False
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    non_image_lines = [line for line in lines if not re.fullmatch(r"!\[image\s+\d+\]\(.+\)", line, re.I)]
+    return len(" ".join(non_image_lines)) >= 400
+
+
+def should_run_ocr_fallback(markdown_text: str | None) -> bool:
+    normalized = str(markdown_text or "")
+    if has_meaningful_pdf_text(normalized):
+        return False
+    image_only_lines = [
+        line.strip()
+        for line in normalized.splitlines()
+        if line.strip()
+    ]
+    if image_only_lines and all(line.startswith("![image ") for line in image_only_lines):
+        return True
+    return True
+
+
+def extract_pdf_text_with_ocr(pdf_path: str | Path) -> str:
+    tesseract_cmd = shutil.which("tesseract")
+    pdftoppm_cmd = shutil.which("pdftoppm")
+    if not tesseract_cmd or not pdftoppm_cmd:
+        missing = []
+        if not tesseract_cmd:
+            missing.append("tesseract")
+        if not pdftoppm_cmd:
+            missing.append("pdftoppm")
+        raise RuntimeError(f"ocr_tools_not_available:{','.join(missing)}")
+
+    pdf_path = Path(pdf_path)
+    with tempfile.TemporaryDirectory(prefix="patent_ocr_") as temp_dir:
+        image_prefix = Path(temp_dir) / "page"
+        subprocess.run(
+            [pdftoppm_cmd, "-png", str(pdf_path), str(image_prefix)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        image_paths = sorted(Path(temp_dir).glob("page-*.png"))
+        if not image_paths:
+            raise RuntimeError("ocr_page_render_failed")
+        texts: list[str] = []
+        for image_path in image_paths:
+            result = subprocess.run(
+                [tesseract_cmd, str(image_path), "stdout"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            page_text = str(result.stdout or "").strip()
+            if page_text:
+                texts.append(page_text)
+        return "\n\n".join(texts)
 
 
 def _kipris_client() -> Any:
@@ -1213,9 +1297,24 @@ def download_and_parse_foreign_patent_pdf(
     candidates: list[dict[str, Any]],
     output_dir: str | Path,
 ) -> dict[str, Any]:
-    selected = select_foreign_fulltext_pdf_with_fallback(client, patent, candidates)
     pdf_dir = Path(settings.patent_pdf_dir)
     parse_output_dir = Path(output_dir) / _safe_filename(str(patent.get("management_number") or patent.get("registration_number") or "foreign"))
+    cached_pdf_path = find_cached_foreign_patent_pdf(patent, pdf_dir=pdf_dir)
+    if cached_pdf_path is not None:
+        parsed = parse_single_patent_pdf(cached_pdf_path, output_dir=parse_output_dir)
+        publication_id = google_patents_publication_id(patent) or cached_pdf_path.stem
+        return {
+            "literature_number": publication_id,
+            "selected_type": "CACHED_LOCAL_PDF",
+            "source_path": str(cached_pdf_path),
+            "doc_name": cached_pdf_path.name,
+            "pdf_path": str(cached_pdf_path),
+            "parse_output_dir": str(parse_output_dir),
+            "markdown_paths": parsed.get("markdown_paths") or [],
+            "markdown_text": parsed.get("markdown_text") or "",
+        }
+
+    selected = select_foreign_fulltext_pdf_with_fallback(client, patent, candidates)
     pdf_path = _download_pdf_url(
         selected["path"],
         output_dir=pdf_dir,
@@ -1234,6 +1333,33 @@ def download_and_parse_foreign_patent_pdf(
         "markdown_paths": parsed.get("markdown_paths") or [],
         "markdown_text": parsed.get("markdown_text") or "",
     }
+
+
+def find_cached_foreign_patent_pdf(
+    patent: dict[str, Any],
+    *,
+    pdf_dir: str | Path | None = None,
+) -> Path | None:
+    directory = Path(pdf_dir or settings.patent_pdf_dir)
+    publication_id = google_patents_publication_id(patent)
+    if publication_id:
+        candidate = directory / f"{publication_id}.pdf"
+        if candidate.exists():
+            return candidate
+
+    normalized_candidates = []
+    for value in (
+        patent.get("registration_number"),
+        patent.get("application_number"),
+    ):
+        cleaned = re.sub(r"[^0-9A-Z]+", "", str(value or "").upper())
+        if cleaned:
+            normalized_candidates.append(cleaned)
+    for cleaned in normalized_candidates:
+        for path in directory.glob(f"*{cleaned}*.pdf"):
+            if path.is_file():
+                return path
+    return None
 
 
 def select_foreign_fulltext_pdf_with_fallback(
@@ -1392,25 +1518,32 @@ def first_mapping_value(mapping: dict[str, Any], keys: tuple[str, ...]) -> str |
 
 
 def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
-    normalized_text = str(text or "")
+    normalized_text = normalize_foreign_ocr_text(str(text or ""))
+    claims_text = isolate_foreign_claims_section(normalized_text)
+    if not claims_text:
+        return []
+
     patterns = [
         r"(?im)^\s*(?:claim|claims?)\s*([0-9]+)\s*[:.)-]?\s*(.*)$",
-        r"(?m)^\s*-?\s*([0-9]+)\s*[.)]\s*(.*)$",
+        r"(?m)^\s*([0-9]+)\s*[.)]\s*((?:An|A|The)\b.*)$",
         r"(?m)^\s*权利要求\s*([0-9]+)\s*(.*)$",
     ]
-    matches = []
+    matches: list[re.Match[str]] = []
     for pattern in patterns:
-        matches = list(re.finditer(pattern, normalized_text))
+        matches = list(re.finditer(pattern, claims_text))
         if matches:
             break
-    claims = []
+    claims: list[dict[str, Any]] = []
+    seen_claim_numbers: set[int] = set()
     for index, match in enumerate(matches):
         claim_no = _int_or_none(match.group(1)) or (index + 1)
+        if claim_no in seen_claim_numbers:
+            continue
         first_line = match.group(2).strip() if len(match.groups()) >= 2 else ""
         start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(normalized_text)
-        body = re.sub(r"\s+", " ", f"{first_line} {normalized_text[start:end]}").strip()
-        if len(body) < 20:
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(claims_text)
+        body = re.sub(r"\s+", " ", f"{first_line} {claims_text[start:end]}").strip()
+        if not is_valid_foreign_claim_body(body):
             continue
         dependency = extract_foreign_claim_dependency(body)
         claims.append(
@@ -1423,7 +1556,51 @@ def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
                 "source": "kipris_foreign_fulltext_pdf",
             }
         )
+        seen_claim_numbers.add(claim_no)
     return claims
+
+
+def normalize_foreign_ocr_text(text: str) -> str:
+    normalized = str(text or "")
+    normalized = re.sub(r"(?<=\w)-\s+(?=\w)", "", normalized)
+    normalized = re.sub(r"[“”‘’]", "'", normalized)
+    normalized = re.sub(r"\r\n?", "\n", normalized)
+    normalized = re.sub(r"[ \t]+", " ", normalized)
+    return normalized
+
+
+def isolate_foreign_claims_section(text: str) -> str:
+    start_patterns = [
+        r"(?is)\bwhat\s+is\s+claimed\s+is\b",
+        r"(?is)\bthe\s+invention\s+claimed\s+is\b",
+        r"(?im)^\s*claims\s*$",
+    ]
+    end_pattern = (
+        r"(?im)^\s*(description|detailed description|brief description of drawings|technical field|background art)\s*$"
+    )
+
+    start_index = -1
+    for pattern in start_patterns:
+        match = re.search(pattern, text)
+        if match:
+            start_index = match.end()
+            break
+    if start_index < 0:
+        return ""
+    tail = text[start_index:]
+    end_match = re.search(end_pattern, tail)
+    return tail[: end_match.start()].strip() if end_match else tail.strip()
+
+
+def is_valid_foreign_claim_body(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(normalized) < 30:
+        return False
+    if re.search(r"\b(fig\.?|embodiments?|description)\b", normalized, re.I):
+        return False
+    if not re.match(r"^(An|A|The|权利要求)", normalized):
+        return False
+    return True
 
 
 def extract_foreign_claim_dependency(text: str) -> int | None:

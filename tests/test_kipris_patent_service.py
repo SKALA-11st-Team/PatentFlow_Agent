@@ -1,15 +1,23 @@
+from pathlib import Path
+
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
+    download_and_parse_foreign_patent_pdf,
     fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
     extract_foreign_claims_from_text,
+    find_cached_foreign_patent_pdf,
     foreign_target_literature_candidates,
     google_patents_pdf_url,
     google_patents_publication_id,
+    has_meaningful_pdf_text,
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
+    parse_single_patent_pdf,
     normalize_foreign_reference_documents,
     resolve_citation_evidence,
+    should_run_ocr_fallback,
+    classify_foreign_pdf_failure,
     _fetch_foreign_claims_from_kipris,
     _foreign_literature_number_candidates,
     _select_fulltext_pdf,
@@ -66,6 +74,8 @@ class Session:
 class ForeignClient:
     def __init__(self):
         self.claim_calls = []
+        self.session = Session()
+        self.timeout = 30.0
 
     def overseas_demand_paragraph(self, literature_number, country_code):
         self.claim_calls.append((literature_number, country_code))
@@ -263,6 +273,134 @@ def test_fetch_foreign_patent_rights_data_requires_manual_upload_when_all_pdf_so
         "missing_reason": "kipris_and_google_patents_pdf_not_found",
     }
     assert result["warnings"][-1].startswith("foreign_pdf_manual_upload_required:")
+
+
+def test_classify_foreign_pdf_failure_preserves_non_lookup_errors():
+    assert classify_foreign_pdf_failure(RuntimeError("ocr_tools_not_available:tesseract,pdftoppm")) == (
+        "ocr_tools_not_available:tesseract,pdftoppm"
+    )
+
+
+def test_should_run_ocr_fallback_for_image_only_markdown():
+    markdown = "![image 1](<page1.png>)\n\n![image 2](<page2.png>)"
+
+    assert should_run_ocr_fallback(markdown) is True
+    assert has_meaningful_pdf_text(markdown) is False
+
+
+def test_parse_single_patent_pdf_uses_ocr_when_markdown_has_no_text(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    output_dir = tmp_path / "out"
+
+    class FakeOpenDataLoaderPdf:
+        @staticmethod
+        def convert(*, input_path, output_dir, format):
+            md_path = Path(output_dir) / "sample.md"
+            md_path.write_text("![image 1](<page1.png>)\n", encoding="utf-8")
+
+    monkeypatch.setitem(__import__("sys").modules, "opendataloader_pdf", FakeOpenDataLoaderPdf)
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_with_ocr",
+        lambda path: "Abstract\nClaims\n1. A system comprising a processor.",
+    )
+
+    result = parse_single_patent_pdf(pdf_path, output_dir=output_dir)
+
+    assert result["markdown_paths"]
+    assert "Abstract" in result["markdown_text"]
+    assert "1. A system comprising a processor." in result["markdown_text"]
+
+
+def test_parse_single_patent_pdf_raises_when_ocr_fails_to_extract_text(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    output_dir = tmp_path / "out"
+
+    class FakeOpenDataLoaderPdf:
+        @staticmethod
+        def convert(*, input_path, output_dir, format):
+            md_path = Path(output_dir) / "sample.md"
+            md_path.write_text("![image 1](<page1.png>)\n", encoding="utf-8")
+
+    monkeypatch.setitem(__import__("sys").modules, "opendataloader_pdf", FakeOpenDataLoaderPdf)
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_with_ocr",
+        lambda path: "",
+    )
+
+    import pytest
+
+    with pytest.raises(RuntimeError, match="foreign_pdf_text_extraction_failed_after_ocr"):
+        parse_single_patent_pdf(pdf_path, output_dir=output_dir)
+
+
+def test_find_cached_foreign_patent_pdf_uses_publication_id(tmp_path):
+    cached = tmp_path / "US12032469B2.pdf"
+    cached.write_bytes(b"%PDF-1.4 cached")
+
+    result = find_cached_foreign_patent_pdf(
+        {"country": "US", "registration_number": "12,032,469", "application_number": "17/420,237"},
+        pdf_dir=tmp_path,
+    )
+
+    assert result == cached
+
+
+def test_extract_foreign_claims_from_text_ignores_description_and_keeps_real_claims():
+    text = """
+Explainable AI Modeling and Simulation Method
+Embodiments of the present disclosure provide a system and a method.
+
+AI Workflow Model Designing
+FIG. 2 is a view provided to explain a process of designing an AI workflow model.
+
+What is claimed is:
+1. An explainable artificial intelligence (AI) modeling and simulation method comprising the steps of: designing an AI workflow model.
+2. The method of claim 1, wherein the AI workflow model is provided by visualizing a workflow.
+9. An explainable artificial intelligence (AI) modeling and simulation system, comprising: a storage unit and a processor.
+
+Description
+This description explains embodiments in detail.
+"""
+
+    claims = extract_foreign_claims_from_text(text)
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2, 9]
+    assert claims[0]["text"].startswith("An explainable artificial intelligence")
+    assert claims[-1]["text"].startswith("An explainable artificial intelligence")
+    assert all("FIG. 2" not in claim["text"] for claim in claims)
+
+
+def test_download_and_parse_foreign_patent_pdf_prefers_cached_local_pdf(monkeypatch, tmp_path):
+    cached = tmp_path / "US12032469B2.pdf"
+    cached.write_bytes(b"%PDF-1.4 cached")
+    parse_output_dir = tmp_path / "parsed"
+    captured = {}
+
+    def fake_parse(pdf_path, *, output_dir, output_format="markdown-with-images"):
+        captured["pdf_path"] = Path(pdf_path)
+        captured["output_dir"] = Path(output_dir)
+        return {"markdown_paths": [str(output_dir / "cached.md")], "markdown_text": "Abstract\nClaims\n1. Cached claim."}
+
+    def fail_select(*args, **kwargs):
+        raise AssertionError("remote PDF lookup should not run when cached PDF exists")
+
+    monkeypatch.setattr("services.patent.kipris_patent_service.parse_single_patent_pdf", fake_parse)
+    monkeypatch.setattr("services.patent.kipris_patent_service.select_foreign_fulltext_pdf_with_fallback", fail_select)
+    monkeypatch.setattr("services.patent.kipris_patent_service.settings.patent_pdf_dir", tmp_path)
+
+    result = download_and_parse_foreign_patent_pdf(
+        ForeignClient(),
+        {"country": "US", "registration_number": "12,032,469", "application_number": "17/420,237"},
+        candidates=[],
+        output_dir=parse_output_dir,
+    )
+
+    assert captured["pdf_path"] == cached
+    assert result["selected_type"] == "CACHED_LOCAL_PDF"
+    assert result["pdf_path"] == str(cached)
+    assert result["source_path"] == str(cached)
 
 
 def test_google_patents_publication_id_normalizes_cn_registration_number():

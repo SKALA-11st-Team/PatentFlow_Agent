@@ -54,6 +54,17 @@ HEADER_NORMALIZE_MAP = {
 }
 
 IMAGE_MARKDOWN_RE = re.compile(r"!\[image\s+(\d+)\]\(<([^>]+)>\)")
+US_CLASSIFICATION_RE = re.compile(r"[A-HY]\d{2}[A-Z]\s*\d+\s*/\s*\d+")
+US_CLASSIFICATION_CANDIDATE_RE = re.compile(r"\b[A-HY][0-9OIGQ]{2}[A-Z]\s*\d+\s*/\s*\d+\b", re.I)
+USPTO_LABEL_STOP_PATTERN = (
+    r"^(?:\(\d{2}\)\s*)?(?:"
+    r"Patent No\.?|Date of Patent|U\.S\. Cl\.|CPC|Int\. Cl\.|Applicant|Assignee|Inventors?|Appl\.?\s*No\.?|Filed|PCT Filed|"
+    r"Prior Publication Data|Foreign Application Priority Data|References Cited|Field of Classification Search|Notice|ABSTRACT|What is claimed is|"
+    r"The invention claimed is|TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|BRIEF DESCRIPTION OF DRAWINGS|"
+    r"DESCRIPTION|DETAILED DESCRIPTION"
+    r")(?=\s|:|$)"
+)
+USPTO_LABEL_STOP_RE = re.compile(USPTO_LABEL_STOP_PATTERN, re.I | re.M)
 REPRESENTATIVE_FIGURE_RE = re.compile(
     r"(?:대\s*표\s*도|대표도)\s*[-:]\s*도\s*(\d+)",
 )
@@ -331,11 +342,17 @@ def build_preprocessed_patent(
 ) -> dict[str, Any]:
     cleaned_text = preprocess_patent_markdown(raw_text)
     sections = extract_sections(cleaned_text)
+    country = str((db_metadata or {}).get("country") or ((api_data or {}).get("metadata") or {}).get("country") or "").upper()
+    if country and country != "KR":
+        sections = merge_foreign_sections(
+            sections,
+            extract_us_patent_sections(raw_text, cleaned_text=cleaned_text),
+        )
     drawing_context = build_drawing_context(raw_text, sections, source=source)
 
     if api_data:
         metadata = merge_api_metadata(
-            extract_pdf_support_metadata(cleaned_text, db_metadata=db_metadata),
+            extract_pdf_support_metadata(raw_text, db_metadata=db_metadata),
             api_data.get("metadata") or {},
         )
         api_sections = api_data.get("sections") or {}
@@ -351,6 +368,8 @@ def build_preprocessed_patent(
             }
             for claim in api_claims
         ]
+        if not claims and country and country != "KR":
+            claims = extract_english_claims(sections.get("claims_text", ""))
         claim_stats = {
             key: value
             for key, value in (api_data.get("claim_stats") or {}).items()
@@ -420,6 +439,7 @@ def preprocess_markdown_file(
 
 def merge_api_metadata(pdf_metadata: dict[str, Any], api_metadata: dict[str, Any]) -> dict[str, Any]:
     merged = dict(pdf_metadata)
+    merged_source = dict(pdf_metadata.get("metadata_source") or {})
     prefer_api_fields = [
         "country",
         "patent_type",
@@ -446,12 +466,25 @@ def merge_api_metadata(pdf_metadata: dict[str, Any], api_metadata: dict[str, Any
     for field in prefer_api_fields:
         if api_metadata.get(field) not in (None, "", []):
             merged[field] = api_metadata[field]
+            merged_source[field] = "api"
 
-    # CPC and prior art are usually richer in the PDF markdown for this project.
-    for field in ["cpc", "prior_art"]:
+    for field in ["prior_art"]:
         api_values = api_metadata.get(field) or []
         pdf_values = pdf_metadata.get(field) or []
         merged[field] = _dedupe([*api_values, *pdf_values])
+        if api_values:
+            merged_source[field] = "api"
+        elif pdf_values:
+            merged_source[field] = (pdf_metadata.get("metadata_source") or {}).get(field, "ocr_front_page")
+    if pdf_metadata.get("representative_ipc") not in (None, ""):
+        merged["representative_ipc"] = pdf_metadata["representative_ipc"]
+        if (pdf_metadata.get("metadata_source") or {}).get("representative_ipc"):
+            merged_source["representative_ipc"] = (pdf_metadata.get("metadata_source") or {}).get("representative_ipc")
+    merged["cpc"] = []
+    if "cpc" in merged_source:
+        merged_source["cpc"] = ""
+    if merged_source:
+        merged["metadata_source"] = merged_source
     return merged
 
 
@@ -491,13 +524,25 @@ def merge_db_context_metadata(
 
 def extract_pdf_support_metadata(text: str, *, db_metadata: dict[str, Any] | None = None) -> dict[str, Any]:
     db_metadata = db_metadata or {}
+    foreign_frontpage = extract_foreign_frontpage_metadata(text)
+    metadata_source = foreign_frontpage.get("metadata_source") or {}
     return {
         "country": db_metadata.get("country"),
         "application_number": db_metadata.get("application_number"),
         "registration_number": db_metadata.get("registration_number"),
-        "title": db_metadata.get("title_final"),
-        "cpc": _extract_classifications(text, "CPC특허분류"),
+        "title": foreign_frontpage.get("title") or db_metadata.get("title_final"),
+        "ipc": foreign_frontpage.get("ipc") or _extract_classifications(text, "국제특허분류"),
+        "representative_ipc": foreign_frontpage.get("representative_ipc") or "",
+        "cpc": [],
+        "assignee": foreign_frontpage.get("assignee") or foreign_frontpage.get("applicant") or [],
+        "inventors": foreign_frontpage.get("inventors") or [],
+        "claim_count": foreign_frontpage.get("claim_count"),
+        "reported_claim_count": foreign_frontpage.get("claim_count"),
+        "patent_number": foreign_frontpage.get("patent_number") or db_metadata.get("registration_number"),
+        "registration_date": foreign_frontpage.get("registration_date") or db_metadata.get("registration_date"),
+        "filing_date": foreign_frontpage.get("filing_date") or db_metadata.get("application_date"),
         "prior_art": _extract_prior_art(text),
+        "metadata_source": metadata_source,
     }
 
 
@@ -532,6 +577,8 @@ def extract_pdf_fallback_metadata(text: str, *, db_metadata: dict[str, Any] | No
 def extract_sections(text: str) -> dict[str, str]:
     sections = {value: "" for value in SECTION_ALIASES.values()}
     sections["abstract"] = postprocess_agent_text(_extract_abstract(text))
+    if not sections["abstract"]:
+        sections["abstract"] = postprocess_agent_text(_extract_foreign_abstract(text))
 
     headings = _find_section_headings(text)
     for index, (heading, start) in enumerate(headings):
@@ -547,6 +594,14 @@ def extract_sections(text: str) -> dict[str, str]:
             sections[key] = postprocess_agent_text(strip_section_heading_lines(content))
 
     return sections
+
+
+def merge_foreign_sections(base: dict[str, str], foreign: dict[str, str]) -> dict[str, str]:
+    merged = dict(base)
+    for key, value in foreign.items():
+        if value and not merged.get(key):
+            merged[key] = value
+    return merged
 
 
 def extract_claims(claims_text: str) -> list[dict[str, Any]]:
@@ -572,8 +627,32 @@ def extract_claims(claims_text: str) -> list[dict[str, Any]]:
     return claims
 
 
+def extract_english_claims(claims_text: str) -> list[dict[str, Any]]:
+    claims_text = truncate_at_next_major_section(claims_text)
+    matches = list(re.finditer(r"(?:^|(?<=\s))(\d+)\.\s+(?=[A-Z])", claims_text, re.M))
+    claims: list[dict[str, Any]] = []
+    for index, match in enumerate(matches):
+        claim_no = int(match.group(1))
+        end = matches[index + 1].start(1) - 1 if index + 1 < len(matches) else len(claims_text)
+        text = postprocess_agent_text(claims_text[match.end() : end].strip())
+        dependency = _extract_english_claim_dependency(text)
+        claims.append(
+            {
+                "claim_no": claim_no,
+                "text": text,
+                "is_independent": dependency is None,
+                "dependency": dependency,
+            }
+        )
+    return claims
+
+
 def _extract_claim_dependency(text: str) -> int | None:
     return _extract_int(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
+
+
+def _extract_english_claim_dependency(text: str) -> int | None:
+    return _extract_int(r"(?i)\bclaim\s+(\d+)\b", text)
 
 
 def build_claim_stats(reported_claim_count: int | None, claims: list[dict[str, Any]]) -> dict[str, Any]:
@@ -687,6 +766,15 @@ def validate_preprocessed_patent(
         missing_fields.append("claims")
     if not metadata.get("ipc") and not metadata.get("cpc"):
         warnings.append("IPC/CPC classification was not extracted.")
+    assignee_text = " ".join(metadata.get("assignee") or [])
+    if re.search(r"\b(References Cited|Prokoski|Notice|705/2)\b", assignee_text, re.I):
+        warnings.append("assignee_contains_reference_noise")
+    abstract_text = sections.get("abstract", "") or ""
+    if re.search(r"\b(Foreign Application Priority Data|Int\. Cl\.|9 Claims|Drawing Sheets)\b", abstract_text, re.I):
+        warnings.append("abstract_contains_frontpage_noise")
+    inventor_text = " ".join(metadata.get("inventors") or [])
+    if len(metadata.get("inventors") or []) == 1 and source_text and ";" in source_text and inventor_text:
+        warnings.append("inventor_multi_value_may_be_truncated")
     if metadata.get("claim_count") and claims and metadata["claim_count"] != len(claims):
         warnings.append("Extracted active claim count differs from total claim count.")
     if source_text:
@@ -717,6 +805,112 @@ def _extract_abstract(text: str) -> str:
     return normalize_blank_lines(match.group(1)) if match else ""
 
 
+def _extract_foreign_abstract(text: str) -> str:
+    text = _extract_foreign_frontpage_text(text)
+    match = re.search(
+        r"(?is)\babstract\b[:\s]*(.+?)(?=\b(what\s+is\s+claimed\s+is|the\s+invention\s+claimed\s+is|claims|references\s+cited|u\.s\.\s+patent|sheet\s+2\s+of|description|technical\s+field)\b|$)",
+        text,
+    )
+    if not match:
+        return ""
+    abstract = match.group(1).strip()
+    abstract = re.sub(r"\(\d{2}\).*", "", abstract)
+    return normalize_blank_lines(abstract)
+
+
+def extract_us_patent_sections(raw_text: str, *, cleaned_text: str = "") -> dict[str, str]:
+    text = normalize_uspto_ocr_text(raw_text or cleaned_text or "")
+    return {
+        "abstract": postprocess_agent_text(_extract_uspto_abstract(text)),
+        "claims_text": postprocess_claims_text(_extract_uspto_claims_text(text)),
+        "technical_field": postprocess_agent_text(_extract_uspto_section(text, "TECHNICAL FIELD")),
+        "background_art": postprocess_agent_text(_extract_uspto_section(text, "BACKGROUND ART", "BACKGROUND")),
+        "problem": postprocess_agent_text(_extract_uspto_section(text, "DISCLOSURE", "Technical Problem")),
+        "solution": postprocess_agent_text(_extract_uspto_section(text, "Technical Solution")),
+        "effect": postprocess_agent_text(_extract_uspto_section(text, "Advantageous Effects")),
+        "detailed_description": postprocess_agent_text(
+            _extract_uspto_section(text, "DETAILED DESCRIPTION", "Description")
+        ),
+    }
+
+
+def normalize_uspto_ocr_text(text: str) -> str:
+    if not text:
+        return ""
+    text = remove_image_markdown(text)
+    text = re.sub(r"(?im)^\s*US\s+\d[\d,]*\s*[A-Z]\d?\s*$", "", text)
+    text = re.sub(r"(?im)^\s*U\.S\.\s+Patent(?:ed)?\b.*$", "", text)
+    text = re.sub(r"(?im)^\s*Sheet\s+\d+\s+of\s+\d+\s*$", "", text)
+    text = re.sub(r"(?im)^\s*Page\s+\d+\s*$", "", text)
+    text = re.sub(r"(?im)^\s*\d+\s*$", "", text)
+    text = _normalize_uspto_classification_ocr(text)
+    text = re.sub(r"\bAl\b", "AI", text)
+    text = re.sub(r"\bleaming\b", "learning", text, flags=re.I)
+    return normalize_blank_lines(text)
+
+
+def _extract_uspto_abstract(text: str) -> str:
+    lines = text.splitlines()
+    capture = False
+    collected: list[str] = []
+    consecutive_noise = 0
+    continued_mode = False
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not capture:
+            if re.search(r"(?i)(?:\(\s*(?:57|67)\s*\)\s*)?ABSTRACT\b", line):
+                capture = True
+                cleaned = _clean_uspto_abstract_line(line)
+                if cleaned:
+                    collected.append(cleaned)
+            continue
+        if _is_uspto_abstract_stop_line(line):
+            break
+        if re.search(r"(?i)^\(?Continued\)?$", line):
+            continued_mode = True
+            consecutive_noise = 0
+            continue
+        if continued_mode and re.search(r"(?i)^(?:U\.S\.\s+Patent\b.*|US\s+\d[\d,]*\s*[A-Z]\d?.*\bPage\s+\d+\b|Sheet\s+\d+\s+of\s+\d+.*)$", line):
+            continue
+        if _is_uspto_abstract_noise_line(line):
+            if collected:
+                consecutive_noise += 1
+                if consecutive_noise >= 2:
+                    break
+            continue
+        line = _clean_uspto_abstract_line(line)
+        if not line:
+            if collected:
+                consecutive_noise += 1
+                if consecutive_noise >= 2:
+                    break
+            continue
+        consecutive_noise = 0
+        collected.append(line)
+    return normalize_blank_lines("\n".join(collected))
+
+
+def _extract_uspto_claims_text(text: str) -> str:
+    pattern = re.compile(
+        r"(?is)\b(?:What is claimed is|The invention claimed is)\s*:?\s*(.+?)(?=^\s*(?:TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|BRIEF DESCRIPTION OF DRAWINGS|DESCRIPTION|DETAILED DESCRIPTION)\b|\Z)",
+        re.M,
+    )
+    match = pattern.search(text)
+    return normalize_blank_lines(match.group(1)) if match else ""
+
+
+def _extract_uspto_section(text: str, *labels: str) -> str:
+    for label in labels:
+        pattern = re.compile(
+            rf"(?is)^\s*{re.escape(label)}\b[:\s]*(.+?)(?=^\s*(?:TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|BRIEF DESCRIPTION OF DRAWINGS|DESCRIPTION|DETAILED DESCRIPTION|What is claimed is|The invention claimed is)\b|\Z)",
+            re.M,
+        )
+        match = pattern.search(text)
+        if match:
+            return normalize_blank_lines(match.group(1))
+    return ""
+
+
 def strip_section_heading_lines(text: str) -> str:
     lines = []
     for line in text.splitlines():
@@ -743,6 +937,7 @@ def postprocess_agent_text(text: str) -> str:
 def postprocess_claims_text(text: str) -> str:
     text = strip_section_heading_lines(text)
     text = remove_paragraph_numbers(text)
+    text = _remove_uspto_claim_noise(text)
     text = re.sub(r"(?m)^\s*-\s*(청구항\s+\d+)", r"- \1", text)
     lines = text.splitlines()
     result: list[str] = []
@@ -821,6 +1016,350 @@ def _extract_classifications(text: str, label: str) -> list[str]:
             continue
         capture_remaining -= 1
     return _dedupe([re.sub(r"^([A-HY]\d{2}[A-Z])\s*(\d+/\d+)$", r"\1 \2", value) for value in values])
+
+
+def extract_foreign_frontpage_metadata(text: str) -> dict[str, Any]:
+    normalized = normalize_uspto_ocr_text(str(text or ""))
+    frontpage = _extract_foreign_frontpage_text(normalized)
+    title = (
+        _search_group(r"(?im)^\(\s*54\s*\)\s*(.+)$", frontpage)
+        or _search_group(r"(?im)^Title\s*[:.]?\s*(.+)$", frontpage)
+    )
+    patent_number = (
+        _search_group(r"(?im)^(?:Patent No\.?|Patent No)\s*[:.]?\s*([A-Z]*\s*[\d,]+(?:\s*[A-Z]\d?)?)", frontpage)
+        or _search_group(r"(?im)^US\s*([\d,]+\s*[A-Z]\d?)$", frontpage)
+    )
+    registration_date = _search_group(r"(?im)^(?:Date of Patent)\s*[:.]?\s*(.+)$", frontpage)
+    filing_date = _search_group(r"(?im)^(?:\(\s*21\s*\)\s*)?(?:Filed|PCT Filed)\s*[:.]?\s*(.+)$", frontpage)
+    representative_ipc = _extract_foreign_representative_ipc(frontpage)
+    ipc_values = _extract_foreign_classifications(frontpage, "Int. Cl.")
+    if not ipc_values:
+        ipc_values = _extract_foreign_classification_fallback(frontpage)
+    if representative_ipc and representative_ipc in ipc_values:
+        ipc_values = [representative_ipc, *[value for value in ipc_values if value != representative_ipc]]
+    assignee_values = _extract_foreign_labeled_people(frontpage, ("(73) Assignee", "Assignee:", "Assignee")) or _extract_foreign_labeled_people(
+        frontpage, ("(71) Applicant", "Applicant:", "Applicant")
+    )
+    inventor_values = _extract_foreign_labeled_people(
+        " " + frontpage,
+        ("(72) Inventors", "(72) Inventor", "Inventors:", "Inventor:", "Inventors", "Inventor"),
+    )
+    return {
+        "ipc": ipc_values,
+        "representative_ipc": representative_ipc or (ipc_values[0] if ipc_values else ""),
+        "cpc": [],
+        "assignee": assignee_values,
+        "inventors": inventor_values,
+        "applicant": _extract_foreign_labeled_people(frontpage, ("(71) Applicant", "Applicant:", "Applicant")),
+        "claim_count": _extract_int(r"(?im)^\s*(\d+)\s+Claims\b", frontpage),
+        "title": title,
+        "patent_number": patent_number,
+        "registration_date": registration_date,
+        "filing_date": filing_date,
+        "metadata_source": {
+            "ipc": "ocr_front_page" if ipc_values else "",
+            "cpc": "",
+            "assignee": "ocr_front_page" if assignee_values else "",
+            "inventors": "ocr_front_page" if inventor_values else "",
+            "title": "ocr_front_page" if title else "",
+            "patent_number": "ocr_front_page" if patent_number else "",
+            "registration_date": "ocr_front_page" if registration_date else "",
+            "filing_date": "ocr_front_page" if filing_date else "",
+            "representative_ipc": "ocr_front_page" if representative_ipc else "",
+        },
+    }
+
+
+def _extract_foreign_classifications(text: str, label: str) -> list[str]:
+    text = _extract_foreign_frontpage_text(text)
+    if label != "Int. Cl.":
+        return []
+    values: list[str] = []
+    lines = text.splitlines()
+    capture = False
+    for raw_line in lines:
+        line = _normalize_uspto_classification_ocr(raw_line.strip())
+        if not capture:
+            if re.match(r"(?i)^(?:\(\s*51\s*\)\s*)?Int\.?\s*Cl\.?\b", line):
+                capture = True
+                values.extend(US_CLASSIFICATION_RE.findall(line))
+            continue
+        if _is_ipc_stop_line(line):
+            break
+        values.extend(US_CLASSIFICATION_RE.findall(line))
+    return _normalize_us_classification_values(values)
+
+
+def _extract_foreign_representative_ipc(text: str) -> str:
+    text = _extract_foreign_frontpage_text(text)
+    lines = text.splitlines()
+    capture = False
+    for raw_line in lines:
+        line = _normalize_uspto_classification_ocr(raw_line.strip())
+        if not capture:
+            if re.match(r"(?i)^(?:\(\s*51\s*\)\s*)?Int\.?\s*Cl\.?\b", line):
+                capture = True
+                matches = US_CLASSIFICATION_RE.findall(line)
+                if matches:
+                    normalized = _normalize_us_classification_values(matches)
+                    return normalized[0] if normalized else ""
+            continue
+        if _is_ipc_stop_line(line):
+            break
+        matches = US_CLASSIFICATION_RE.findall(line)
+        if matches:
+            normalized = _normalize_us_classification_values(matches)
+            return normalized[0] if normalized else ""
+    return ""
+
+
+def _extract_foreign_classification_fallback(text: str) -> list[str]:
+    normalized = _normalize_uspto_classification_ocr(_extract_foreign_frontpage_text(text))
+    return _normalize_us_classification_values(
+        re.findall(r"\bG06F\s+11/34\b|\bG06F\s+11/30\b|\bG06N\s+5/045\b", normalized)
+    )
+
+
+def _extract_foreign_labeled_people(text: str, labels: tuple[str, ...]) -> list[str]:
+    text = _extract_foreign_frontpage_text(text)
+    names: list[str] = []
+    is_company_label = any("Applicant" in label or "Assignee" in label for label in labels)
+    value = _clean_foreign_people_block(_extract_foreign_labeled_block(text, labels))
+    if value:
+        if is_company_label:
+            names.extend(_split_foreign_company_values(value))
+        else:
+            names.extend(_split_foreign_people_values(value))
+    return _dedupe(names)
+
+
+def _split_foreign_people_values(value: str) -> list[str]:
+    value = _clean_foreign_people_block(value)
+    parts = [part.strip() for part in re.split(r"[;|]", value) if part.strip()]
+    if len(parts) > 1:
+        return [_normalize_foreign_person_name(part) for part in parts if _normalize_foreign_person_name(part)]
+    # OCR often joins multiple English names without delimiters; split only on strong name boundaries.
+    spaced = re.findall(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}", value)
+    normalized = [_normalize_foreign_person_name(part) for part in spaced]
+    normalized = [part for part in normalized if part]
+    return normalized or [_normalize_foreign_person_name(value)]
+
+
+def _split_foreign_company_values(value: str) -> list[str]:
+    value = _clean_foreign_people_block(value)
+    if not value:
+        return []
+    value = re.split(
+        r"\b(References Cited|Notice|Prior Publication Data|Foreign Application Priority Data|U\.S\. PATENT DOCUMENTS)\b",
+        value,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip(" ,;")
+    if not re.search(r",\s*(?:LTD\.?|INC\.?|LLC)\s*$", value, re.I):
+        value = re.sub(r",\s*[^,]+(?:\([A-Z]{2}\))?$", "", value).strip()
+    return [value]
+
+
+def _extract_foreign_frontpage_text(text: str) -> str:
+    if not text:
+        return ""
+    has_continued = bool(re.search(r"(?im)^\s*\(?Continued\)?\s*$", text))
+    stop_markers = [
+        r"\bWhat\s+is\s+claimed\s+is\b",
+        r"\bThe\s+invention\s+claimed\s+is\b",
+        r"\bDescription\b",
+        r"\bDETAILED\s+DESCRIPTION\b",
+        r"\bTECHNICAL FIELD\b",
+        r"\bBACKGROUND ART\b",
+        r"\bBACKGROUND\b",
+        r"\bDISCLOSURE\b",
+        r"\bBRIEF\s+DESCRIPTION\s+OF\s+(?:THE\s+)?DRAWINGS\b",
+    ]
+    if not has_continued:
+        stop_markers.extend(
+            [
+                r"\bU\.S\.\s+Patent\b.*?\bSheet\s+2\s+of\b",
+                r"\bUS\s+\d[\d,]*\s*[A-Z]\d?\s+Page\s+2\b",
+                r"\bSheet\s+2\s+of\b",
+                r"\bPage\s+2\b",
+            ]
+        )
+    end = len(text)
+    for pattern in stop_markers:
+        match = re.search(pattern, text, re.I | re.S)
+        if match:
+            end = min(end, match.start())
+    return text[:end].strip()
+
+
+def _is_uspto_abstract_stop_line(line: str) -> bool:
+    if not line:
+        return False
+    return bool(
+        re.search(
+            r"(?i)^(?:\(\s*\d{2}\s*\)\s*)?(?:References Cited|What is claimed is|The invention claimed is|TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|BRIEF DESCRIPTION OF DRAWINGS|DESCRIPTION|DETAILED DESCRIPTION)\b",
+            line,
+        )
+        or re.search(r"(?i)\b\d+\s+Claims\b", line)
+        or re.search(r"(?i)\bDrawing Sheets\b", line)
+        or re.search(r"(?i)\bFIG\.\s*\d+\b", line)
+    )
+
+
+def _is_uspto_abstract_noise_line(line: str) -> bool:
+    if not line:
+        return True
+    if re.search(
+        r"(?i)^(?:\(\s*\d{2}\s*\)\s*)?(?:Foreign Application Priority Data|Prior Publication Data|Int\.?\s*Cl\.?|U\.S\.?\s*Cl\.?|CPC|Patent No\.?|Date of Patent|Applicant|Assignee|Inventors?|Field of Classification Search|References Cited|Notice|Other Publications|Primary Examiner|Attorney, Agent)",
+        line,
+    ):
+        return True
+    if re.search(r"(?i)^US\s+\d{4}/\d+", line):
+        return True
+    if re.search(r"(?i)^[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\([A-Z]{2}\)\s+\d", line):
+        return True
+    if re.search(r"(?i)^\(?Continued\)?$", line):
+        return True
+    if US_CLASSIFICATION_RE.search(_normalize_uspto_classification_ocr(line)):
+        return True
+    if re.search(r"(?i)^[|/@$€£¥~_=<>\\\[\]{}()\"'`*+\-]{3,}$", line):
+        return True
+    if re.search(r"(?i)(analysis model|model library|workflow model build|real-time operation)", line):
+        return True
+    return False
+
+
+def _clean_uspto_abstract_line(line: str) -> str:
+    if not line:
+        return ""
+    line = re.sub(r"(?i)^.*?\bABSTRACT\b[:\s]*", "", line).strip()
+    line = re.sub(r"(?i)\bUS\s+\d{4}/\d+\s+A[I1l]\b\s+[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}", " ", line)
+    line = re.sub(r"(?i)\(\s*30\s*\)\s*Foreign Application Priority Data", " ", line)
+    line = re.sub(r"(?i)\(\s*65\s*\)\s*Prior Publication Data", " ", line)
+    line = re.sub(r"(?i)[A-Z][a-z]{2}\.\s+\d{1,2},\s+\d{4}\s+\([A-Z]{2}\)\s+[0-9A-Za-z,\-]+", " ", line)
+    line = re.sub(r"(?i)\(\s*51\s*\)\s*Int\.?\s*Ch?\.?.*$", "", line)
+    line = re.sub(r"(?i)\bInt\.?\s*Cl\.?\b.*$", "", line)
+    line = re.sub(US_CLASSIFICATION_RE, " ", line)
+    line = re.sub(r"(?i)\(?Continued\)?", " ", line)
+    line = re.sub(r"(?i)\b\d+\s+Claims\b.*$", "", line)
+    line = re.sub(r"(?i)\bDrawing Sheets\b.*$", "", line)
+    line = re.sub(r"\s+", " ", line).strip(" ,;:-")
+    return line
+
+
+def _is_ipc_stop_line(line: str) -> bool:
+    if not line:
+        return False
+    return bool(
+        re.search(
+            r"(?i)^(?:\(\s*\d{2}\s*\)\s*)?(?:U\.S\.?\s*Cl\.?|CPC|Applicant|Assignee|Inventors?|Field of Classification Search|References Cited|Notice|Prior Publication Data|Foreign Application Priority Data|ABSTRACT|What is claimed is|The invention claimed is|TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|DESCRIPTION|DETAILED DESCRIPTION)\b",
+            line,
+        )
+        or re.search(r"(?i)^\(?Continued\)?$", line)
+        or re.search(r"(?i)\b9\s+Claims\b", line)
+    )
+
+
+def _extract_foreign_labeled_block(
+    text: str,
+    labels: tuple[str, ...],
+    *,
+    extra_stop_labels: tuple[str, ...] = (),
+) -> str:
+    lines = text.splitlines()
+    capture = False
+    collected: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        matched_label = next(
+            (
+                label
+                for label in labels
+                if stripped.startswith(label) or re.match(rf"^\(\s*\d{{2}}\s*\)\s*{re.escape(label)}", stripped)
+            ),
+            None,
+        )
+        if matched_label:
+            capture = True
+            value = re.sub(rf"^\(\s*\d{{2}}\s*\)\s*{re.escape(matched_label)}", "", stripped).strip()
+            value = re.sub(rf"^{re.escape(matched_label)}", "", value).strip(" :")
+            if value:
+                collected.append(value)
+            continue
+        if not capture:
+            continue
+        if extra_stop_labels and any(
+            stripped.startswith(stop) or re.match(rf"^\(\s*\d{{2}}\s*\)\s*{re.escape(stop)}", stripped)
+            for stop in extra_stop_labels
+        ):
+            break
+        if USPTO_LABEL_STOP_RE.match(stripped):
+            break
+        if stripped:
+            collected.append(stripped)
+    return " ".join(collected)
+
+
+def _normalize_us_classification_values(values: list[str]) -> list[str]:
+    cleaned = []
+    for value in values:
+        normalized = re.sub(r"\(\d{4}\.\d{2}\)", "", value)
+        normalized = re.sub(r"\s*/\s*", "/", normalized)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        cleaned.append(normalized)
+    return _dedupe(cleaned)
+
+
+def _normalize_uspto_classification_ocr(text: str) -> str:
+    if not text:
+        return ""
+
+    def replace(match: re.Match[str]) -> str:
+        token = match.group(0)
+        fixed = token
+        replacements = {
+            "GO6F": "G06F",
+            "GOOF": "G06F",
+            "GO6N": "G06N",
+            "GOGN": "G06N",
+            "A6IB": "A61B",
+        }
+        for wrong, correct in replacements.items():
+            fixed = re.sub(rf"\b{wrong}(?=\s*\d+\s*/\s*\d+)", correct, fixed, flags=re.I)
+        return fixed
+
+    return US_CLASSIFICATION_CANDIDATE_RE.sub(replace, text)
+
+
+def _clean_foreign_people_block(value: str) -> str:
+    value = re.sub(r"\(\d{2}\).*", "", value)
+    value = re.split(
+        r"\b(Field of Classification Search|References Cited|U\.S\. PATENT DOCUMENTS|OTHER PUBLICATIONS|See application file for complete search history|Notice|Prior Publication Data|Foreign Application Priority Data)\b",
+        value,
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    return re.sub(r"\s+", " ", value).strip(" ,;")
+
+
+def _normalize_foreign_person_name(value: str) -> str:
+    value = re.sub(r",\s*[^,]+(?:\([A-Z]{2}\))?$", "", value).strip()
+    value = re.sub(r"\s+", " ", value)
+    if not value:
+        return ""
+    if not re.fullmatch(r"[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}", value):
+        return ""
+    return value
+
+
+def _remove_uspto_claim_noise(text: str) -> str:
+    text = re.sub(r"(?im)\bUS\s+\d[\d,]*\s*[A-Z]\d?\s+\d+\b", " ", text)
+    text = re.sub(r"(?im)\bUS\s+\d[\d,]*\s*[A-Z]\d?\b", " ", text)
+    text = re.sub(r"(?im)^\s*(?:\d+\s+){2,}\d+\s*$", "", text)
+    text = re.sub(r"(?im)^\s*\d+\s*$", "", text)
+    text = re.sub(r"\bleaming\b", "learning", text, flags=re.I)
+    text = re.sub(r"\bAl\b", "AI", text)
+    return text
 
 
 def _extract_prior_art(text: str) -> list[str]:
