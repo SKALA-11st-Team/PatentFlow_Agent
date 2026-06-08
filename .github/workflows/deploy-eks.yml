@@ -159,7 +159,6 @@ jobs:
           POSTGRES_PASSWORD_VALUE: ${{ secrets.POSTGRES_PASSWORD }}
           # 평가(evaluate) 근거수집용 외부 API. 분류(recommend-fields)는 사용 안 함.
           # 미제공 시 빈 값으로 들어가고 해당 근거만 degrade(부팅엔 지장 없음).
-          DART_KEY_VALUE: ${{ secrets.DART_KEY }}
           GNEWS_API_KEY_VALUE: ${{ secrets.GNEWS_API_KEY }}
           NAVER_CLIENT_ID_VALUE: ${{ secrets.NAVER_CLIENT_ID }}
           NAVER_CLIENT_SECRET_VALUE: ${{ secrets.NAVER_CLIENT_SECRET }}
@@ -175,7 +174,6 @@ jobs:
             --from-literal=KIPRIS_SERVICE_KEYS="${KIPRIS_SERVICE_KEYS_VALUE}" \
             --from-literal=LANGSMITH_API_KEY="${LANGSMITH_API_KEY_VALUE}" \
             --from-literal=PGVECTOR_DATABASE_URL="${PGVECTOR_DATABASE_URL}" \
-            --from-literal=DART_KEY="${DART_KEY_VALUE}" \
             --from-literal=GNEWS_API_KEY="${GNEWS_API_KEY_VALUE}" \
             --from-literal=NAVER_CLIENT_ID="${NAVER_CLIENT_ID_VALUE}" \
             --from-literal=NAVER_CLIENT_SECRET="${NAVER_CLIENT_SECRET_VALUE}" \
