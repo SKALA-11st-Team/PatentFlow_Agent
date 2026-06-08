@@ -1,4 +1,5 @@
 from services.patent.prior_art_patent_service import (
+    collect_prior_art_candidates,
     prior_art_legal_content_from_markdown,
     resolve_prior_art_candidate,
 )
@@ -28,6 +29,28 @@ def test_prior_art_fulltext_without_parsed_claims_has_separate_status():
 
     assert result["comparison_status"] == "fulltext_claims_unparsed"
     assert result["representative_claims"] == []
+
+
+def test_collect_prior_art_candidates_excludes_kind_code_digits_from_kr_document_number():
+    candidates = collect_prior_art_candidates(
+        target_metadata={
+            "prior_art": [
+                "KR102284539 B1",
+                "KR102311787 B1",
+                "KR1020210131720 A",
+            ]
+        },
+        citation_documents=[],
+    )
+
+    by_display = {candidate["display_number"]: candidate for candidate in candidates}
+
+    assert by_display["KR102284539 B1"]["standard_number"] == "102284539"
+    assert by_display["KR102284539 B1"]["kind_code"] == "B1"
+    assert by_display["KR102311787 B1"]["standard_number"] == "102311787"
+    assert by_display["KR102311787 B1"]["kind_code"] == "B1"
+    assert by_display["KR1020210131720 A"]["standard_number"] == "1020210131720"
+    assert by_display["KR1020210131720 A"]["kind_code"] == "A"
 
 
 def test_resolve_foreign_prior_art_collects_registration_fulltext(monkeypatch, tmp_path):

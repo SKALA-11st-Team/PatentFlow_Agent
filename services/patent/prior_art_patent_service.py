@@ -95,13 +95,14 @@ def collect_prior_art_candidates(*, target_metadata: dict[str, Any], citation_do
         if not display_number or display_number in seen:
             continue
         seen.add(display_number)
+        parsed = parse_prior_art_display_number(display_number)
         items.append(
             {
                 "display_number": display_number,
                 "source": "preprocessed_prior_art",
-                "country_code": display_number[:2] if len(display_number) >= 2 else None,
-                "kind_code": extract_kind_code(display_number),
-                "standard_number": normalize_digits(display_number),
+                "country_code": parsed.get("country_code") or (display_number[:2] if len(display_number) >= 2 else None),
+                "kind_code": parsed.get("kind_code") or extract_kind_code(display_number),
+                "standard_number": parsed.get("standard_number") or normalize_digits(display_number),
                 "original_number": display_number,
                 "citation_type_names": [],
                 "publication_date": None,
@@ -540,6 +541,21 @@ def ensure_list(value: Any) -> list[Any]:
 def normalize_digits(value: Any) -> str | None:
     text = "".join(ch for ch in str(value or "") if ch.isdigit())
     return text or None
+
+
+def parse_prior_art_display_number(value: Any) -> dict[str, str | None]:
+    text = str(value or "").strip().replace("*", "")
+    match = re.match(r"^\s*([A-Za-z]{2})\s*[- ]?\s*([0-9][0-9A-Za-z./-]*?)(?:\s+([A-Za-z][0-9]?))?\s*$", text)
+    if not match:
+        return {"country_code": None, "standard_number": None, "kind_code": None}
+    country_code = match.group(1).upper()
+    standard_number = normalize_digits(match.group(2))
+    kind_code = match.group(3).upper() if match.group(3) else None
+    return {
+        "country_code": country_code,
+        "standard_number": standard_number,
+        "kind_code": kind_code,
+    }
 
 
 def normalize_text(value: Any) -> str | None:
