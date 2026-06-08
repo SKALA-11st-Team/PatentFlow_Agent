@@ -378,18 +378,21 @@ def test_collect_external_evidence_searches_news_queries_concurrently(monkeypatc
 
 def test_collect_external_evidence_uses_configured_news_results_per_query(monkeypatch, tmp_path):
     observed = []
+    tavily_calls = []
 
     def fake_request_json(base_url, path, params, *, timeout=20):
         del base_url, timeout
         observed.append((path, dict(params)))
-        if path == "/api/news/search":
-            assert params["display"] == 3
-            return {"items": []}
-        assert path == "/api/v4/search"
-        assert params["max"] == 3
-        return {"articles": []}
+        assert path == "/api/news/search"
+        assert params["display"] == 3
+        return {"items": []}
+
+    def fake_tavily_news(query, *, max_results):
+        tavily_calls.append((query, max_results))
+        return {"results": []}
 
     monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
+    monkeypatch.setattr("services.evidence.external_search_service.search_global_news_via_tavily", fake_tavily_news)
     monkeypatch.setattr("services.evidence.external_search_service.save_evidence_collection", lambda **kwargs: tmp_path / "x.json")
     monkeypatch.setattr("services.evidence.external_search_service.settings.news_results_per_query", 3, raising=False)
 
@@ -404,4 +407,6 @@ def test_collect_external_evidence_uses_configured_news_results_per_query(monkey
         fetch_news_full_text=False,
     )
 
-    assert [path for path, _ in observed] == ["/api/news/search", "/api/v4/search"]
+    # 네이버는 통합 서버, 글로벌 뉴스(gnews 자리)는 Tavily로 호출된다.
+    assert [path for path, _ in observed] == ["/api/news/search"]
+    assert tavily_calls == [("conversational AI chatbot", 3)]

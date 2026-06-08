@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 import json
+import os
 import re
 import time
 
@@ -13,9 +14,9 @@ from app.config import settings
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.evidence.api_normalizers import (
-    normalize_gnews_response,
     normalize_kipris_patent_results,
     normalize_naver_news_response,
+    normalize_tavily_news_response,
 )
 from services.evidence.news_article_extraction_service import enrich_news_items_with_full_text
 from services.evidence.store_service import (
@@ -30,6 +31,33 @@ MAX_INDUSTRY_RAG_QUERIES = settings.industry_rag_query_count
 API_REQUEST_MAX_ATTEMPTS = 3
 API_REQUEST_RETRY_STATUS_CODES = {502, 503, 504}
 DEFAULT_NEWS_SEARCH_WORKERS = 4
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
+
+def search_global_news_via_tavily(query: str, *, max_results: int) -> dict[str, Any]:
+    """GNews 대체: Tavily(topic=news, 도메인 제한 없음)로 글로벌 영어 뉴스를 검색한다.
+
+    국가 제한 없이 영어 검색어로 전세계 뉴스를 가져오고, 최근 기간은 뉴스 필터(5년)와
+    정렬된 days 범위로 제한한다. 본문은 raw_content로 함께 수집한다.
+    """
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise requests.RequestException("TAVILY_API_KEY is not set")
+    response = requests.post(
+        TAVILY_SEARCH_URL,
+        json={
+            "api_key": api_key,
+            "query": query,
+            "topic": "news",
+            "search_depth": "basic",
+            "max_results": max(1, int(max_results)),
+            "include_raw_content": True,
+            "days": settings.tavily_news_max_age_days,
+        },
+        timeout=settings.skax_search_timeout_seconds,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def rewrite_search_queries(
@@ -249,12 +277,8 @@ def collect_news_queries_concurrently(
                 items = normalize_naver_news_response(raw, query=query)
                 source = "naver_news"
             elif provider == "gnews":
-                raw = request_json(
-                    api_base_url,
-                    "/api/v4/search",
-                    {"q": query, "lang": "en", "max": results_per_query, "page": 1},
-                )
-                items = normalize_gnews_response(raw, query=query)
+                raw = search_global_news_via_tavily(query, max_results=results_per_query)
+                items = normalize_tavily_news_response(raw, query=query)
                 source = "gnews"
             else:
                 raise ValueError(f"Unknown news provider: {provider}")

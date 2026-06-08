@@ -57,6 +57,9 @@ class Settings(BaseModel):
     industry_rag_top_k: int = int(getenv("INDUSTRY_RAG_TOP_K", "3"))
     # 근거 압축(LLM) 동시 처리 워커 수. 근거가 많을수록 높이면 빨라진다.
     compression_workers: int = int(getenv("COMPRESSION_WORKERS", "8"))
+    # GNews 대체: 글로벌 뉴스를 Tavily(topic=news)로 수집할 때 최근 N일 범위.
+    # 뉴스 필터(5년)와 정렬해 기본 5년.
+    tavily_news_max_age_days: int = int(getenv("TAVILY_NEWS_MAX_AGE_DAYS", str(365 * 5)))
     # 산업 리포트 RAG 근거 채택 최소 유사도. 이 값 미만이면 압축 후보에서 제외한다.
     rag_score_threshold: float = float(getenv("RAG_SCORE_THRESHOLD", "0.5"))
     # SK AX(Tavily/Google) 사이트 검색 HTTP 타임아웃(초). raw_content 수집 때문에

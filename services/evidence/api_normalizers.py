@@ -79,6 +79,51 @@ def normalize_gnews_response(
     return evidence
 
 
+def normalize_tavily_news_response(
+    raw: dict[str, Any] | list[dict[str, Any]],
+    *,
+    query: str,
+    collected_at: str | None = None,
+) -> list[dict[str, Any]]:
+    """Tavily(topic=news) 검색 결과를 공통 뉴스 evidence shape로 변환한다.
+
+    GNews 대체용 글로벌 뉴스이므로 다운스트림(시장성 글로벌 사업성)이 그대로 쓰도록
+    source는 "gnews"로 유지한다.
+    """
+    collected_at = collected_at or now_iso()
+    results = raw if isinstance(raw, list) else raw.get("results", [])
+    evidence = []
+    for rank, item in enumerate(results, start=1):
+        if not isinstance(item, dict):
+            continue
+        # Tavily news는 published_date를 RFC 2822(예: 'Mon, 11 Nov 2024 ...')로 준다.
+        published_at = parse_rfc2822_datetime(item.get("published_date")) or normalize_iso_datetime(
+            item.get("published_date")
+        )
+        content = item.get("raw_content") or item.get("content") or item.get("title") or ""
+        evidence.append(
+            {
+                "evidence_id": None,
+                "source_type": "news",
+                "source": "gnews",
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "published_at": published_at,
+                "collected_at": collected_at,
+                "content": content,
+                "related_axis": [],
+                "confidence": None,
+                "metadata": {
+                    "query": query,
+                    "rank": rank,
+                    "score": item.get("score"),
+                    "provider": "tavily_news",
+                },
+            }
+        )
+    return evidence
+
+
 def normalize_kipris_patent_results(
     raw: dict[str, Any] | list[dict[str, Any]],
     *,
