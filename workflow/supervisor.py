@@ -718,16 +718,34 @@ def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
         report_failed = True
 
     # Dedicated LLM content checks: summary and report each get their own judge.
+    # 선택적 재검증: 직전에 한쪽만 다시 생성됐다면(요약만/보고서만), 바뀌지 않은 쪽은
+    # 이전 LLM 검사 결과를 그대로 재사용해 불필요한 재검사를 막는다.
+    prior_action = (state.supervisor_decision or {}).get("next_action")
+    prior_checks = dict(state.writing_quality_checks or {})
+    reuse_summary = prior_action == "final_report" and "summary" in prior_checks
+    reuse_report = prior_action == "summary" and "report" in prior_checks
+    new_checks = dict(prior_checks)
+
     if summary_markdown and not summary_failed:
-        verdict = run_writing_quality_check(state, "summary")
+        if reuse_summary:
+            verdict = prior_checks["summary"]
+        else:
+            verdict = run_writing_quality_check(state, "summary")
+            new_checks["summary"] = verdict
         if not verdict["passed"]:
             summary_issues.extend(verdict["issues"] or ["요약 내용 품질 보완 필요"])
             summary_failed = True
     if report_markdown and not report_failed:
-        verdict = run_writing_quality_check(state, "report")
+        if reuse_report:
+            verdict = prior_checks["report"]
+        else:
+            verdict = run_writing_quality_check(state, "report")
+            new_checks["report"] = verdict
         if not verdict["passed"]:
             report_issues.extend(verdict["issues"] or ["보고서 내용 품질 보완 필요"])
             report_failed = True
+
+    state.writing_quality_checks = new_checks
 
     if summary_failed and report_failed:
         next_action = "writing_team"

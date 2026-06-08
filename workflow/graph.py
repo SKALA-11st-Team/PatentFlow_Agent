@@ -52,6 +52,7 @@ class WorkflowGraphState(TypedDict, total=False):
     validation_result: dict[str, Any] | None
     summary_validation_result: dict[str, Any] | None
     report_validation_result: dict[str, Any] | None
+    writing_quality_checks: dict[str, Any]
     supervisor_decision: dict[str, Any] | None
     missing_evidence: list[str]
     valuation_axis_legal: dict[str, Any]
