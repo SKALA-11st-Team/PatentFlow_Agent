@@ -451,6 +451,26 @@ def test_preprocess_extracts_japanese_bracket_claims_and_removes_self_prior_art(
     assert result["metadata"]["prior_art"] == []
 
 
+def test_preprocess_detects_japanese_dependency_variants():
+    raw_text = """
+(57)【特許請求の範囲】
+【請求項１】 基準データを用いて変動を検知する方法。
+【請求項２】 請求項１記載の方法。
+【請求項３】 請求項１又は２に記載の方法。
+【請求項４】 請求項１ないし３のいずれか１項に記載の方法。
+【請求項５】 請求項１記載の方法を実行するシステムであって、プロセッサを含むシステム。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={"country": "JP", "registration_number": "6757846"},
+    )
+
+    assert result["claim_stats"]["independent_claim_numbers"] == [1, 5]
+    assert result["claim_stats"]["dependent_claim_numbers"] == [2, 3, 4]
+    assert [claim["dependency"] for claim in result["claims"][1:]] == [1, 1, 1, None]
+
+
 def test_preprocess_normalizes_japanese_and_us_reference_formats():
     raw_text = """
 (56)参考文献

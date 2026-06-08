@@ -604,7 +604,9 @@ def prior_art_legal_content_from_markdown(
         "representative_claims": representative_claims,
         "lookup_status": "resolved",
         "lookup_source": "prior_art_pdf_fulltext",
-        "comparison_status": "comparison_ready" if representative_claims or abstract else "identifier_only",
+        "comparison_status": (
+            "claim_comparison_ready" if representative_claims else "fulltext_claims_unparsed"
+        ),
     }
 
 
@@ -613,8 +615,11 @@ def prior_art_context_citation_documents(context: dict[str, Any] | None) -> list
     for item in (context or {}).get("prior_art_patents") or (context or {}).get("similar_patents") or []:
         if not isinstance(item, dict):
             continue
-        if item.get("comparison_status") != "comparison_ready":
+        if item.get("comparison_status") == "identifier_only":
             continue
+        comparison_status = item.get("comparison_status")
+        if comparison_status == "comparison_ready":
+            comparison_status = "claim_comparison_ready"
         documents.append(
             {
                 "direction": "cited_by_target",
@@ -631,7 +636,7 @@ def prior_art_context_citation_documents(context: dict[str, Any] | None) -> list
                 "representative_claims": item.get("representative_claims") or [],
                 "lookup_status": item.get("lookup_status"),
                 "lookup_source": item.get("lookup_source"),
-                "comparison_status": item.get("comparison_status"),
+                "comparison_status": comparison_status,
             }
         )
     return documents

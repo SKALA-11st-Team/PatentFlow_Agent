@@ -20,6 +20,7 @@ def build_base_input_payload(
     claims_provided = bool((claim_context or {}).get("all_claims_included"))
     return {
         "patent": {
+            "document_role": "target_patent",
             "metadata": state.patent_structured or {},
             "kipris_metadata": ((state.kipris_api_data or {}).get("metadata") or {}),
             "claim_stats": claim_stats,
@@ -33,6 +34,11 @@ def build_base_input_payload(
                 "prior_art_candidates_provided": bool(prior_art),
                 "citation_evidence_provided": bool(citations),
             },
+        },
+        "document_role_policy": {
+            "target_patent": "patent 및 summary_result에 포함된 대상 특허",
+            "prior_art": "patent.citation_evidence에 포함된 비교 문헌",
+            "rule": "prior_art의 기술요소를 target_patent의 구성으로 서술하지 않음",
         },
         "summary_result": state.summary_result,
         "evidence": [valuation_evidence_payload(item) for item in evidence],

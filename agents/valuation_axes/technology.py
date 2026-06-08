@@ -238,7 +238,10 @@ def merge_hybrid_items(*, prior_items: list[dict[str, Any]], similar_items: list
 def compact_comparison_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     drop_keys = {"pdf_text_excerpt", "similarity_text", "resolved_search_matches"}
     return [
-        {key: value for key, value in item.items() if key not in drop_keys}
+        {
+            "document_role": "prior_art_or_similar_comparison",
+            **{key: value for key, value in item.items() if key not in drop_keys},
+        }
         for item in items
     ]
 def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:

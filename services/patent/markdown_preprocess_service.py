@@ -658,7 +658,21 @@ def _extract_claim_dependency(text: str) -> int | None:
     dependency = _extract_int(r"claims?\s*(\d+)", text)
     if dependency is not None:
         return dependency
-    value = _search_group(r"請求項\s*([0-9０-９]+)\s*に記載", text)
+    compact_japanese = re.sub(r"\s+", "", text)
+    if re.match(
+        r"請求項[0-9０-９]+(?:(?:又は|若しくは|ないし|乃至|～|〜|-)[0-9０-９]+)?"
+        r"記載の.+?(?:システム|装置|プログラム|記録媒体)であって",
+        compact_japanese,
+        re.S,
+    ):
+        return None
+    value = _search_group(
+        r"請求項([0-9０-９]+)"
+        r"(?:(?:又は|若しくは|ないし|乃至|～|〜|-)[0-9０-９]+)?"
+        r"(?:のいずれか(?:１|1)項)?"
+        r"(?:に記載|記載)",
+        compact_japanese,
+    )
     return int(normalize_fullwidth_digits(value)) if value else None
 
 

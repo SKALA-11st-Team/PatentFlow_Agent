@@ -269,7 +269,7 @@ def test_fetch_foreign_claims_falls_back_to_google_patents_pdf(monkeypatch, tmp_
     documents = _fetch_foreign_claims(client, [candidate])
 
     assert documents[0]["lookup_source"] == "google_patents_pdf"
-    assert documents[0]["comparison_status"] == "comparison_ready"
+    assert documents[0]["comparison_status"] == "claim_comparison_ready"
     assert documents[0]["representative_claims"][0]["text"].startswith("A method")
 
 
@@ -306,6 +306,10 @@ def test_fetch_foreign_claims_uses_google_patents_html_when_pdf_has_no_claims(mo
         "services.patent.kipris_patent_service.google_patents_pdf_url",
         lambda *args, **kwargs: None,
     )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._kipris_client",
+        lambda: client,
+    )
 
     documents = _fetch_foreign_claims(client, [candidate])
 
@@ -313,6 +317,51 @@ def test_fetch_foreign_claims_uses_google_patents_html_when_pdf_has_no_claims(mo
     assert documents[0]["title"] == "Prior art title"
     assert documents[0]["abstract"] == "Prior art abstract"
     assert documents[0]["representative_claims"][0]["text"].startswith("A method")
+
+
+def test_fetch_foreign_claims_marks_html_abstract_without_claims_as_auxiliary(monkeypatch):
+    class Response:
+        text = """
+            <html>
+              <meta name="DC.title" content="Prior art title">
+              <meta name="DC.description" content="Prior art abstract only">
+            </html>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    client = ForeignClient()
+    client.session = Session()
+    client.timeout = 20
+    candidate = foreign_reference_candidate_from_text("JP 2000029513 A")
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_kipris",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_bigquery",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.google_patents_pdf_url",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._kipris_client",
+        lambda: client,
+    )
+
+    documents = _fetch_foreign_claims(client, [candidate])
+
+    assert documents[0]["comparison_status"] == "abstract_only"
+    collection = resolve_foreign_prior_art_evidence(["JP 2000029513 A"])["prior_art_collection"]
+    assert collection["comparison_ready_count"] == 0
+    assert collection["abstract_only_count"] == 1
 
 
 def test_resolve_foreign_prior_art_evidence_marks_identifier_only_documents(monkeypatch):
@@ -332,6 +381,9 @@ def test_resolve_foreign_prior_art_evidence_marks_identifier_only_documents(monk
     assert result["prior_art_collection"] == {
         "candidate_count": 1,
         "comparison_ready_count": 0,
+        "claim_comparison_ready_count": 0,
+        "abstract_only_count": 0,
+        "fulltext_claims_unparsed_count": 0,
         "identifier_only_count": 1,
         "comparison_status": "unknown",
     }
@@ -590,6 +642,21 @@ def test_extract_foreign_claims_from_text_supports_chinese_numbered_claims():
     assert claims[0]["claim_no"] == 1
     assert claims[0]["is_independent"] is True
     assert claims[1]["dependency"] == 1
+
+
+def test_extract_foreign_claims_from_text_detects_japanese_dependency_variants():
+    claims = extract_foreign_claims_from_text(
+        """
+CLAIMS
+Claim 1: 基準データと比較データを用いて計測値の微細な変動を検知する方法。
+Claim 2: 請求項１記載の方法であって、追加の検定を行う方法。
+Claim 3: 請求項１又は２に記載の方法であって、結果を表示する方法。
+Claim 4: 請求項１ないし３のいずれか１項に記載の方法であって、警告を出力する方法。
+"""
+    )
+
+    assert claims[0]["is_independent"] is True
+    assert [claim["dependency"] for claim in claims[1:]] == [1, 1, 1]
 
 
 def test_extract_foreign_claims_from_text_ignores_numbered_description_before_claims():

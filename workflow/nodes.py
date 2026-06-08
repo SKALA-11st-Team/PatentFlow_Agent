@@ -281,15 +281,31 @@ def merge_prior_art_citation_evidence(
             "representative_claims": document.get("representative_claims") or existing.get("representative_claims") or [],
         }
     documents = list(by_number.values())
-    ready_numbers = {
+    for item in documents:
+        if item.get("representative_claims"):
+            item["comparison_status"] = "claim_comparison_ready"
+        elif item.get("comparison_status") in {None, "comparison_ready"} and item.get("abstract"):
+            item["comparison_status"] = "abstract_only"
+    claim_ready_numbers = {
         prior_art_document_key(item)
         for item in documents
-        if item.get("representative_claims") or item.get("abstract")
+        if item.get("comparison_status") == "claim_comparison_ready"
     }
+    abstract_only_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("comparison_status") == "abstract_only"
+    }
+    claims_unparsed_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("comparison_status") == "fulltext_claims_unparsed"
+    }
+    resolved_numbers = claim_ready_numbers | abstract_only_numbers | claims_unparsed_numbers
     unresolved = [
         item
         for item in merged.get("foreign_claim_lookup_candidates") or []
-        if prior_art_document_key(item) not in ready_numbers
+        if prior_art_document_key(item) not in resolved_numbers
     ]
     merged.update(
         {
@@ -297,9 +313,20 @@ def merge_prior_art_citation_evidence(
             "foreign_identifier_only_documents": unresolved,
             "prior_art_collection": {
                 "candidate_count": candidate_count,
-                "comparison_ready_count": len(ready_numbers),
-                "identifier_only_count": max(0, candidate_count - len(ready_numbers)),
-                "comparison_status": "comparison_ready" if ready_numbers else "unknown",
+                "comparison_ready_count": len(claim_ready_numbers),
+                "claim_comparison_ready_count": len(claim_ready_numbers),
+                "abstract_only_count": len(abstract_only_numbers),
+                "fulltext_claims_unparsed_count": len(claims_unparsed_numbers),
+                "identifier_only_count": max(0, candidate_count - len(resolved_numbers)),
+                "comparison_status": (
+                    "claim_comparison_ready"
+                    if claim_ready_numbers
+                    else "abstract_only"
+                    if abstract_only_numbers
+                    else "fulltext_claims_unparsed"
+                    if claims_unparsed_numbers
+                    else "unknown"
+                ),
             },
         }
     )
@@ -809,6 +836,17 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
         total_score = valuation.get("total_score")
         if isinstance(total_score, int) and f"{total_score}/400" not in markdown:
             issues.append(f"Final report total score does not match valuation total_score ({total_score})")
+        recommendation = str(valuation.get("recommendation") or "").strip()
+        if recommendation:
+            match = re.search(
+                r"(?m)^\|\s*종합 검토 의견\s*\|\s*([^|]+?)\s*\|$",
+                markdown,
+            )
+            report_recommendation = match.group(1).strip() if match else None
+            if report_recommendation != recommendation:
+                issues.append(
+                    f"Final report recommendation does not match valuation recommendation ({recommendation})"
+                )
     # Forbidden expressions / evaluator tone are judged by the LLM final check
     # (it reads the report body), not by brittle substring matching here.
     passed = not issues

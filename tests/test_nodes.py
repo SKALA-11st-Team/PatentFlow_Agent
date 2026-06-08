@@ -249,7 +249,7 @@ def test_prior_art_fulltext_node_merges_pdf_claims_into_citation_evidence(monkey
                     ],
                     "lookup_status": "resolved",
                     "lookup_source": "prior_art_pdf_fulltext",
-                    "comparison_status": "comparison_ready",
+                    "comparison_status": "claim_comparison_ready",
                 }
             ],
             "warnings": [],
@@ -287,8 +287,11 @@ def test_prior_art_fulltext_node_merges_pdf_claims_into_citation_evidence(monkey
     assert result.citation_evidence["prior_art_collection"] == {
         "candidate_count": 2,
         "comparison_ready_count": 1,
+        "claim_comparison_ready_count": 1,
+        "abstract_only_count": 0,
+        "fulltext_claims_unparsed_count": 0,
         "identifier_only_count": 1,
-        "comparison_status": "comparison_ready",
+        "comparison_status": "claim_comparison_ready",
     }
 
 
@@ -764,3 +767,19 @@ def test_report_validation_flags_missing_sections_and_score_mismatch():
     assert result["passed"] is False
     assert any("missing required sections" in i for i in result["issues"])
     assert any("total score" in i for i in result["issues"])
+
+
+def test_report_validation_flags_recommendation_mismatch():
+    from workflow.nodes import report_validation_node
+
+    md = (
+        "\n".join(f"## {i}. 섹션" for i in range(1, 7))
+        + "\n| 종합 검토 의견 | 조건부 유지 |\n종합 점수 223/400점"
+    )
+    state = _report_state(md)
+    state.valuation_result["recommendation"] = "추가 정보 필요"
+
+    result = report_validation_node(state).report_validation_result
+
+    assert result["passed"] is False
+    assert any("recommendation" in issue for issue in result["issues"])

@@ -38,6 +38,7 @@ FOREIGN_LEGAL_EXCLUDED_DETAILS = {"prior_art_overlap"}
 LEGAL_DETAIL_MAX = {
     "prior_art_overlap": 25,
     "claim_structure_stability": 10,
+    "follow_on_right_signal": 4,
 }
 
 
@@ -47,19 +48,25 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
     total = 0
     total_max = 0
     exclude_prior_art_metric = is_foreign_patent(state) and not has_comparison_ready_prior_art(state)
+    exclude_citing_metric = is_foreign_patent(state) and not has_available_citing_signal(state)
     for key, max_score in LEGAL_SUBSCORE_MAX.items():
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
-        effective_max_score = max_score
+        excluded_detail_keys: set[str] = set()
         if exclude_prior_art_metric and key == "right_stability":
+            excluded_detail_keys.update(FOREIGN_LEGAL_EXCLUDED_DETAILS)
+        if exclude_citing_metric and key == "portfolio_defensive_value":
+            excluded_detail_keys.add("follow_on_right_signal")
+        effective_max_score = max_score
+        if excluded_detail_keys:
             effective_max_score = legal_subscore_max_without_details(
                 max_score=max_score,
                 details=details,
-                excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS,
+                excluded_detail_keys=excluded_detail_keys,
             )
         detail_sum = sum_detail_scores(
             details,
-            excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS if exclude_prior_art_metric and key == "right_stability" else None,
+            excluded_detail_keys=excluded_detail_keys or None,
         )
         raw_score = coerce_int(item.get("score"))
         score = detail_sum if detail_sum is not None else raw_score
@@ -116,6 +123,11 @@ def has_comparison_ready_prior_art(state: PatentWorkflowState) -> bool:
     evidence = state.citation_evidence or (state.kipris_api_data or {}).get("citation_evidence") or {}
     collection = evidence.get("prior_art_collection") if isinstance(evidence, dict) else {}
     return int((collection or {}).get("comparison_ready_count") or 0) > 0
+
+
+def has_available_citing_signal(state: PatentWorkflowState) -> bool:
+    stats = (state.kipris_api_data or {}).get("citing_stats") or {}
+    return isinstance(stats, dict) and bool(stats.get("available", bool(stats)))
 
 
 def coerce_int(value: Any) -> int | None:
@@ -184,8 +196,11 @@ def enforce_prior_art_comparison_status(
         return result
 
     overlap["compared_prior_art_count"] = ready_count
-    overlap["assessment_status"] = "comparison_ready" if ready_count else "unknown"
-    if ready_count and int(collection.get("identifier_only_count") or 0) == 0:
+    overlap["assessment_status"] = "claim_comparison_ready" if ready_count else "unknown"
+    unresolved_count = int(collection.get("identifier_only_count") or 0) + int(
+        collection.get("fulltext_claims_unparsed_count") or 0
+    )
+    if ready_count and unresolved_count == 0:
         missing = result.get("missing_information")
         if isinstance(missing, list):
             result["missing_information"] = [
@@ -195,10 +210,10 @@ def enforce_prior_art_comparison_status(
             ]
     if ready_count == 0:
         overlap["overlap_basis"] = "상세 내용이 확보된 선행문헌이 없어 청구항 중복도를 판단할 수 없음"
-        overlap["rationale"] = "선행문헌 식별번호만 확인되어 청구항·초록 기반 비교는 수행하지 않음"
+        overlap["rationale"] = "선행문헌 청구항이 확보되지 않아 청구항 단위 직접 비교는 수행하지 않음"
         result["prior_art_references"] = []
         missing = result.setdefault("missing_information", [])
-        message = "선행문헌의 대표 청구항 또는 초록"
+        message = "선행문헌의 대표 청구항"
         if isinstance(missing, list) and message not in missing:
             missing.append(message)
     return result
@@ -376,11 +391,14 @@ def _valuation_citing_signal(state: PatentWorkflowState) -> dict[str, Any]:
     if not isinstance(stats, dict):
         stats = {}
         available = False
+    elif "available" in stats:
+        available = bool(stats.get("available"))
     return {
         "available": available,
-        "total_count": int(stats.get("total_count") or 0),
-        "standardized_count": int(stats.get("standardized_count") or 0),
-        "non_standardized_count": int(stats.get("non_standardized_count") or 0),
+        "total_count": int(stats.get("total_count") or 0) if available else None,
+        "standardized_count": int(stats.get("standardized_count") or 0) if available else None,
+        "non_standardized_count": int(stats.get("non_standardized_count") or 0) if available else None,
+        "missing_reason": stats.get("missing_reason") if not available else None,
         "used_for": "portfolio_defensive_value_only",
     }
 
@@ -392,6 +410,7 @@ def _valuation_reference_document_payload(
     max_claims: int = 3,
 ) -> dict[str, Any]:
     return {
+        "document_role": "prior_art",
         "direction": item.get("direction"),
         "country_code": item.get("country_code"),
         "application_number": item.get("application_number"),

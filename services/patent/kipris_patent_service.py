@@ -178,7 +178,13 @@ def fetch_foreign_patent_rights_data(
         "citation_documents": [],
         "citation_stats": {"total_count": 0, "standardized_count": 0, "non_standardized_count": 0},
         "citing_documents": [],
-        "citing_stats": {"total_count": 0, "standardized_count": 0, "non_standardized_count": 0},
+        "citing_stats": {
+            "available": False,
+            "total_count": None,
+            "standardized_count": None,
+            "non_standardized_count": None,
+            "missing_reason": "foreign_citing_api_not_connected",
+        },
         "citation_evidence": {
             "kr_citation_documents": [],
             "foreign_claim_lookup_candidates": [],
@@ -453,7 +459,9 @@ def _normalize_kipris_claims(raw_claims: list[dict[str, Any]]) -> list[dict[str,
 
 def _extract_claim_dependency(text: str) -> int | None:
     match = re.search(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
-    return _int_or_none(match.group(1) if match else None)
+    if match:
+        return _int_or_none(match.group(1))
+    return extract_foreign_claim_dependency(text)
 
 
 def _build_api_claim_stats(reported_claim_count: int | None, claims: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1019,7 +1027,7 @@ def _fetch_foreign_claims_from_google_patents(
                 publication_id=publication_id,
                 max_claims=max_claims_per_document,
             )
-        if _is_comparison_ready(document):
+        if _has_prior_art_detail(document):
             documents.append(document)
     return documents
 
@@ -1067,6 +1075,7 @@ def _google_patents_html_document(
     publication_id: str,
     max_claims: int,
 ) -> dict[str, Any]:
+    auxiliary_document: dict[str, Any] = {}
     for language in ("en", "zh", "ja"):
         try:
             response = client.session.get(
@@ -1092,7 +1101,9 @@ def _google_patents_html_document(
         )
         if _is_comparison_ready(document):
             return document
-    return {}
+        if _has_prior_art_detail(document) and not auxiliary_document:
+            auxiliary_document = document
+    return auxiliary_document
 
 
 def _candidate_patent(candidate: dict[str, Any]) -> dict[str, Any]:
@@ -1120,7 +1131,15 @@ def _foreign_prior_art_document(
         "representative_claims": claims,
         "lookup_status": "resolved",
         "lookup_source": lookup_source,
-        "comparison_status": "comparison_ready" if claims or _clean(abstract) else "identifier_only",
+        "comparison_status": (
+            "claim_comparison_ready"
+            if claims
+            else "abstract_only"
+            if _clean(abstract)
+            else "fulltext_claims_unparsed"
+            if lookup_source == "google_patents_pdf"
+            else "identifier_only"
+        ),
         "source_document": candidate,
     }
 
@@ -1175,20 +1194,63 @@ def _foreign_document_key(document: dict[str, Any]) -> tuple[Any, Any, Any]:
 def _is_comparison_ready(document: dict[str, Any] | None) -> bool:
     return bool(
         isinstance(document, dict)
-        and (document.get("representative_claims") or _clean(document.get("abstract")))
+        and document.get("representative_claims")
     )
+
+
+def _has_prior_art_detail(document: dict[str, Any] | None) -> bool:
+    return bool(
+        isinstance(document, dict)
+        and document.get("comparison_status") != "identifier_only"
+        and (
+            document.get("representative_claims")
+            or _clean(document.get("abstract"))
+            or document.get("comparison_status") == "fulltext_claims_unparsed"
+        )
+    )
+
+
+def _prior_art_comparison_status(document: dict[str, Any]) -> str:
+    status = str(document.get("comparison_status") or "")
+    if status == "comparison_ready" or document.get("representative_claims"):
+        return "claim_comparison_ready"
+    if status:
+        return status
+    if _clean(document.get("abstract")):
+        return "abstract_only"
+    return "identifier_only"
 
 
 def _prior_art_collection_status(
     candidates: list[dict[str, Any]],
     documents: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    comparison_ready_count = sum(1 for document in documents if _is_comparison_ready(document))
+    claim_ready_count = sum(
+        1 for document in documents if _prior_art_comparison_status(document) == "claim_comparison_ready"
+    )
+    abstract_only_count = sum(
+        1 for document in documents if _prior_art_comparison_status(document) == "abstract_only"
+    )
+    claims_unparsed_count = sum(
+        1 for document in documents if _prior_art_comparison_status(document) == "fulltext_claims_unparsed"
+    )
+    resolved_count = claim_ready_count + abstract_only_count + claims_unparsed_count
     return {
         "candidate_count": len(candidates),
-        "comparison_ready_count": comparison_ready_count,
-        "identifier_only_count": max(0, len(candidates) - comparison_ready_count),
-        "comparison_status": "comparison_ready" if comparison_ready_count else "unknown",
+        "comparison_ready_count": claim_ready_count,
+        "claim_comparison_ready_count": claim_ready_count,
+        "abstract_only_count": abstract_only_count,
+        "fulltext_claims_unparsed_count": claims_unparsed_count,
+        "identifier_only_count": max(0, len(candidates) - resolved_count),
+        "comparison_status": (
+            "claim_comparison_ready"
+            if claim_ready_count
+            else "abstract_only"
+            if abstract_only_count
+            else "fulltext_claims_unparsed"
+            if claims_unparsed_count
+            else "unknown"
+        ),
     }
 
 
@@ -1390,6 +1452,14 @@ def fetch_foreign_target_reference_data(
     return {
         "citation_documents": cited_documents,
         "citation_stats": stats,
+        "citing_documents": [],
+        "citing_stats": {
+            "available": False,
+            "total_count": None,
+            "standardized_count": None,
+            "non_standardized_count": None,
+            "missing_reason": "foreign_citing_api_not_connected",
+        },
         "citation_evidence": {
             "kr_citation_documents": [],
             "foreign_claim_lookup_candidates": [],
@@ -1982,15 +2052,34 @@ def _foreign_claims_section_text(text: str) -> str:
 
 
 def extract_foreign_claim_dependency(text: str) -> int | None:
+    compact_japanese = re.sub(r"\s+", "", text)
+    if re.match(
+        r"請求項[0-9０-９]+(?:(?:又は|若しくは|ないし|乃至|～|〜|-)[0-9０-９]+)?"
+        r"記載の.+?(?:システム|装置|プログラム|記録媒体)であって",
+        compact_japanese,
+        re.S,
+    ):
+        return None
     patterns = [
         r"claims?\s*([0-9]+)\b",
         r"权利要求\s*([0-9]+)",
+        (
+            r"請求項\s*([0-9０-９]+)"
+            r"(?:\s*(?:又は|若しくは|ないし|乃至|～|〜|-)\s*[0-9０-９]+)?"
+            r"(?:\s*のいずれか(?:１|1)項)?"
+            r"\s*(?:に記載|記載)"
+        ),
     ]
     for pattern in patterns:
-        match = re.search(pattern, text, re.I)
+        target = compact_japanese if "請求項" in pattern else text
+        match = re.search(pattern, target, re.I)
         if match:
-            return _int_or_none(match.group(1))
+            return _int_or_none(normalize_fullwidth_claim_digits(match.group(1)))
     return None
+
+
+def normalize_fullwidth_claim_digits(value: Any) -> str:
+    return str(value or "").translate(str.maketrans("０１２３４５６７８９", "0123456789"))
 
 
 def _foreign_literature_base_numbers(candidate: dict[str, Any], document_number: str) -> list[str]:

@@ -2424,6 +2424,7 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
         "total_count": 2,
         "standardized_count": 1,
         "non_standardized_count": 1,
+        "missing_reason": None,
         "used_for": "portfolio_defensive_value_only",
     }
     assert citation_evidence["foreign_citation_documents"][0]["publication_number"] == "JP-2017047511-A"
@@ -2437,6 +2438,34 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
     assert citation_evidence["foreign_claim_lookup_candidates"][0]["lookup_source"] == "kipris_foreign_demand_paragraph"
     assert legal_payload["patent"]["claim_availability"]["citation_evidence_provided"] is True
     assert technology_payload["patent"]["citation_evidence"] == {}
+
+
+def test_legal_citing_signal_distinguishes_unavailable_foreign_api_from_zero():
+    from agents.valuation_axes.legal import build_input_payload
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "JP"},
+        kipris_api_data={
+            "citing_stats": {
+                "available": False,
+                "total_count": None,
+                "standardized_count": None,
+                "non_standardized_count": None,
+                "missing_reason": "foreign_citing_api_not_connected",
+            }
+        },
+    )
+
+    signal = build_input_payload(state=state, evidence=[])["patent"]["citation_evidence"]["citing_signal"]
+
+    assert signal == {
+        "available": False,
+        "total_count": None,
+        "standardized_count": None,
+        "non_standardized_count": None,
+        "missing_reason": "foreign_citing_api_not_connected",
+        "used_for": "portfolio_defensive_value_only",
+    }
 
 
 def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp_path):
@@ -2553,7 +2582,7 @@ def test_attach_legal_context_marks_prior_art_unknown_without_comparison_ready_d
     assert overlap["compared_prior_art_count"] == 0
     assert "판단할 수 없음" in overlap["overlap_basis"]
     assert scored["prior_art_references"] == []
-    assert "선행문헌의 대표 청구항 또는 초록" in scored["missing_information"]
+    assert "선행문헌의 대표 청구항" in scored["missing_information"]
 
 
 def test_valuation_citation_evidence_preserves_foreign_document_identifier():
@@ -2615,7 +2644,7 @@ def test_attach_legal_context_removes_resolved_prior_art_missing_message():
 
     assert scored["missing_information"] == ["제품 적용 여부"]
     overlap = scored["subscores"]["right_stability"]["details"]["prior_art_overlap"]
-    assert overlap["assessment_status"] == "comparison_ready"
+    assert overlap["assessment_status"] == "claim_comparison_ready"
     assert overlap["compared_prior_art_count"] == 2
 
 
@@ -2670,6 +2699,41 @@ def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_c
     assert scored["subscores"]["right_stability"]["score"] == 25
     assert scored["subscores"]["right_stability"]["max_score"] == 35
     assert scored["score"] == 64
+
+
+def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "JP"},
+        kipris_api_data={
+            "citing_stats": {
+                "available": False,
+                "total_count": None,
+                "missing_reason": "foreign_citing_api_not_connected",
+            }
+        },
+    )
+    result = {
+        "subscores": {
+            "right_stability": {"score": 35},
+            "claim_protection": {"score": 40},
+            "portfolio_defensive_value": {
+                "score": 21,
+                "details": {
+                    "portfolio_connection_coverage": {"score": 15},
+                    "overseas_right_coverage": {"score": 6},
+                    "follow_on_right_signal": {"score": 0},
+                },
+            },
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 21
+    assert scored["subscores"]["portfolio_defensive_value"]["max_score"] == 21
+    assert scored["score"] == 100
 
 
 def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign_patent():
