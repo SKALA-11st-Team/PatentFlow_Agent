@@ -309,6 +309,10 @@ def collect_warning_values(value: Any, warnings: list[str]) -> None:
         nested_warnings = value.get("warnings")
         if isinstance(nested_warnings, list):
             warnings.extend(str(item) for item in nested_warnings if item)
+        # market 등 일부 축은 실패를 warning이 아니라 missing_reason('..._failed:..')에 기록한다.
+        missing_reason = value.get("missing_reason")
+        if missing_reason and "_failed:" in str(missing_reason):
+            warnings.append(str(missing_reason))
         for nested in value.values():
             collect_warning_values(nested, warnings)
     elif isinstance(value, list):
