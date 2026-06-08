@@ -85,12 +85,17 @@ def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
+def valuation_seed() -> int | None:
+    # seed 지원 모델로 고정된 배포에서만 seed를 전달한다(VALUATION_SEED_SUPPORTED=true + VALUATION_SEED).
+    if settings.valuation_seed_supported and settings.valuation_seed is not None:
+        return settings.valuation_seed
+    return None
+
+
 def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
+    # 재현성(VAL-01): seed 지원 모델이면 run_axis_llm_once가 seed를 전달해 동일 입력→동일 점수를 보장한다.
+    # seed 미지원(기본 gpt-5)일 때는 VALUATION_ENSEMBLE_RUNS 앙상블 중앙값으로 점수 분산을 줄인다.
     ensemble_runs = max(1, int(settings.valuation_ensemble_runs or 1))
-    if settings.valuation_seed is not None and not settings.valuation_seed_supported:
-        # gpt-5 Responses calls in this client path do not apply seed. Keep the
-        # setting explicit, but do not imply determinism that is not enforced.
-        ensemble_runs = max(ensemble_runs, 1)
     if ensemble_runs > 1:
         results = [run_axis_llm_once(axis=axis, prompt=prompt, evidence=evidence) for _ in range(ensemble_runs)]
         return combine_axis_ensemble(axis, results)
@@ -98,7 +103,7 @@ def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, An
 
 
 def run_axis_llm_once(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    raw = call_llm(prompt)
+    raw = call_llm(prompt, seed=valuation_seed())
     parsed = parse_json_object(raw)
     if not parsed:
         raise RuntimeError(f"LLM valuation response for {axis} was not valid JSON.")

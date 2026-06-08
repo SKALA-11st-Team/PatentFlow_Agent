@@ -38,6 +38,7 @@ def call_llm(
     *,
     model: str | None = None,
     temperature: float = 0.2,
+    seed: int | None = None,
 ) -> str:
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not set.")
@@ -49,6 +50,9 @@ def call_llm(
     }
     if supports_temperature(selected_model):
         request["temperature"] = temperature
+    if seed is not None:
+        # 동일 입력 재평가 시 점수 재현성 확보(seed 지원 모델 한정, 호출자가 게이팅).
+        request["seed"] = seed
 
     response = _get_client().responses.create(**request)
     output_text = getattr(response, "output_text", None)
