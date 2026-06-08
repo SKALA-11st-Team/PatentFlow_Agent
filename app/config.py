@@ -48,7 +48,7 @@ class Settings(BaseModel):
     # system_fingerprint=None으로 결과를 재현하지 않음(실측). 따라서 기본은 seed OFF·gpt-5-mini로 두고,
     # 재현성이 필요하면 VALUATION_SEED_SUPPORTED=true로 켠다 → 평가 모델이 seed를 존중하는 gpt-4o로 바뀌고
     # call_llm이 Chat Completions+seed 경로를 사용한다. (모든 값은 환경변수로 재정의 가능)
-    valuation_seed: int | None = int(getenv("VALUATION_SEED", "20260608"))
+    valuation_seed: int | None = int(getenv("VALUATION_SEED") or "20260608")
     valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "false").lower() == "true"
     valuation_model: str = getenv("VALUATION_MODEL") or ("gpt-4o" if valuation_seed_supported else openai_chat_model)
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"

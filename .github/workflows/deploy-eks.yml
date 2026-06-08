@@ -18,6 +18,10 @@ env:
   OPENAI_CHAT_MODEL: ${{ vars.OPENAI_CHAT_MODEL || 'gpt-5-mini' }}
   # supervisor 모델도 그냥 모델명(자격증명 아님) → Variable. 비우면 OPENAI_CHAT_MODEL로 폴백.
   OPENAI_SUPERVISOR_MODEL: ${{ vars.OPENAI_SUPERVISOR_MODEL || '' }}
+  # 점수 재현성(VAL-01): true면 평가 축이 seed 존중 모델(gpt-4o)+seed로 동작, false면 gpt-5-mini(재현 미보장).
+  VALUATION_SEED_SUPPORTED: ${{ vars.VALUATION_SEED_SUPPORTED || 'false' }}
+  # seed 값(자격증명 아님). 비우면 코드 기본값(20260608) 사용.
+  VALUATION_SEED: ${{ vars.VALUATION_SEED || '' }}
   ENABLE_SHARED_DB_FALLBACK: ${{ vars.ENABLE_SHARED_DB_FALLBACK || 'true' }}
   UNIFIED_API_BASE_URL: ${{ vars.UNIFIED_API_BASE_URL || 'http://team11-patentflow-be-svc:80' }}
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
@@ -213,6 +217,8 @@ jobs:
             --namespace="${KUBE_NAMESPACE}" \
             --from-literal=OPENAI_CHAT_MODEL="${OPENAI_CHAT_MODEL}" \
             --from-literal=OPENAI_SUPERVISOR_MODEL="${OPENAI_SUPERVISOR_MODEL}" \
+            --from-literal=VALUATION_SEED_SUPPORTED="${VALUATION_SEED_SUPPORTED}" \
+            --from-literal=VALUATION_SEED="${VALUATION_SEED}" \
             --from-literal=ENABLE_SHARED_DB_FALLBACK="${ENABLE_SHARED_DB_FALLBACK}" \
             --from-literal=UNIFIED_API_BASE_URL="${UNIFIED_API_BASE_URL}" \
             --from-literal=PGVECTOR_TABLE_NAME="industry_report_chunks" \
