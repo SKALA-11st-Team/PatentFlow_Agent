@@ -1,4 +1,6 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import contextvars
 
 from app.config import settings
 from services.patent.kipris_patent_service import (
@@ -238,54 +240,78 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
 
     query_plan = state.query_plan or {}
     skip_news_evidence = bool(state.user_input.get("skip_news_evidence"))
-    result = collect_external_evidence(
-        preprocessed_patent=preprocessed,
-        patent_id=patent.get("id") or preprocessed.get("patent_id"),
-        application_number=patent.get("application_number"),
-        query_limit_per_axis=MAX_SEARCH_QUERIES,
-        include_naver=not skip_news_evidence,
-        include_gnews=not skip_news_evidence,
-        include_kipris=False,
-        ko_queries_override=query_plan.get("ko_queries", []),
-        en_queries_override=query_plan.get("en_queries", []),
-        output_dir=artifact_subdir(state, "api_evidence"),
-        save=not state.user_input.get("no_save", False),
-    )
+    patent_id = patent.get("id") or preprocessed.get("patent_id")
+    no_save = state.user_input.get("no_save", False)
+
+    # 뉴스 검색·Industry RAG·SK AX 검색은 서로 독립이므로 동시에 시작한다.
+    # 뉴스 필터는 뉴스 검색 결과에 의존하므로 뉴스 작업 안에서 체이닝하고,
+    # 세 작업이 모두 끝난 뒤 merge/save 한다.
+    def _news_task() -> tuple[dict, dict]:
+        result = collect_external_evidence(
+            preprocessed_patent=preprocessed,
+            patent_id=patent_id,
+            application_number=patent.get("application_number"),
+            query_limit_per_axis=MAX_SEARCH_QUERIES,
+            include_naver=not skip_news_evidence,
+            include_gnews=not skip_news_evidence,
+            include_kipris=False,
+            ko_queries_override=query_plan.get("ko_queries", []),
+            en_queries_override=query_plan.get("en_queries", []),
+            output_dir=artifact_subdir(state, "api_evidence"),
+            save=not no_save,
+        )
+        if skip_news_evidence:
+            news_filter_result = {
+                "kept": [],
+                "output_path": None,
+                "stats": {"input_count": 0, "kept_count": 0, "rejected_count": 0},
+                "warning": None,
+            }
+        else:
+            news_filter_result = filter_news_safely(
+                items=[item for item in result.get("items", []) if item.get("source_type") == "news"],
+                preprocessed_patent=preprocessed,
+                patent_id=patent_id,
+                output_dir=artifact_subdir(state, "filtered_evidence") / "news",
+                save=not no_save,
+            )
+        return result, news_filter_result
+
+    def _industry_task() -> dict:
+        return search_industry_rag_safely(
+            preprocessed_patent=preprocessed,
+            patent_id=patent_id,
+            rag_queries=query_plan.get("industry_rag_queries", []),
+            output_dir=artifact_subdir(state, "industry_rag"),
+            save=not no_save,
+        )
+
+    def _skax_task() -> dict:
+        skax_context = build_skax_patent_context_from_state(state)
+        return collect_skax_site_evidence_safely(
+            skax_context,
+            queries_override=query_plan.get("skax_site_queries") or None,
+        )
+
+    # copy_context로 현재 LangSmith run tree를 워커 스레드에 전파해 트레이스가
+    # 워크플로우 노드 아래에 중첩되게 한다(흩어짐 방지).
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        news_future = executor.submit(contextvars.copy_context().run, _news_task)
+        industry_future = executor.submit(contextvars.copy_context().run, _industry_task)
+        skax_future = executor.submit(contextvars.copy_context().run, _skax_task)
+        result, news_filter_result = news_future.result()
+        industry_result = industry_future.result()
+        skax_result = skax_future.result()
+
+    # 세 작업이 모두 끝난 뒤 merge/save.
     state.search_queries = compact_workflow_queries(
         [*state.search_queries, *result.get("queries", []), *result.get("gnews_queries", [])]
     )
     raw_items = result.get("items", [])
-    if skip_news_evidence:
-        news_filter_result = {
-            "kept": [],
-            "output_path": None,
-            "stats": {"input_count": 0, "kept_count": 0, "rejected_count": 0},
-            "warning": None,
-        }
-    else:
-        news_filter_result = filter_news_safely(
-            items=[item for item in raw_items if item.get("source_type") == "news"],
-            preprocessed_patent=preprocessed,
-            patent_id=patent.get("id") or preprocessed.get("patent_id"),
-            output_dir=artifact_subdir(state, "filtered_evidence") / "news",
-            save=not state.user_input.get("no_save", False),
-        )
     non_news_items = [item for item in raw_items if item.get("source_type") != "news"]
     evidence_items = [*non_news_items, *news_filter_result.get("kept", [])]
-    industry_result = search_industry_rag_safely(
-        preprocessed_patent=preprocessed,
-        patent_id=patent.get("id") or preprocessed.get("patent_id"),
-        rag_queries=query_plan.get("industry_rag_queries", []),
-        output_dir=artifact_subdir(state, "industry_rag"),
-        save=not state.user_input.get("no_save", False),
-    )
     if industry_result.get("items"):
         evidence_items = [*evidence_items, *industry_result["items"]]
-    skax_context = build_skax_patent_context_from_state(state)
-    skax_result = collect_skax_site_evidence_safely(
-        skax_context,
-        queries_override=query_plan.get("skax_site_queries") or None,
-    )
     skax_items = skax_result.get("items", [])
     if skax_items:
         evidence_items = merge_evidence_items(evidence_items, skax_items)
