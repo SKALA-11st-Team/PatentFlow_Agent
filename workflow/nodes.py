@@ -46,7 +46,8 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
             parsed_pdf = state.kipris_api_data.get("parsed_pdf") or {}
             if parsed_pdf:
                 state.parsed_pdf = parsed_pdf
-                state.pdf_paths = [parsed_pdf["pdf_path"]]
+                pdf_path = parsed_pdf.get("pdf_path")
+                state.pdf_paths = [pdf_path] if pdf_path else []
         else:
             state.kipris_api_data = fetch_kipris_bibliography(patent["application_number"])
         state.kipris_family_patents = state.kipris_api_data.get("family_patents", [])

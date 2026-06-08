@@ -2500,6 +2500,32 @@ def test_normalize_axis_result_passes_through_prior_art_references():
     assert result["prior_art_references"] == ["KR10-0948760", "KR10-2014-0072547"]
 
 
+def test_axis_llm_retries_when_first_response_is_not_json(monkeypatch):
+    import agents.valuation as valuation
+
+    calls = iter(
+        [
+            "권리성 평가 결과는 다음과 같습니다.",
+            '{"score": 70, "grade": "B", "rationale": "근거 기반 평가", '
+            '"confidence": 0.7, "evidence_ids": [], "risk_factors": [], '
+            '"missing_information": []}',
+        ]
+    )
+    prompts = []
+
+    def fake_call_llm(prompt):
+        prompts.append(prompt)
+        return next(calls)
+
+    monkeypatch.setattr(valuation, "call_llm", fake_call_llm)
+
+    result = valuation.run_axis_llm_required(axis="legal", prompt="original prompt", evidence=[])
+
+    assert result["score"] == 70
+    assert len(prompts) == 2
+    assert "JSON 객체 하나로만 다시 출력" in prompts[1]
+
+
 def test_legal_prompt_grounds_and_surfaces_prior_art_references():
     from pathlib import Path
 

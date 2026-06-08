@@ -62,6 +62,7 @@ SECTION_ALIASES = {
     "図面の簡単な説明": "figure_description",
     "発明を実施するための形態": "detailed_description",
     "ABSTRACT": "abstract",
+    "CLAIMS": "claims_text",
     "FIELD OF THE INVENTION": "technical_field",
     "TECHNICAL FIELD": "technical_field",
     "BACKGROUND": "background_art",
@@ -330,6 +331,8 @@ def is_structural_line(line: str) -> bool:
         return True
     if re.match(r"^-?\s*청구항\s+\d+", stripped):
         return True
+    if re.match(r"^-?\s*\d+\s*[.)]\s+", stripped):
+        return True
     if re.match(r"^\[\d{4}\]", stripped):
         return True
     if re.match(r"^-?\s*\[\d{4}\]", stripped):
@@ -405,21 +408,24 @@ def build_preprocessed_patent(
         if api_sections.get("abstract"):
             sections["abstract"] = postprocess_agent_text(api_sections["abstract"])
         api_claims = api_data.get("claims") or []
-        claims = [
-            {
-                "claim_no": claim["claim_no"],
-                "text": postprocess_agent_text(claim["text"]),
-                "is_independent": claim.get("is_independent", False),
-                "dependency": claim.get("dependency"),
-            }
-            for claim in api_claims
-        ]
+        if api_claims:
+            claims = [
+                {
+                    "claim_no": claim["claim_no"],
+                    "text": postprocess_agent_text(claim["text"]),
+                    "is_independent": claim.get("is_independent", False),
+                    "dependency": claim.get("dependency"),
+                }
+                for claim in api_claims
+            ]
+        else:
+            claims = extract_claims(sections.get("claims_text", ""))
         claim_stats = {
             key: value
             for key, value in (api_data.get("claim_stats") or {}).items()
             if key != "deleted_claim_numbers"
         }
-        if not claim_stats:
+        if not claim_stats or (claims and not claim_stats.get("active_claim_count")):
             claim_stats = build_claim_stats(metadata.get("reported_claim_count"), claims)
     else:
         metadata = extract_pdf_fallback_metadata(cleaned_text, db_metadata=db_metadata)
@@ -427,6 +433,7 @@ def build_preprocessed_patent(
         claim_stats = build_claim_stats(metadata.get("claim_count"), claims)
 
     metadata = merge_db_context_metadata(metadata, db_metadata=db_metadata)
+    metadata["prior_art"] = remove_self_prior_art(metadata.get("prior_art") or [], metadata)
     metadata["claim_count"] = claim_stats["active_claim_count"] or metadata.get("claim_count")
     metadata["assignee_count"] = len(metadata.get("assignee") or [])
     metadata["has_co_assignee"] = metadata["assignee_count"] > 1
@@ -615,13 +622,20 @@ def extract_sections(text: str) -> dict[str, str]:
 def extract_claims(claims_text: str) -> list[dict[str, Any]]:
     claims_text = truncate_at_next_major_section(claims_text)
     matches = list(re.finditer(r"(?m)^-?\s*청구항\s+(\d+)\s*(.*)$", claims_text))
+    if not matches:
+        matches = list(re.finditer(r"【請求項\s*([0-9０-９]+)】\s*(.*?)(?=【請求項\s*[0-9０-９]+】|$)", claims_text, re.S))
+    if not matches:
+        matches = list(re.finditer(r"(?m)^-?\s*(\d+)\s*[.)]\s*(.*)$", claims_text))
     claims: list[dict[str, Any]] = []
     for index, match in enumerate(matches):
-        claim_no = int(match.group(1))
+        claim_no = int(normalize_fullwidth_digits(match.group(1)))
         first_line = match.group(2).strip()
-        start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(claims_text)
-        body = claims_text[start:end].strip()
+        if match.re.flags & re.S:
+            body = ""
+        else:
+            start = match.end()
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(claims_text)
+            body = claims_text[start:end].strip()
         text = postprocess_agent_text(f"{first_line}\n{body}".strip())
         dependency = _extract_claim_dependency(text)
         claims.append(
@@ -636,7 +650,35 @@ def extract_claims(claims_text: str) -> list[dict[str, Any]]:
 
 
 def _extract_claim_dependency(text: str) -> int | None:
-    return _extract_int(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
+    dependency = _extract_int(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
+    if dependency is not None:
+        return dependency
+    dependency = _extract_int(r"claims?\s*(\d+)", text)
+    if dependency is not None:
+        return dependency
+    value = _search_group(r"請求項\s*([0-9０-９]+)\s*に記載", text)
+    return int(normalize_fullwidth_digits(value)) if value else None
+
+
+def normalize_fullwidth_digits(value: str | None) -> str:
+    return str(value or "").translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+
+
+def remove_self_prior_art(values: list[str], metadata: dict[str, Any]) -> list[str]:
+    country = str(metadata.get("country") or "").upper()
+    registration = normalize_document_identifier(metadata.get("registration_number"))
+    if not country or not registration:
+        return values
+    target_prefix = f"{country}{registration}"
+    return [
+        value
+        for value in values
+        if not normalize_document_identifier(value).startswith(target_prefix)
+    ]
+
+
+def normalize_document_identifier(value: Any) -> str:
+    return re.sub(r"[^0-9A-Z]", "", str(value or "").upper())
 
 
 def build_claim_stats(reported_claim_count: int | None, claims: list[dict[str, Any]]) -> dict[str, Any]:
@@ -744,7 +786,11 @@ def validate_preprocessed_patent(
         if not metadata.get(field):
             missing_fields.append(f"metadata.{field}")
     country = str(metadata.get("country") or "KR").upper()
-    required_sections = ["technical_field"]
+    required_sections = []
+    if country in {"", "KR"} or not any(
+        sections.get(field) for field in ("technical_field", "solution", "detailed_description")
+    ):
+        required_sections.append("technical_field")
     if country in {"", "KR"} or not sections.get("solution"):
         required_sections.append("abstract")
     if not claims:
@@ -829,16 +875,16 @@ def postprocess_claims_text(text: str) -> str:
         if not stripped:
             result.append("")
             continue
-        if re.match(r"^-?\s*청구항\s+\d+", stripped):
+        if re.match(r"^-?\s*(?:청구항\s+)?\d+\s*[.)]?", stripped):
             result.append(stripped)
             continue
-        if result and result[-1] and not re.match(r"^-?\s*청구항\s+\d+", result[-1]):
+        if result and result[-1] and not re.match(r"^-?\s*(?:청구항\s+)?\d+\s*[.)]?", result[-1]):
             result[-1] = result[-1].rstrip() + " " + stripped
         else:
             result.append(stripped)
     merged = "\n".join(result)
-    merged = re.sub(r"([가-힣A-Za-z0-9])\n{2,}([가-힣A-Za-z0-9])", r"\1\2", merged)
-    merged = re.sub(r"\s{2,}", " ", merged)
+    merged = re.sub(r"([가-힣A-Za-z0-9])\n{2,}([가-힣A-Za-z0-9])", r"\1\n\2", merged)
+    merged = re.sub(r"[ \t]{2,}", " ", merged)
     return normalize_blank_lines(merged)
 
 

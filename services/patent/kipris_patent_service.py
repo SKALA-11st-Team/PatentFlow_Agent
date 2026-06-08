@@ -244,7 +244,7 @@ def fetch_foreign_patent_rights_data(
 
 def foreign_pdf_source(selected_type: Any) -> str | None:
     value = str(selected_type or "")
-    if value == "GOOGLE_PATENTS_FULLTEXT":
+    if value in {"GOOGLE_PATENTS_FULLTEXT", "GOOGLE_PATENTS_HTML_FULLTEXT"}:
         return "google_patents"
     if value.startswith("FOREIGN_"):
         return "kipris"
@@ -252,14 +252,16 @@ def foreign_pdf_source(selected_type: Any) -> str | None:
 
 
 def foreign_patent_metadata_from_db(patent: dict[str, Any]) -> dict[str, Any]:
+    country = str(patent.get("country") or "").strip().upper() or None
+    title = patent.get("title_final") or patent.get("title_draft")
     return {
-        "country": str(patent.get("country") or "").strip().upper() or None,
+        "country": country,
         "patent_type": "등록특허" if patent.get("status") == "등록" else None,
         "registration_number": patent.get("registration_number"),
         "application_number": patent.get("application_number"),
         "publication_number": None,
-        "title": patent.get("title_final") or patent.get("title_draft"),
-        "title_eng": patent.get("title_draft") if patent.get("country") in {"US"} else None,
+        "title": title,
+        "title_eng": title if country == "US" else None,
         "assignee": [],
         "assignee_eng": [],
         "inventors": [],
@@ -1516,6 +1518,46 @@ def download_and_parse_foreign_patent_pdf(
     selected = select_foreign_fulltext_pdf_with_fallback(client, patent, candidates)
     pdf_dir = Path(settings.patent_pdf_dir)
     parse_output_dir = Path(output_dir) / _safe_filename(str(patent.get("management_number") or patent.get("registration_number") or "foreign"))
+    parsed_result = _download_and_parse_foreign_selection(
+        client,
+        selected,
+        pdf_dir=pdf_dir,
+        parse_output_dir=parse_output_dir,
+    )
+    if foreign_fulltext_parse_is_usable(parsed_result.get("markdown_text") or ""):
+        return parsed_result
+
+    if selected.get("selected_type") != "GOOGLE_PATENTS_FULLTEXT":
+        google_selection = google_patents_fulltext_selection(client, patent)
+        if google_selection:
+            google_result = _download_and_parse_foreign_selection(
+                client,
+                google_selection,
+                pdf_dir=pdf_dir,
+                parse_output_dir=parse_output_dir / "google_patents",
+            )
+            if foreign_fulltext_parse_is_usable(google_result.get("markdown_text") or ""):
+                google_result["fallback_reason"] = "kipris_pdf_parse_unusable"
+                return google_result
+
+    html_result = download_google_patents_html_fulltext(
+        client,
+        patent,
+        output_dir=parse_output_dir / "google_patents_html",
+    )
+    if foreign_fulltext_parse_is_usable(html_result.get("markdown_text") or ""):
+        html_result["fallback_reason"] = "foreign_pdf_parse_unusable"
+        return html_result
+    raise RuntimeError("Foreign fulltext was downloaded but no usable text or claims were extracted.")
+
+
+def _download_and_parse_foreign_selection(
+    client: Any,
+    selected: dict[str, Any],
+    *,
+    pdf_dir: Path,
+    parse_output_dir: Path,
+) -> dict[str, Any]:
     pdf_path = _download_pdf_url(
         selected["path"],
         output_dir=pdf_dir,
@@ -1534,6 +1576,169 @@ def download_and_parse_foreign_patent_pdf(
         "markdown_paths": parsed.get("markdown_paths") or [],
         "markdown_text": parsed.get("markdown_text") or "",
     }
+
+
+def foreign_fulltext_parse_is_usable(markdown_text: str) -> bool:
+    text_without_images = re.sub(r"!\[[^\]]*]\([^)]*\)", " ", str(markdown_text or ""))
+    meaningful_text = re.sub(r"[^0-9A-Za-z가-힣一-龥ぁ-んァ-ヶ]+", "", text_without_images)
+    return len(meaningful_text) >= 300 or bool(extract_foreign_claims_from_text(text_without_images))
+
+
+def google_patents_fulltext_selection(client: Any, patent: dict[str, Any]) -> dict[str, str | None] | None:
+    pdf_url = google_patents_pdf_url(patent, session=client.session, timeout=client.timeout)
+    publication_id = google_patents_publication_id(patent)
+    if not pdf_url or not publication_id:
+        return None
+    return {
+        "literature_number": publication_id,
+        "selected_type": "GOOGLE_PATENTS_FULLTEXT",
+        "doc_name": f"{publication_id}.pdf",
+        "path": pdf_url,
+    }
+
+
+def download_google_patents_html_fulltext(
+    client: Any,
+    patent: dict[str, Any],
+    *,
+    output_dir: Path,
+) -> dict[str, Any]:
+    publication_id = google_patents_publication_id(patent)
+    if not publication_id:
+        return {}
+    for language in ("en", "zh", "ja"):
+        url = f"https://patents.google.com/patent/{publication_id}/{language}"
+        try:
+            response = client.session.get(url, timeout=client.timeout)
+            response.raise_for_status()
+        except Exception:
+            continue
+        markdown_text = google_patents_html_to_markdown(response.text)
+        if not foreign_fulltext_parse_is_usable(markdown_text):
+            continue
+        output_dir.mkdir(parents=True, exist_ok=True)
+        figure_markdown = download_google_patents_representative_figure(
+            client,
+            response.text,
+            publication_id=publication_id,
+            output_dir=output_dir,
+        )
+        if figure_markdown:
+            markdown_text = f"{markdown_text}\n\n## FIG.1\n\n{figure_markdown}"
+        markdown_path = output_dir / f"{publication_id}.md"
+        markdown_path.write_text(markdown_text, encoding="utf-8")
+        return {
+            "literature_number": publication_id,
+            "selected_type": "GOOGLE_PATENTS_HTML_FULLTEXT",
+            "source_path": url,
+            "doc_name": f"{publication_id}.html",
+            "pdf_path": None,
+            "parse_output_dir": str(output_dir),
+            "markdown_paths": [str(markdown_path)],
+            "markdown_text": markdown_text,
+        }
+    return {}
+
+
+def google_patents_html_to_markdown(text: str) -> str:
+    title = _google_patents_meta_content(text, "DC.title")
+    abstract = (
+        _google_patents_meta_content(text, "DC.description")
+        or _google_patents_section_text(text, "abstract")
+    )
+    description = _google_patents_itemprop_text(text, "description")
+    claims = _google_patents_claim_texts(text)
+    references = _google_patents_backward_references(text)
+    sections = []
+    if title:
+        sections.append(f"# {title}")
+    if abstract:
+        sections.append(f"## ABSTRACT\n\n{abstract}")
+    if description:
+        sections.append(f"## DETAILED DESCRIPTION\n\n{description}")
+    if claims:
+        sections.append("## CLAIMS\n\n" + "\n\n".join(claims))
+    if references:
+        sections.append("## REFERENCES CITED\n\n" + "\n".join(f"- {value}" for value in references))
+    return "\n\n".join(sections)
+
+
+def download_google_patents_representative_figure(
+    client: Any,
+    html_text: str,
+    *,
+    publication_id: str,
+    output_dir: Path,
+) -> str | None:
+    urls = _google_patents_figure_urls(html_text)
+    if not urls:
+        return None
+    figure_url = urls[1] if len(urls) > 1 else urls[0]
+    try:
+        response = client.session.get(figure_url, timeout=client.timeout)
+        response.raise_for_status()
+    except Exception:
+        return None
+    content = getattr(response, "content", b"")
+    if not content:
+        return None
+    image_dir = output_dir / f"{publication_id}_images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    suffix = Path(figure_url.split("?", 1)[0]).suffix or ".png"
+    image_path = image_dir / f"imageFile1{suffix}"
+    image_path.write_bytes(content)
+    return f"![image 1](<{image_dir.name}/{image_path.name}>)"
+
+
+def _google_patents_figure_urls(text: str) -> list[str]:
+    urls = []
+    for tag in re.findall(r"<img\b[^>]*>", text or "", re.I):
+        attributes = {
+            key.lower(): unescape(value)
+            for key, _, value in re.findall(r"""([:\w-]+)\s*=\s*(["'])(.*?)\2""", tag, re.S)
+        }
+        if attributes.get("itemprop") != "thumbnail":
+            continue
+        url = attributes.get("src")
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def _google_patents_backward_references(text: str) -> list[str]:
+    values = []
+    for row in re.findall(
+        r'<tr\b[^>]*itemprop=["\']backwardReferences(?:Orig)?["\'][^>]*>(.*?)</tr>',
+        text or "",
+        re.I | re.S,
+    ):
+        match = re.search(
+            r'<span\b[^>]*itemprop=["\']publicationNumber["\'][^>]*>(.*?)</span>',
+            row,
+            re.I | re.S,
+        )
+        publication_number = _strip_html(match.group(1)) if match else None
+        normalized = _google_patents_reference_display_number(publication_number)
+        if normalized and normalized not in values:
+            values.append(normalized)
+    return values
+
+
+def _google_patents_reference_display_number(value: str | None) -> str | None:
+    normalized = re.sub(r"[^0-9A-Z]", "", str(value or "").upper())
+    match = re.fullmatch(r"([A-Z]{2})(\d+)([A-Z]\d?)", normalized)
+    if not match:
+        return None
+    return f"{match.group(1)} {match.group(2)} {match.group(3)}"
+
+
+def _google_patents_itemprop_text(text: str, itemprop: str) -> str | None:
+    match = re.search(
+        rf'<(?P<tag>section|div)\b[^>]*itemprop=["\']{re.escape(itemprop)}["\'][^>]*>(.*?)</(?P=tag)>',
+        text or "",
+        re.I | re.S,
+    )
+    return _strip_html(match.group(2)) if match else None
 
 
 def select_foreign_fulltext_pdf_with_fallback(

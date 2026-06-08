@@ -128,6 +128,47 @@ def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
     assert captured_kwargs["collect_pdf"] is True
 
 
+def test_patent_fetch_accepts_foreign_html_fulltext_without_pdf_path(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.get_patent",
+        lambda **kwargs: {
+            "id": 70,
+            "management_number": "P201702001-US0",
+            "country": "US",
+            "application_number": "16/622,097",
+            "registration_number": "11,782,432",
+            "status": "등록",
+        },
+    )
+    monkeypatch.setattr(
+        "workflow.nodes.fetch_foreign_patent_rights_data",
+        lambda patent, **kwargs: {
+            "source_type": "kipris_foreign_patent",
+            "metadata": {"country": "US", "application_number": patent["application_number"]},
+            "claim_stats": {"active_claim_count": 1},
+            "family_patents": [],
+            "citation_evidence": {},
+            "citation_stats": {"total_count": 0},
+            "citing_stats": {"total_count": 0},
+            "parsed_pdf": {
+                "selected_type": "GOOGLE_PATENTS_HTML_FULLTEXT",
+                "pdf_path": None,
+                "markdown_paths": ["/tmp/US11782432B2.md"],
+                "markdown_text": "## CLAIMS\n\n1. A method comprising a processor.",
+            },
+        },
+    )
+
+    result = patent_fetch_node(
+        PatentWorkflowState(
+            user_input={"management_number": "P201702001-US0", "collect_kipris_api": True}
+        )
+    )
+
+    assert result.parsed_pdf["selected_type"] == "GOOGLE_PATENTS_HTML_FULLTEXT"
+    assert result.pdf_paths == []
+
+
 def test_common_preprocess_enriches_foreign_pdf_prior_art(monkeypatch):
     monkeypatch.setattr(
         "workflow.nodes.resolve_foreign_prior_art_evidence",

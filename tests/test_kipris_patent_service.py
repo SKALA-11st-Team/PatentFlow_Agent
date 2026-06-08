@@ -1,11 +1,15 @@
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
+    download_and_parse_foreign_patent_pdf,
     fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
     extract_foreign_claims_from_text,
+    foreign_fulltext_parse_is_usable,
+    foreign_patent_metadata_from_db,
     foreign_target_literature_candidates,
     google_patents_pdf_url,
     google_patents_publication_id,
+    google_patents_html_to_markdown,
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
     normalize_foreign_reference_documents,
@@ -15,6 +19,8 @@ from services.patent.kipris_patent_service import (
     _fetch_foreign_claims,
     _fetch_foreign_claims_from_kipris,
     _foreign_literature_number_candidates,
+    _google_patents_figure_urls,
+    _google_patents_backward_references,
     _select_fulltext_pdf,
     fulltext_application_number_candidates,
 )
@@ -411,6 +417,153 @@ def test_google_patents_publication_id_restores_us_publication_serial_padding():
         google_patents_publication_id({"country": "US", "registration_number": "US 2010241261 A1"})
         == "US20100241261A1"
     )
+
+
+def test_foreign_fulltext_parse_rejects_image_only_markdown():
+    assert not foreign_fulltext_parse_is_usable(
+        "\n".join(f"![image {index}](<images/image{index}.png>)" for index in range(1, 12))
+    )
+    assert foreign_fulltext_parse_is_usable(
+        "What is claimed is:\n"
+        "1. A method comprising calculating an equipment reliability index and controlling measurement."
+    )
+
+
+def test_foreign_pdf_parse_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
+    class Client:
+        session = object()
+        timeout = 20
+
+    parse_calls = []
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.select_foreign_fulltext_pdf_with_fallback",
+        lambda *args, **kwargs: {
+            "literature_number": "000011782432B2",
+            "selected_type": "FOREIGN_REGISTRATION_FULLTEXT",
+            "doc_name": "kipris.pdf",
+            "path": "https://example.com/kipris.pdf",
+        },
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.google_patents_fulltext_selection",
+        lambda *args, **kwargs: {
+            "literature_number": "US11782432B2",
+            "selected_type": "GOOGLE_PATENTS_FULLTEXT",
+            "doc_name": "US11782432B2.pdf",
+            "path": "https://example.com/google.pdf",
+        },
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._download_pdf_url",
+        lambda url, **kwargs: tmp_path / kwargs["filename"],
+    )
+
+    def fake_parse(pdf_path, *, output_dir):
+        parse_calls.append(str(pdf_path))
+        if len(parse_calls) == 1:
+            return {
+                "markdown_paths": [str(output_dir / "kipris.md")],
+                "markdown_text": "![image 1](<images/image1.png>)",
+            }
+        return {
+            "markdown_paths": [str(output_dir / "google.md")],
+            "markdown_text": (
+                "## ABSTRACT\n\nA dynamic lot measurement control system.\n\n"
+                "## CLAIMS\n\n1. A method comprising calculating an equipment reliability index."
+            ),
+        }
+
+    monkeypatch.setattr("services.patent.kipris_patent_service.parse_single_patent_pdf", fake_parse)
+
+    result = download_and_parse_foreign_patent_pdf(
+        Client(),
+        {"country": "US", "registration_number": "11,782,432"},
+        candidates=[],
+        output_dir=tmp_path / "parsed",
+    )
+
+    assert result["selected_type"] == "GOOGLE_PATENTS_FULLTEXT"
+    assert result["fallback_reason"] == "kipris_pdf_parse_unusable"
+    assert "equipment reliability index" in result["markdown_text"]
+
+
+def test_foreign_patent_metadata_uses_final_us_title_as_english_title():
+    metadata = foreign_patent_metadata_from_db(
+        {
+            "country": "US",
+            "title_final": "Correct English Patent Title",
+            "title_draft": "Unrelated draft title",
+        }
+    )
+
+    assert metadata["title"] == "Correct English Patent Title"
+    assert metadata["title_eng"] == "Correct English Patent Title"
+
+
+def test_google_patents_html_to_markdown_extracts_fulltext_sections():
+    markdown = google_patents_html_to_markdown(
+        """
+        <meta name="DC.title" content="Dynamic measurement patent">
+        <meta name="DC.description" content="Controls measurement using equipment reliability.">
+        <section itemprop="description">
+          <div>A controller calculates a lot risk score and determines whether to measure the lot.</div>
+        </section>
+        <div class="claim-text">1. A method comprising calculating an equipment reliability index.</div>
+        """
+    )
+
+    assert "## ABSTRACT" in markdown
+    assert "## DETAILED DESCRIPTION" in markdown
+    assert "## CLAIMS" in markdown
+    assert "equipment reliability index" in markdown
+
+
+def test_google_patents_html_to_markdown_keeps_full_description_section():
+    markdown = google_patents_html_to_markdown(
+        """
+        <meta name="DC.title" content="Dynamic measurement patent">
+        <section itemprop="description">
+          <div>First paragraph describes the technical field.</div>
+          <div>Second paragraph explains background problems.</div>
+          <div>Third paragraph describes the detailed embodiment.</div>
+        </section>
+        <div class="claim-text">1. A method comprising calculating an equipment reliability index.</div>
+        """
+    )
+
+    assert "First paragraph describes the technical field." in markdown
+    assert "Second paragraph explains background problems." in markdown
+    assert "Third paragraph describes the detailed embodiment." in markdown
+
+
+def test_google_patents_figure_urls_extracts_thumbnail_images():
+    urls = _google_patents_figure_urls(
+        """
+        <img itemprop="thumbnail" src="https://example.com/D00000.png">
+        <img itemprop="thumbnail" src="https://example.com/D00001.png">
+        <img src="https://example.com/unrelated.png">
+        """
+    )
+
+    assert urls == [
+        "https://example.com/D00000.png",
+        "https://example.com/D00001.png",
+    ]
+
+
+def test_google_patents_backward_references_extracts_supported_patent_numbers():
+    references = _google_patents_backward_references(
+        """
+        <tr itemprop="backwardReferencesOrig">
+          <td><span itemprop="publicationNumber">US20090306803A1</span></td>
+        </tr>
+        <tr itemprop="backwardReferences">
+          <td><span itemprop="publicationNumber">JP2010118562A</span></td>
+        </tr>
+        """
+    )
+
+    assert references == ["US 20090306803 A1", "JP 2010118562 A"]
 
 
 def test_google_patents_pdf_url_reads_citation_pdf_meta():
