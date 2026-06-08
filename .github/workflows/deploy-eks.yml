@@ -21,7 +21,7 @@ env:
   # 점수 재현성(VAL-01): 기본 평가 모델은 gpt-5-mini. 재현성이 필요하면 VALUATION_MODEL=gpt-4o + VALUATION_SEED_SUPPORTED=true.
   VALUATION_MODEL: ${{ vars.VALUATION_MODEL || 'gpt-5-mini' }}
   VALUATION_SEED_SUPPORTED: ${{ vars.VALUATION_SEED_SUPPORTED || 'false' }}
-  # seed 값(자격증명 아님). 비우면 코드 기본값(20260608) 사용.
+  # seed 값(자격증명 아님). 비우면 코드 기본값(20260624) 사용.
   VALUATION_SEED: ${{ vars.VALUATION_SEED || '' }}
   ENABLE_SHARED_DB_FALLBACK: ${{ vars.ENABLE_SHARED_DB_FALLBACK || 'true' }}
   UNIFIED_API_BASE_URL: ${{ vars.UNIFIED_API_BASE_URL || 'http://team11-patentflow-be-svc:80' }}

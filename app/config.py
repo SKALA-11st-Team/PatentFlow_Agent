@@ -47,7 +47,7 @@ class Settings(BaseModel):
     # 점수 재현성(VAL-01): seed는 Chat Completions 전용이며, gpt-5-mini는 seed를 받아도
     # system_fingerprint=None으로 결과를 재현하지 않음(실측). 기본 평가 모델은 gpt-5-mini이고,
     # 재현성이 필요하면 VALUATION_MODEL=gpt-4o(또는 seed를 존중하는 다른 모델) + VALUATION_SEED_SUPPORTED=true로 켠다.
-    valuation_seed: int | None = int(getenv("VALUATION_SEED") or "20260608")
+    valuation_seed: int | None = int(getenv("VALUATION_SEED") or "20260624")
     valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "false").lower() == "true"
     valuation_model: str = getenv("VALUATION_MODEL") or openai_chat_model
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
