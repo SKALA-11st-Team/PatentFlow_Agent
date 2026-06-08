@@ -1208,6 +1208,32 @@ def check_patent_data(state: PatentWorkflowState) -> SupervisorDecision:
     )
 
 
+# EVID-01: 근거 번들이 양(개수)뿐 아니라 질(관련성)도 갖추도록 최소 관련 근거 수를 보장한다.
+MIN_RELEVANT_EVIDENCE_COUNT = 2
+
+
+def evidence_is_relevant(evidence: dict[str, Any]) -> bool:
+    # 공식 SK AX 근거는 항상 관련으로 보존한다.
+    if evidence.get("source") == "sk_ax_official":
+        return True
+    if str(evidence.get("evidence_id") or "").startswith("skax_site_"):
+        return True
+    # 압축 단계가 부여한 관련 축 신호가 있으면 관련.
+    if evidence.get("related_axes") or evidence.get("related_axis"):
+        return True
+    metadata = evidence.get("metadata") or {}
+    quality_warning = metadata.get("quality_warning")
+    if quality_warning == "no_patent_keyword_match":
+        return False
+    if quality_warning == "weak_patent_keyword_match":
+        return True
+    matched_keyword_count = metadata.get("matched_keyword_count")
+    if isinstance(matched_keyword_count, int):
+        return matched_keyword_count >= 1
+    # 관련성 신호가 전혀 없으면(중간 경로에서 metadata 탈락 등) 보수적으로 관련 처리해 정상 번들 회귀를 막는다.
+    return True
+
+
 def check_evidence_bundle(state: PatentWorkflowState) -> SupervisorDecision:
     evidence_bundle = state.evidence_bundle
     issues: list[str] = []
@@ -1226,6 +1252,10 @@ def check_evidence_bundle(state: PatentWorkflowState) -> SupervisorDecision:
         if not evidence.get("content") and not evidence.get("context") and not evidence.get("compressed_summary"):
             issues.append(f"Evidence #{index + 1} missing content/context/compressed_summary")
 
+    relevant_count = sum(1 for evidence in evidence_bundle if evidence_is_relevant(evidence))
+    if relevant_count < MIN_RELEVANT_EVIDENCE_COUNT:
+        missing_evidence.append("insufficient_relevant_evidence")
+
     passed = not issues and not missing_evidence
     return SupervisorDecision(
         passed=passed,
@@ -1233,6 +1263,7 @@ def check_evidence_bundle(state: PatentWorkflowState) -> SupervisorDecision:
         issues=issues,
         missing_evidence=missing_evidence,
         reason="Evidence bundle structure check completed.",
+        metadata={"relevant_evidence_count": relevant_count, "evidence_count": len(evidence_bundle)},
     )
 
 

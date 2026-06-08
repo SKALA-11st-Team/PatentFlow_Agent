@@ -40,6 +40,48 @@ def test_evidence_check_requires_at_least_three_news_items():
     assert "minimum_news_count" in decision.missing_evidence
 
 
+def test_evidence_check_fails_when_all_news_irrelevant():
+    irrelevant = {
+        "source": "naver_news",
+        "source_type": "news",
+        "content": "본문",
+        "metadata": {"quality_warning": "no_patent_keyword_match", "matched_keyword_count": 0},
+    }
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {**irrelevant, "evidence_id": "news_001"},
+            {**irrelevant, "evidence_id": "news_002"},
+            {**irrelevant, "evidence_id": "news_003"},
+        ]
+    )
+
+    decision = check_evidence_bundle(state)
+
+    assert decision.passed is False
+    assert decision.next_action == "query_rewriting"
+    assert "insufficient_relevant_evidence" in decision.missing_evidence
+    assert decision.metadata["relevant_evidence_count"] == 0
+
+
+def test_evidence_check_passes_with_relevant_signals():
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "본문",
+             "metadata": {"matched_keyword_count": 2}},
+            {"evidence_id": "news_002", "source": "gnews", "source_type": "news", "content": "본문",
+             "related_axes": ["market"]},
+            {"evidence_id": "news_003", "source": "naver_news", "source_type": "news", "content": "본문",
+             "metadata": {"quality_warning": "weak_patent_keyword_match"}},
+            {"evidence_id": "skax_site_1", "source": "sk_ax_official", "source_type": "industry_report", "content": "본문"},
+        ]
+    )
+
+    decision = check_evidence_bundle(state)
+
+    assert decision.passed is True
+    assert decision.metadata["relevant_evidence_count"] == 4
+
+
 def test_patent_fetch_continues_when_kipris_pdf_is_missing(monkeypatch):
     monkeypatch.setattr(
         "workflow.nodes.get_patent",
