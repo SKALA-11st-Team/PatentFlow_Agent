@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -69,9 +70,9 @@ def _kipris_http(fn: Any) -> Any:
     try:
         return fn()
     except KiprisError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=_sanitize_external_error(exc)) from exc
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=_sanitize_external_error(exc)) from exc
 
 
 def _strip_service_key(q: dict[str, Any]) -> dict[str, Any]:
@@ -426,12 +427,20 @@ def gnews_search_alias(
 
 def _sanitize_external_error(exc: Exception) -> str:
     text = str(exc)
-    text = text.replace(os.getenv("GNEWS_API_KEY") or "", "***")
-    text = text.replace(os.getenv("DART_KEY") or "", "***")
-    text = text.replace(os.getenv("KIPRIS_SERVICE_KEYS") or "", "***")
-    text = text.replace(os.getenv("KIPRIS_SERVICE_KEY") or "", "***")
-    text = text.replace(os.getenv("KIPRIS_API_KEY") or "", "***")
-    text = text.replace(os.getenv("SERVICE_KEY") or "", "***")
+    # 빈 문자열을 replace에 넘기면 모든 문자 사이에 ***가 삽입되므로 truthy 키만 마스킹한다.
+    for env_name in (
+        "GNEWS_API_KEY",
+        "DART_KEY",
+        "KIPRIS_SERVICE_KEYS",
+        "KIPRIS_SERVICE_KEY",
+        "KIPRIS_API_KEY",
+        "SERVICE_KEY",
+    ):
+        secret = os.getenv(env_name)
+        if secret:
+            text = text.replace(secret, "***")
+    # 쿼리스트링으로 전달된 per-request 인증키(env에 없어 위 replace로 못 가림)도 마스킹한다.
+    text = re.sub(r"(?i)(ServiceKey|serviceKey|accessKey|crtfc_key)=[^&\s'\"]+", r"\1=***", text)
     return text
 
 
