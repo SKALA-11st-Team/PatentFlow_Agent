@@ -44,12 +44,13 @@ class Settings(BaseModel):
     evaluate_max_concurrency: int = int(getenv("EVALUATE_MAX_CONCURRENCY", "2"))
     valuation_schema_strict: bool = getenv("VALUATION_SCHEMA_STRICT", "true").lower() == "true"
     valuation_ensemble_runs: int = int(getenv("VALUATION_ENSEMBLE_RUNS", "1"))
-    # 점수 재현성(VAL-01): 평가 축 LLM 호출에 고정 seed를 전달해 동일 입력→동일 점수를 보장한다.
-    # 기본 모델은 메인 챗 모델(gpt-5-mini)을 그대로 사용하고, 필요 시 VALUATION_MODEL로 재정의한다.
-    # (사용 모델/엔드포인트가 seed를 수용하지 않으면 VALUATION_SEED_SUPPORTED=false로 끈다.)
+    # 점수 재현성(VAL-01): seed는 Chat Completions 전용 파라미터이고, 기본 모델 gpt-5-mini는 seed를
+    # 받아도 system_fingerprint=None으로 결과를 재현하지 않음(실측 확인). 따라서 기본은 seed OFF로 두고
+    # 재현성은 앙상블(VALUATION_ENSEMBLE_RUNS)로 확보한다. seed를 실제로 존중하는 모델을 쓸 때만
+    # VALUATION_SEED_SUPPORTED=true로 켜면 call_llm이 Chat Completions+seed 경로를 사용한다.
     valuation_model: str = getenv("VALUATION_MODEL") or openai_chat_model
     valuation_seed: int | None = int(getenv("VALUATION_SEED", "20260608"))
-    valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "true").lower() == "true"
+    valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "false").lower() == "true"
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
     enable_shared_db_fallback: bool = getenv("ENABLE_SHARED_DB_FALLBACK", "false").lower() == "true"
     
