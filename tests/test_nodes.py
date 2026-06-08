@@ -1,4 +1,4 @@
-from workflow.nodes import evidence_compression_node, evidence_search_node, final_merge_node, patent_fetch_node, query_rewriting_node
+from workflow.nodes import common_preprocess_node, evidence_compression_node, evidence_search_node, final_merge_node, patent_fetch_node, query_rewriting_node
 from workflow.supervisor import check_evidence_bundle
 from workflow.state import PatentWorkflowState
 
@@ -126,6 +126,53 @@ def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
     assert result.kipris_api_data["metadata"]["country"] == "US"
     assert result.patent_structured["kipris_api"]["metadata"]["country"] == "US"
     assert captured_kwargs["collect_pdf"] is True
+
+
+def test_common_preprocess_enriches_foreign_pdf_prior_art(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.resolve_foreign_prior_art_evidence",
+        lambda prior_art: {
+            "foreign_claim_lookup_candidates": [{"display_number": prior_art[0]}],
+            "foreign_citation_documents": [
+                {
+                    "display_number": prior_art[0],
+                    "representative_claims": [{"claim_no": 1, "text": "Prior art claim"}],
+                }
+            ],
+            "foreign_identifier_only_documents": [],
+            "prior_art_collection": {
+                "candidate_count": 1,
+                "comparison_ready_count": 1,
+                "identifier_only_count": 0,
+                "comparison_status": "comparison_ready",
+            },
+            "warnings": [],
+        },
+    )
+    state = PatentWorkflowState(
+        patent_structured={
+            "country": "CN",
+            "application_number": "201880038342.9",
+            "registration_number": "CN110770661B",
+            "title_final": "测量控制方法和系统",
+        },
+        kipris_api_data={
+            "metadata": {"country": "CN"},
+            "claims": [{"claim_no": 1, "text": "Target claim", "is_independent": True}],
+            "claim_stats": {"active_claim_count": 1},
+            "citation_evidence": {},
+        },
+        parsed_pdf={
+            "markdown_text": "(56)对比文件 US 2010241261 A1\n技术领域\n半导体测量技术\n发明内容\n动态测量。",
+            "markdown_paths": ["/tmp/CN110770661B.md"],
+            "pdf_path": "/tmp/CN110770661B.pdf",
+        },
+    )
+
+    result = common_preprocess_node(state)
+
+    assert result.citation_evidence["foreign_citation_documents"][0]["representative_claims"][0]["text"] == "Prior art claim"
+    assert result.citation_evidence["prior_art_collection"]["comparison_ready_count"] == 1
 
 
 def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):

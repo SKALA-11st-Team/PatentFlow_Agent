@@ -7,9 +7,12 @@ from typing import Any, Mapping
 from open_api.kipris_client import KiprisClient
 from services.evidence.api_normalizers import extract_kipris_items
 from services.patent.kipris_patent_service import (
+    _download_pdf_url,
     _foreign_literature_number_candidates,
     download_and_parse_patent_pdf,
     fetch_kipris_bibliography,
+    google_patents_pdf_url,
+    google_patents_publication_id,
     parse_single_patent_pdf,
 )
 from services.patent.markdown_preprocess_service import extract_sections, preprocess_patent_markdown
@@ -306,6 +309,30 @@ def download_foreign_prior_art_fulltext(
                 return parsed, literature_number, fulltext_type, str(pdf_path), errors
             except Exception as exc:
                 errors.append(f"{literature_number}:{fulltext_type}:{exc.__class__.__name__}:{str(exc)[:180]}")
+
+    patent = {
+        "country": country_code,
+        "registration_number": candidate.get("display_number") or candidate.get("original_number"),
+    }
+    publication_id = google_patents_publication_id(patent)
+    try:
+        pdf_url = google_patents_pdf_url(patent, session=client.session, timeout=client.timeout)
+        if pdf_url and publication_id:
+            pdf_path = _download_pdf_url(
+                pdf_url,
+                output_dir=output_dir,
+                filename=f"{publication_id}.pdf",
+                session=client.session,
+                timeout=client.timeout,
+            )
+            parsed = parse_single_patent_pdf(
+                pdf_path,
+                output_dir=output_dir / safe_filename(publication_id),
+            )
+            return parsed, publication_id, "google_patents", str(pdf_path), errors
+        errors.append("google_patents:pdf_not_found")
+    except Exception as exc:
+        errors.append(f"google_patents:{exc.__class__.__name__}:{str(exc)[:180]}")
     return None, None, None, None, errors
 
 

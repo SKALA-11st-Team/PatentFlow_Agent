@@ -88,6 +88,10 @@
 평가 규칙:
 - prior_art_candidates는 선행문헌 후보 목록이다.
 - citation_evidence는 제목, 초록, 대표 청구항이 확인된 선행문헌이다.
+- citation_evidence.prior_art_collection.comparison_ready_count는 실제 청구항 또는 초록이 확보되어 비교 가능한 문헌 수이다.
+- compared_prior_art_count는 반드시 comparison_ready_count와 같아야 하며, 식별번호만 있는 문헌은 비교 건수에 포함하지 않는다.
+- comparison_ready_count가 0이면 prior_art_overlap.assessment_status를 "unknown"으로 두고, 중복이 낮거나 없다고 결론 내리지 않는다.
+- comparison_ready_count가 1 이상이면 제공된 대표 청구항·초록을 실제 비교에 사용하고, 해당 선행문헌의 원문이나 청구항이 미확보되었다고 서술하지 않는다.
 - citation_evidence.citing_signal은 피인용/후속 참조의 통계 신호이며, 선행문헌 비교 대상이나 청구항 유사성 판단 근거로 사용하지 않는다.
 - `claim_context`의 독립항 및 종속항 구성과 선행문헌의 기술 구성을 직접 비교하여 판단한다.
 - 해외 패밀리/주요국 등록 여부는 권리안정성 점수에 사용하지 않는다.
@@ -275,6 +279,7 @@ Return ONLY JSON:
         "prior_art_overlap": {
           "label": "선행문헌 대비 청구항 중복도",
           "score": 0,
+          "assessment_status": "comparison_ready",
           "compared_prior_art_count": 0,
           "overlap_basis": "독립항 1의 데이터 수집/분석 구성과 KR...의 대표 청구항 일부가 겹침",
           "rationale": "선행문헌 일부와 핵심 구성은 겹치지만 대상 특허의 차별 구성 또는 결합 방식이 남아 있어 18점으로 판단함"

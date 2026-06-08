@@ -45,6 +45,32 @@ SECTION_ALIASES = {
     "도면의 간단한 설명": "figure_description",
     "발명을 실시하기 위한 구체적인 내용": "detailed_description",
     "부호의 설명": "reference_signs",
+    "摘要": "abstract",
+    "权利要求书": "claims_text",
+    "技术领域": "technical_field",
+    "背景技术": "background_art",
+    "发明内容": "solution",
+    "附图说明": "figure_description",
+    "具体实施方式": "detailed_description",
+    "要約": "abstract",
+    "特許請求の範囲": "claims_text",
+    "技術分野": "technical_field",
+    "背景技術": "background_art",
+    "発明が解決しようとする課題": "problem",
+    "課題を解決するための手段": "solution",
+    "発明の効果": "effect",
+    "図面の簡単な説明": "figure_description",
+    "発明を実施するための形態": "detailed_description",
+    "ABSTRACT": "abstract",
+    "FIELD OF THE INVENTION": "technical_field",
+    "TECHNICAL FIELD": "technical_field",
+    "BACKGROUND": "background_art",
+    "BACKGROUND OF THE INVENTION": "background_art",
+    "SUMMARY": "solution",
+    "SUMMARY OF THE INVENTION": "solution",
+    "BRIEF DESCRIPTION OF THE DRAWINGS": "figure_description",
+    "DETAILED DESCRIPTION": "detailed_description",
+    "DETAILED DESCRIPTION OF THE EMBODIMENTS": "detailed_description",
 }
 
 HEADER_NORMALIZE_MAP = {
@@ -53,6 +79,24 @@ HEADER_NORMALIZE_MAP = {
     "배 경 기 술": "배경기술",
 }
 
+FOREIGN_BRACKET_HEADINGS = {
+    "特許請求の範囲",
+    "発明の詳細な説明",
+    "技術分野",
+    "背景技術",
+    "発明の概要",
+    "発明が解決しようとする課題",
+    "課題を解決するための手段",
+    "発明の効果",
+    "図面の簡単な説明",
+    "発明を実施するための形態",
+}
+
+STRUCTURAL_HEADERS.update(SECTION_ALIASES)
+STRUCTURAL_HEADERS.update({"発明の詳細な説明", "発明の概要"})
+SECTION_HEADINGS.update(SECTION_ALIASES)
+SECTION_HEADINGS.update({"発明の詳細な説明", "発明の概要"})
+
 IMAGE_MARKDOWN_RE = re.compile(r"!\[image\s+(\d+)\]\(<([^>]+)>\)")
 REPRESENTATIVE_FIGURE_RE = re.compile(
     r"(?:대\s*표\s*도|대표도)\s*[-:]\s*도\s*(\d+)",
@@ -60,6 +104,9 @@ REPRESENTATIVE_FIGURE_RE = re.compile(
 REPRESENTATIVE_LABEL_RE = re.compile(r"(?:대\s*표\s*도|대표도)")
 DRAWING_SECTION_HEADING_RE = re.compile(r"(?:^|\n)#?\s*도면\s*(?:\n|$)")
 DRAWING_ITEM_RE = re.compile(r"^\s*-?\s*도면\s*(\d+)\s*$", re.MULTILINE)
+FOREIGN_DRAWING_HEADING_RE = re.compile(
+    r"(?im)^(?:#{1,6}\s*)?(?:图|図|FIG\.?)\s*([1１])\s*$"
+)
 
 
 def remove_image_markdown(text: str) -> str:
@@ -75,7 +122,21 @@ def extract_representative_drawing(
     if not representative_match:
         representative_label_match = REPRESENTATIVE_LABEL_RE.search(raw_text or "")
         if not representative_label_match:
-            return None
+            foreign_drawing_match = FOREIGN_DRAWING_HEADING_RE.search(raw_text or "")
+            if not foreign_drawing_match:
+                return None
+            image_match = IMAGE_MARKDOWN_RE.search(raw_text, foreign_drawing_match.end())
+            if not image_match:
+                return None
+            markdown_paths = (source or {}).get("markdown_paths") or []
+            drawing = {
+                "figure_number": "도1",
+                "image_path": image_match.group(2),
+                "image_source": "foreign_drawing_section",
+            }
+            if markdown_paths:
+                drawing["markdown_path"] = str(markdown_paths[0])
+            return drawing
         image_match = IMAGE_MARKDOWN_RE.search(raw_text, representative_label_match.end())
         if not image_match:
             return None
@@ -230,6 +291,8 @@ def remove_duplicate_registration_title(text: str, max_scan_lines: int = 40) -> 
 def normalize_headers(text: str) -> str:
     for src, dst in HEADER_NORMALIZE_MAP.items():
         text = text.replace(src, dst)
+    for heading in FOREIGN_BRACKET_HEADINGS:
+        text = text.replace(f"【{heading}】", f"\n{heading}\n")
     return text
 
 
@@ -680,7 +743,13 @@ def validate_preprocessed_patent(
     for field in ["title", "application_number", "registration_number"]:
         if not metadata.get(field):
             missing_fields.append(f"metadata.{field}")
-    for field in ["abstract", "claims_text", "technical_field"]:
+    country = str(metadata.get("country") or "KR").upper()
+    required_sections = ["technical_field"]
+    if country in {"", "KR"} or not sections.get("solution"):
+        required_sections.append("abstract")
+    if not claims:
+        required_sections.append("claims_text")
+    for field in required_sections:
         if not sections.get(field):
             missing_fields.append(f"sections.{field}")
     if not claims:
@@ -706,15 +775,24 @@ def validate_preprocessed_patent(
 
 
 def _find_section_headings(text: str) -> list[tuple[str, int]]:
-    pattern = re.compile(
-        r"(?m)^#?\s*(명세서|청구범위|발명의 설명|기술분야|배경기술|발명의 내용|해결하려는 과제|과제의 해결 수단|발명의 효과|도면의 간단한 설명|발명을 실시하기 위한 구체적인 내용|부호의 설명)\s*$"
+    headings = "|".join(
+        sorted((re.escape(heading) for heading in SECTION_ALIASES), key=len, reverse=True)
     )
+    pattern = re.compile(rf"(?im)^#{{0,6}}\s*({headings})\s*$")
     return [(match.group(1), match.start()) for match in pattern.finditer(text)]
 
 
 def _extract_abstract(text: str) -> str:
-    match = re.search(r"\(57\)\s*요\s*약\s*(.+?)(?=\n#{0,6}\s*명세서|\n청구범위|\n####|\n명세서)", text, re.S)
-    return normalize_blank_lines(match.group(1)) if match else ""
+    patterns = [
+        r"\(57\)\s*요\s*약\s*(.+?)(?=\n#{0,6}\s*명세서|\n청구범위|\n####|\n명세서)",
+        r"\(57\)\s*摘要\s*(.+?)(?=\n(?:CN\s*\d+\s*[A-Z]?|1\.\s*一种|权利要求书|技术领域|背景技术|发明内容|附图说明|具体实施方式)\s*$)",
+        r"\(57\)\s*ABSTRACT\s*(.+?)(?=\n#{0,6}\s*(?:BACKGROUND|FIELD OF THE INVENTION|TECHNICAL FIELD|CLAIMS?)\s*$)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, re.S | re.M | re.I)
+        if match:
+            return normalize_blank_lines(match.group(1))
+    return ""
 
 
 def strip_section_heading_lines(text: str) -> str:
@@ -767,6 +845,7 @@ def postprocess_claims_text(text: str) -> str:
 def remove_paragraph_numbers(text: str) -> str:
     text = re.sub(r"(?m)^-?\s*\[(\d{4})\]\s*", "", text)
     text = re.sub(r"(?m)^\[(\d{4})\]\s*", "", text)
+    text = re.sub(r"【[０-９]{4}】\s*", "", text)
     return text
 
 
