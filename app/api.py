@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timezone
 from threading import BoundedSemaphore
 from typing import Any
@@ -23,7 +22,6 @@ app = FastAPI(
 )
 
 _EVALUATE_WORKERS = max(1, int(settings.evaluate_max_concurrency or 1))
-_EVALUATE_EXECUTOR = ThreadPoolExecutor(max_workers=_EVALUATE_WORKERS, thread_name_prefix="patent-evaluate")
 _EVALUATE_SEMAPHORE = BoundedSemaphore(_EVALUATE_WORKERS)
 
 
@@ -149,23 +147,20 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
 
 
 def run_workflow_guarded(initial_state: PatentWorkflowState) -> PatentWorkflowState:
+    # 세마포어로 동시 평가 수를 제한한다(초과 시 429 백프레셔). 파이썬 스레드는 취소가 불가능하므로
+    # 서버측 단축 타임아웃으로 요청만 끊으면 워크플로우 스레드가 슬롯을 계속 점유해 용량이 고갈된다.
+    # 따라서 요청 스레드에서 직접 실행하고 finally에서 슬롯을 확실히 반납한다.
+    # 인터랙티브 경로의 시간 제한은 BE 비동기 잡(긴 타임아웃 + 상태 폴링)이 담당한다.
     if not _EVALUATE_SEMAPHORE.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="Agent evaluate capacity exceeded.")
-    future = _EVALUATE_EXECUTOR.submit(run_workflow, initial_state)
-
-    def release_when_done(_future: Any) -> None:
-        _EVALUATE_SEMAPHORE.release()
-
-    future.add_done_callback(release_when_done)
     try:
-        timeout_seconds = max(1, int(settings.evaluate_timeout_seconds or 1))
-        return future.result(timeout=timeout_seconds)
-    except TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="Agent workflow timed out.") from exc
+        return run_workflow(initial_state)
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent workflow failed: {exc.__class__.__name__}") from exc
+    finally:
+        _EVALUATE_SEMAPHORE.release()
 
 
 def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> dict[str, Any]:
