@@ -1,4 +1,12 @@
-from workflow.nodes import common_preprocess_node, evidence_compression_node, evidence_search_node, final_merge_node, patent_fetch_node, query_rewriting_node
+from workflow.nodes import (
+    common_preprocess_node,
+    evidence_compression_node,
+    evidence_search_node,
+    final_merge_node,
+    patent_fetch_node,
+    prior_art_fulltext_node,
+    query_rewriting_node,
+)
 from workflow.supervisor import check_evidence_bundle
 from workflow.state import PatentWorkflowState
 
@@ -214,6 +222,74 @@ def test_common_preprocess_enriches_foreign_pdf_prior_art(monkeypatch):
 
     assert result.citation_evidence["foreign_citation_documents"][0]["representative_claims"][0]["text"] == "Prior art claim"
     assert result.citation_evidence["prior_art_collection"]["comparison_ready_count"] == 1
+
+
+def test_prior_art_fulltext_node_merges_pdf_claims_into_citation_evidence(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "workflow.nodes.build_prior_art_patent_context",
+        lambda **kwargs: {
+            "comparison_mode": "prior-art",
+            "candidate_count": 2,
+            "similar_patents": [],
+            "prior_art_patents": [
+                {
+                    "display_number": "US 20100249974 A1",
+                    "country_code": "US",
+                    "document_number": "20100249974",
+                    "kind_code": "A1",
+                    "title": "Advanced process control",
+                    "abstract": "Sampling rate based on process capability.",
+                    "representative_claims": [
+                        {
+                            "claim_no": 1,
+                            "is_independent": True,
+                            "dependency": None,
+                            "text": "A semiconductor manufacturing method comprising determining a sampling rate.",
+                        }
+                    ],
+                    "lookup_status": "resolved",
+                    "lookup_source": "prior_art_pdf_fulltext",
+                    "comparison_status": "comparison_ready",
+                }
+            ],
+            "warnings": [],
+        },
+    )
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path)},
+        preprocessed_patent={
+            "metadata": {
+                "country": "JP",
+                "prior_art": ["US20100249974 A1", "JP1999345752 A"],
+            }
+        },
+        citation_evidence={
+            "foreign_claim_lookup_candidates": [
+                {"display_number": "US 20100249974 A1"},
+                {"display_number": "JP 1999345752 A"},
+            ],
+            "foreign_citation_documents": [
+                {
+                    "display_number": "US20100249974 A1",
+                    "abstract": "기존 KIPRIS 초록",
+                    "representative_claims": [],
+                }
+            ],
+        },
+    )
+
+    result = prior_art_fulltext_node(state)
+
+    document = result.citation_evidence["foreign_citation_documents"][0]
+    assert len(result.citation_evidence["foreign_citation_documents"]) == 1
+    assert document["lookup_source"] == "prior_art_pdf_fulltext"
+    assert document["representative_claims"][0]["claim_no"] == 1
+    assert result.citation_evidence["prior_art_collection"] == {
+        "candidate_count": 2,
+        "comparison_ready_count": 1,
+        "identifier_only_count": 1,
+        "comparison_status": "comparison_ready",
+    }
 
 
 def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):

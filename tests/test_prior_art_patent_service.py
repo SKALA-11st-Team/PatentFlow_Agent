@@ -123,4 +123,7 @@ def test_resolve_foreign_prior_art_falls_back_to_google_patents_pdf(monkeypatch,
     assert result["foreign_fulltext_type"] == "google_patents"
     assert result["literature_number"] == "US20100241261A1"
     assert result["pdf_collected"] is True
-    assert "What is claimed is" in result["pdf_text"]
+    assert "CLAIMS" in result["pdf_text"]
+    assert result["representative_claims"][0]["claim_no"] == 1
+    assert result["representative_claims"][0]["text"] == "A method comprising a processor and a memory."
+    assert result["comparison_status"] == "comparison_ready"

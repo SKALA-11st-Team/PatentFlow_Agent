@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Any
 import re
+import unicodedata
 
 
 STRUCTURAL_HEADERS = {
@@ -294,6 +295,7 @@ def normalize_headers(text: str) -> str:
         text = text.replace(src, dst)
     for heading in FOREIGN_BRACKET_HEADINGS:
         text = text.replace(f"【{heading}】", f"\n{heading}\n")
+    text = re.sub(r"(?im)^\s*What\s+is\s+claimed\s+is\s*:\s*$", "\nCLAIMS\n", text)
     return text
 
 
@@ -949,6 +951,7 @@ def _extract_classifications(text: str, label: str) -> list[str]:
 
 
 def _extract_prior_art(text: str) -> list[str]:
+    normalized_text = unicodedata.normalize("NFKC", text).replace("−", "-").replace("–", "-")
     patterns = [
         r"\bKR\s*\d{7,13}\s*[A-Z]\d?\*?",
         r"\bJP\s*\d{7,13}\s*[A-Z]\d?\*?",
@@ -957,8 +960,29 @@ def _extract_prior_art(text: str) -> list[str]:
     ]
     values: list[str] = []
     for pattern in patterns:
-        values.extend(re.findall(pattern, text))
-    return _dedupe([re.sub(r"\s+", " ", value) for value in values])
+        values.extend(re.findall(pattern, normalized_text))
+
+    for era, year, serial in re.findall(r"特開(?:(昭|平|令))?(\d{1,4})-(\d{5,7})", normalized_text):
+        publication_year = _japanese_publication_year(era, int(year))
+        values.append(f"JP{publication_year}{serial} A")
+
+    for year, serial, kind in re.findall(
+        r"米国特許出願公開第(\d{4})/(\d{6,8})\s*\(\s*US\s*,\s*(A\d?)\s*\)",
+        normalized_text,
+        flags=re.IGNORECASE,
+    ):
+        values.append(f"US{year}{serial} {kind.upper()}")
+
+    return _dedupe([re.sub(r"\s+", " ", value).replace("*", "") for value in values])
+
+
+def _japanese_publication_year(era: str, year: int) -> int:
+    era_start_years = {
+        "昭": 1925,
+        "平": 1988,
+        "令": 2018,
+    }
+    return era_start_years.get(era, 0) + year if era else year
 
 
 def _extract_assignee_list(text: str) -> list[str]:

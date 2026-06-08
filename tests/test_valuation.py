@@ -499,6 +499,41 @@ def test_business_fit_input_context_uses_summary_and_limited_official_evidence()
     assert "PDF 전체 원문은 들어가면 안 됨" not in serialized
 
 
+def test_business_fit_uses_current_preprocessed_source_status_and_preserves_portfolio_evidence():
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    state = PatentWorkflowState(
+        kipris_api_data={"claim_stats": {"active_claim_count": 0}},
+        preprocessed_patent={
+            "claims": [{"claim_no": 1, "text": "독립항", "is_independent": True}],
+            "claim_stats": {"active_claim_count": 1},
+            "sections": {"solution": "상세한 해결수단"},
+        },
+    )
+    evidence = [
+        {
+            "evidence_id": "portfolio_stale",
+            "source_type": "portfolio_context",
+            "compressed_summary": "대상 특허의 청구항과 초록이 제공되지 않았다.",
+            "key_facts": ["청구항 부재"],
+            "sibling_patents": [{"registration_number": "123"}],
+        }
+    ]
+
+    payload = build_input_payload(state=state, evidence=evidence)
+
+    assert payload["business_fit_context"]["target_source_status"] == {
+        "claims_available": True,
+        "active_claim_count": 1,
+        "abstract_available": False,
+        "description_available": True,
+        "authority": "preprocessed_patent",
+    }
+    assert payload["evidence"][0]["compressed_summary"] == "대상 특허의 청구항과 초록이 제공되지 않았다."
+    assert payload["evidence"][0]["key_facts"] == ["청구항 부재"]
+    assert payload["evidence"][0]["sibling_patents"] == [{"registration_number": "123"}]
+
+
 def test_business_fit_patent_description_falls_back_to_sections_and_kipris():
     from agents.valuation_axes.business_fit import build_business_fit_patent_description
 
@@ -1557,6 +1592,34 @@ def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
     ]
 
 
+def test_technology_metrics_reuses_shared_prior_art_context(monkeypatch):
+    from agents.valuation_axes import technology
+
+    monkeypatch.setattr(
+        technology,
+        "build_prior_art_context",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("shared context should be reused")),
+    )
+    state = PatentWorkflowState(
+        prior_art_context={
+            "comparison_mode": "prior-art",
+            "candidate_count": 5,
+            "similar_patents": [
+                {"display_number": f"JP-{index}", "source_type": "foreign_prior_art"}
+                for index in range(5)
+            ],
+            "prior_art_patents": [],
+            "warnings": [],
+        },
+        preprocessed_patent={"metadata": {}},
+    )
+
+    metrics = technology.build_technology_metrics(state)
+
+    assert metrics["selection_policy"] == "prior-art-only"
+    assert len(metrics["similar_patents"]) == 5
+
+
 def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
     from agents.valuation_axes import technology
 
@@ -2190,13 +2253,18 @@ def test_legal_axis_input_includes_full_claim_context_without_representative_dup
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
         kipris_api_data={
-            "claim_stats": {"active_claim_count": 2},
+            "claim_stats": {"active_claim_count": 0},
         },
         preprocessed_patent={
             "claims": [
                 {"claim_no": 1, "text": "독립항 전체 내용", "is_independent": True, "dependency": None},
                 {"claim_no": 2, "text": "종속항 전체 내용", "is_independent": False, "dependency": 1},
-            ]
+            ],
+            "claim_stats": {
+                "active_claim_count": 2,
+                "independent_claim_numbers": [1],
+                "dependent_claim_numbers": [2],
+            },
         },
     )
 
@@ -2213,6 +2281,7 @@ def test_legal_axis_input_includes_full_claim_context_without_representative_dup
     assert legal_payload["patent"]["claim_context"]["independent_claims"][0]["text"] == "독립항 전체 내용"
     assert legal_payload["patent"]["claim_context"]["dependent_claims"][0]["text"] == "종속항 전체 내용"
     assert legal_payload["patent"]["claim_context"]["all_claims_included"] is True
+    assert legal_payload["patent"]["claim_stats"]["active_claim_count"] == 2
     assert legal_payload["patent"]["claim_availability"]["claim_context_provided"] is True
     assert legal_payload["patent"]["claim_availability"]["full_claims_provided"] is True
     assert market_payload["patent"]["claim_context"] == {}
@@ -2575,10 +2644,41 @@ def test_reconcile_legal_scores_keeps_domestic_prior_art_metric():
     assert scored["subscores"]["right_stability"]["max_score"] == 35
 
 
-def test_reconcile_legal_scores_excludes_prior_art_metric_for_foreign_patent():
+def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_comparison_ready():
     from agents.valuation_axes.legal import reconcile_legal_scores
 
-    state = PatentWorkflowState(patent_structured={"country": "US"})
+    state = PatentWorkflowState(
+        patent_structured={"country": "US"},
+        citation_evidence={"prior_art_collection": {"comparison_ready_count": 2}},
+    )
+    result = {
+        "subscores": {
+            "right_stability": {
+                "score": 0,
+                "details": {
+                    "prior_art_overlap": {"score": 18},
+                    "claim_structure_stability": {"score": 7},
+                },
+            },
+            "claim_protection": {"score": 24},
+            "portfolio_defensive_value": {"score": 15},
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+
+    assert scored["subscores"]["right_stability"]["score"] == 25
+    assert scored["subscores"]["right_stability"]["max_score"] == 35
+    assert scored["score"] == 64
+
+
+def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign_patent():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "US"},
+        citation_evidence={"prior_art_collection": {"comparison_ready_count": 0}},
+    )
     result = {
         "subscores": {
             "right_stability": {

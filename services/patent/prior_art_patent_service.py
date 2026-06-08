@@ -15,7 +15,11 @@ from services.patent.kipris_patent_service import (
     google_patents_publication_id,
     parse_single_patent_pdf,
 )
-from services.patent.markdown_preprocess_service import extract_sections, preprocess_patent_markdown
+from services.patent.markdown_preprocess_service import (
+    build_preprocessed_patent,
+    extract_sections,
+    preprocess_patent_markdown,
+)
 
 
 def build_prior_art_patent_context(
@@ -225,6 +229,7 @@ def resolve_prior_art_candidate(
                     "similarity_text": prior_art_similarity_text_from_markdown(markdown_text),
                 }
             )
+            item.update(prior_art_legal_content_from_markdown(markdown_text, country_code=item.get("country_code")))
         else:
             joined = " | ".join(error_messages)[:500]
             item["_warnings"].append(
@@ -268,6 +273,7 @@ def attach_foreign_prior_art_fulltext(
                 "similarity_text": prior_art_similarity_text_from_markdown(markdown_text),
             }
         )
+        item.update(prior_art_legal_content_from_markdown(markdown_text, country_code=item.get("country_code")))
         return
 
     joined = " | ".join(errors)[:500]
@@ -564,6 +570,71 @@ def prior_art_similarity_text_from_markdown(markdown_text: str) -> str:
         detailed_description=sections.get("detailed_description"),
         abstract=sections.get("abstract"),
     )
+
+
+def prior_art_legal_content_from_markdown(
+    markdown_text: str,
+    *,
+    country_code: str | None,
+    max_claims: int = 5,
+) -> dict[str, Any]:
+    preprocessed = build_preprocessed_patent(
+        markdown_text,
+        db_metadata={"country": country_code} if country_code else None,
+    )
+    claims = list(preprocessed.get("claims") or [])
+    ordered_claims = [
+        *[claim for claim in claims if claim.get("is_independent")],
+        *[claim for claim in claims if not claim.get("is_independent")],
+    ]
+    representative_claims = [
+        {
+            "claim_no": claim.get("claim_no"),
+            "is_independent": claim.get("is_independent"),
+            "dependency": claim.get("dependency"),
+            "text": normalize_text(claim.get("text")),
+        }
+        for claim in ordered_claims[:max_claims]
+        if normalize_text(claim.get("text"))
+    ]
+    abstract = normalize_text((preprocessed.get("sections") or {}).get("abstract"))
+    return {
+        "abstract": abstract,
+        "claim_stats": preprocessed.get("claim_stats") or {},
+        "representative_claims": representative_claims,
+        "lookup_status": "resolved",
+        "lookup_source": "prior_art_pdf_fulltext",
+        "comparison_status": "comparison_ready" if representative_claims or abstract else "identifier_only",
+    }
+
+
+def prior_art_context_citation_documents(context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    documents = []
+    for item in (context or {}).get("prior_art_patents") or (context or {}).get("similar_patents") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("comparison_status") != "comparison_ready":
+            continue
+        documents.append(
+            {
+                "direction": "cited_by_target",
+                "country_code": item.get("country_code"),
+                "application_number": item.get("application_number"),
+                "registration_number": item.get("registration_number"),
+                "publication_number": item.get("opening_number"),
+                "document_number": item.get("document_number"),
+                "kind_code": item.get("kind_code"),
+                "display_number": item.get("display_number"),
+                "title": item.get("title"),
+                "abstract": item.get("abstract"),
+                "claim_stats": item.get("claim_stats") or {},
+                "representative_claims": item.get("representative_claims") or [],
+                "lookup_status": item.get("lookup_status"),
+                "lookup_source": item.get("lookup_source"),
+                "comparison_status": item.get("comparison_status"),
+            }
+        )
+    return documents
 
 
 def build_claims_and_description_text(

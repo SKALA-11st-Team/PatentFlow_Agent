@@ -46,12 +46,12 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
     reconciled: dict[str, Any] = {}
     total = 0
     total_max = 0
-    foreign_patent = is_foreign_patent(state)
+    exclude_prior_art_metric = is_foreign_patent(state) and not has_comparison_ready_prior_art(state)
     for key, max_score in LEGAL_SUBSCORE_MAX.items():
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
         effective_max_score = max_score
-        if foreign_patent and key == "right_stability":
+        if exclude_prior_art_metric and key == "right_stability":
             effective_max_score = legal_subscore_max_without_details(
                 max_score=max_score,
                 details=details,
@@ -59,7 +59,7 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
             )
         detail_sum = sum_detail_scores(
             details,
-            excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS if foreign_patent and key == "right_stability" else None,
+            excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS if exclude_prior_art_metric and key == "right_stability" else None,
         )
         raw_score = coerce_int(item.get("score"))
         score = detail_sum if detail_sum is not None else raw_score
@@ -112,6 +112,12 @@ def is_foreign_patent(state: PatentWorkflowState) -> bool:
     return bool(country and country.upper() != "KR")
 
 
+def has_comparison_ready_prior_art(state: PatentWorkflowState) -> bool:
+    evidence = state.citation_evidence or (state.kipris_api_data or {}).get("citation_evidence") or {}
+    collection = evidence.get("prior_art_collection") if isinstance(evidence, dict) else {}
+    return int((collection or {}).get("comparison_ready_count") or 0) > 0
+
+
 def coerce_int(value: Any) -> int | None:
     try:
         return int(value)
@@ -136,6 +142,10 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
         prior_art_candidates=valuation_prior_art_candidates(state),
         citation_evidence=valuation_citation_evidence(state),
     )
+    preprocessed_claim_stats = (state.preprocessed_patent or {}).get("claim_stats")
+    if isinstance(preprocessed_claim_stats, dict) and preprocessed_claim_stats:
+        payload["patent"]["claim_stats"] = preprocessed_claim_stats
+        payload["patent"]["claim_availability"]["claim_stats_provided"] = True
     payload["legal_context"] = build_legal_context(payload=payload, state=state, labels={})
     return payload
 

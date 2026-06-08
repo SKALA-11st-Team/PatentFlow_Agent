@@ -1603,3 +1603,42 @@ def test_default_search_client_falls_back_to_google_html_without_config(monkeypa
     monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_CX", raising=False)
 
     assert isinstance(default_search_client(), GoogleHtmlSearchClient)
+
+
+def test_default_search_falls_back_when_tavily_returns_no_results(monkeypatch):
+    from services.evidence.skax_site_search_service import search_with_default_fallback
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
+    monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_API_KEY", "google-key")
+    monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_CX", "cx")
+    monkeypatch.setattr(
+        TavilySearchClient,
+        "search",
+        lambda self, query, max_results: {
+            "results": [],
+            "diagnostics": {
+                "search_provider": "tavily_search",
+                "search_failure_reason": "no_skax_results",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        GoogleCustomSearchClient,
+        "search",
+        lambda self, query, max_results: {
+            "results": [{"title": "SK AX 제조", "url": "https://www.skax.co.kr/manufacturing"}],
+            "diagnostics": {
+                "search_provider": "google_custom_search_json",
+                "search_failure_reason": None,
+            },
+        },
+    )
+
+    result = search_with_default_fallback("site:skax.co.kr 제조", max_results=3)
+
+    assert len(result["results"]) == 1
+    assert result["diagnostics"]["fallback_used"] is True
+    assert [item["search_provider"] for item in result["diagnostics"]["fallback_attempts"]] == [
+        "tavily_search",
+        "google_custom_search_json",
+    ]

@@ -449,3 +449,42 @@ def test_preprocess_extracts_japanese_bracket_claims_and_removes_self_prior_art(
     assert result["claims"][1]["dependency"] == 1
     assert result["claim_stats"]["active_claim_count"] == 2
     assert result["metadata"]["prior_art"] == []
+
+
+def test_preprocess_normalizes_japanese_and_us_reference_formats():
+    raw_text = """
+(56)参考文献
+特開平１１−３４５７５２（ＪＰ，Ａ）
+特開２００２−３７３０１４（ＪＰ，Ａ）
+米国特許出願公開第２００９／０３０６８０３（ＵＳ，Ａ１）
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={"country": "JP", "registration_number": "6947850"},
+    )
+
+    assert result["metadata"]["prior_art"] == [
+        "JP1999345752 A",
+        "JP2002373014 A",
+        "US20090306803 A1",
+    ]
+
+
+def test_preprocess_extracts_us_what_is_claimed_section():
+    result = build_preprocessed_patent(
+        """
+(57) ABSTRACT
+Semiconductor process control.
+
+What is claimed is:
+
+- 1. A method comprising measuring a semiconductor wafer.
+- 2. The method of claim 1, further comprising changing a sampling rate.
+""",
+        db_metadata={"country": "US"},
+    )
+
+    assert [claim["claim_no"] for claim in result["claims"]] == [1, 2]
+    assert result["claims"][0]["is_independent"] is True
+    assert result["claims"][1]["dependency"] == 1

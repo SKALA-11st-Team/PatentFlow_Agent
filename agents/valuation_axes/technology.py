@@ -87,6 +87,7 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
         country_code=country_code if foreign_patent else None,
         similar_dir=similar_dir,
         prior_art_dir=prior_art_dir,
+        prior_art_context=state.prior_art_context,
     )
 
 
@@ -158,9 +159,14 @@ def build_hybrid_context(
     country_code: str | None,
     similar_dir: Path | None,
     prior_art_dir: Path | None,
+    prior_art_context: dict[str, Any] | None = None,
     target_top_k: int = TECHNOLOGY_COMPARISON_TARGET_COUNT,
 ) -> dict[str, Any]:
-    prior_art = build_prior_art_context(metadata=metadata, kipris_api_data=kipris_api_data, output_dir=prior_art_dir)
+    prior_art = prior_art_context or build_prior_art_context(
+        metadata=metadata,
+        kipris_api_data=kipris_api_data,
+        output_dir=prior_art_dir,
+    )
     prior_items = list(prior_art.get("similar_patents") or [])
 
     if len(prior_items) >= target_top_k:

@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 from app.config import settings
 from services.patent.kipris_patent_service import (
@@ -9,6 +10,10 @@ from services.patent.kipris_patent_service import (
     resolve_foreign_prior_art_evidence,
 )
 from services.patent.markdown_preprocess_service import build_preprocessed_patent
+from services.patent.prior_art_patent_service import (
+    build_prior_art_patent_context,
+    prior_art_context_citation_documents,
+)
 from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
 from services.evidence.compression_service import (
     DEFAULT_RAG_SCORE_THRESHOLD,
@@ -205,6 +210,110 @@ def common_preprocess_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.patent_structured = patent
     state.current_stage = "patent_check"
     return state
+
+
+@trace(run_type="tool")
+def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    if state.prior_art_context is not None:
+        return state
+    preprocessed = state.preprocessed_patent or {}
+    metadata = preprocessed.get("metadata") if isinstance(preprocessed.get("metadata"), dict) else {}
+    if not metadata.get("prior_art"):
+        state.prior_art_context = {
+            "comparison_mode": "prior-art",
+            "candidate_count": 0,
+            "similar_patents": [],
+            "prior_art_patents": [],
+            "warnings": ["prior_art_candidates_not_found"],
+        }
+        return state
+
+    artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
+    output_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
+    try:
+        state.prior_art_context = build_prior_art_patent_context(
+            target_metadata=metadata,
+            kipris_api_data=state.kipris_api_data,
+            collect_pdf=bool(output_dir),
+            output_dir=output_dir,
+            pdf_text_limit=None,
+        )
+    except Exception as exc:
+        state.prior_art_context = {
+            "comparison_mode": "prior-art",
+            "candidate_count": len(metadata.get("prior_art") or []),
+            "similar_patents": [],
+            "prior_art_patents": [],
+            "warnings": [f"prior_art_fulltext_collection_failed:{exc.__class__.__name__}"],
+        }
+        return state
+    fulltext_documents = prior_art_context_citation_documents(state.prior_art_context)
+    if fulltext_documents:
+        state.citation_evidence = merge_prior_art_citation_evidence(
+            state.citation_evidence,
+            fulltext_documents,
+            candidate_count=int(state.prior_art_context.get("candidate_count") or 0),
+        )
+        if state.kipris_api_data is not None:
+            state.kipris_api_data["citation_evidence"] = state.citation_evidence
+    return state
+
+
+def merge_prior_art_citation_evidence(
+    evidence: dict | None,
+    fulltext_documents: list[dict],
+    *,
+    candidate_count: int,
+) -> dict:
+    merged = dict(evidence or {})
+    by_number = {
+        prior_art_document_key(item): dict(item)
+        for item in merged.get("foreign_citation_documents") or []
+        if isinstance(item, dict)
+    }
+    for document in fulltext_documents:
+        key = prior_art_document_key(document)
+        existing = by_number.get(key, {})
+        by_number[key] = {
+            **existing,
+            **document,
+            "abstract": document.get("abstract") or existing.get("abstract"),
+            "representative_claims": document.get("representative_claims") or existing.get("representative_claims") or [],
+        }
+    documents = list(by_number.values())
+    ready_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("representative_claims") or item.get("abstract")
+    }
+    unresolved = [
+        item
+        for item in merged.get("foreign_claim_lookup_candidates") or []
+        if prior_art_document_key(item) not in ready_numbers
+    ]
+    merged.update(
+        {
+            "foreign_citation_documents": documents,
+            "foreign_identifier_only_documents": unresolved,
+            "prior_art_collection": {
+                "candidate_count": candidate_count,
+                "comparison_ready_count": len(ready_numbers),
+                "identifier_only_count": max(0, candidate_count - len(ready_numbers)),
+                "comparison_status": "comparison_ready" if ready_numbers else "unknown",
+            },
+        }
+    )
+    return merged
+
+
+def prior_art_document_key(item: dict) -> str:
+    display_number = item.get("display_number")
+    if display_number:
+        return re.sub(r"[^0-9A-Z]", "", str(display_number).upper())
+    return "|".join(
+        str(item.get(key) or "").upper()
+        for key in ("country_code", "document_number", "kind_code")
+    )
 
 
 @trace(run_type="tool")
