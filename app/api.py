@@ -49,6 +49,10 @@ class PatentEvaluationResponse(BaseModel):
     averageScore: float | None = None
     finalGrade: str | None = None
     finalIndicator: str | None = None
+    degraded: bool = False
+    failureReason: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+    evidenceConfidence: str | None = None
     generatedAt: datetime
 
 
@@ -133,6 +137,10 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         averageScore=valuation_average_score(valuation_result),
         finalGrade=final_grade_for_average(valuation_average_score(valuation_result)),
         finalIndicator=valuation_result.get("final_indicator"),
+        degraded=is_degraded(final_state, valuation_result),
+        failureReason=failure_reason(final_state, valuation_result),
+        warnings=workflow_warnings(final_state),
+        evidenceConfidence=evidence_confidence(final_state),
         generatedAt=datetime.now(timezone.utc),
     )
 
@@ -227,3 +235,65 @@ def final_grade_for_average(average_score: float | None) -> str | None:
     if average_score >= 40:
         return "C"
     return "D"
+
+
+def is_degraded(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> bool:
+    scores = valuation_scores(valuation_result)
+    has_scored_axis = any(isinstance(score.score, int) for score in scores)
+    return not has_scored_axis or evidence_confidence(state) == "LOW"
+
+
+def failure_reason(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> str | None:
+    if not is_degraded(state, valuation_result):
+        return None
+    if not state.evidence_bundle:
+        return "외부 근거 수집 결과가 없어 AI 평가 신뢰도가 낮습니다."
+    return "일부 근거 수집 단계가 실패해 제한된 근거로 AI 평가가 생성되었습니다."
+
+
+def evidence_confidence(state: PatentWorkflowState) -> str:
+    evidence_count = len(state.evidence_bundle or [])
+    if evidence_count >= 3:
+        return "HIGH"
+    if evidence_count > 0:
+        return "MEDIUM"
+    return "LOW"
+
+
+def workflow_warnings(state: PatentWorkflowState) -> list[str]:
+    warnings: list[str] = []
+    collect_warning_values(state.portfolio_result, warnings)
+    collect_warning_values(state.query_plan, warnings)
+    collect_warning_values(state.validation_result, warnings)
+    collect_warning_values(state.summary_validation_result, warnings)
+    collect_warning_values(state.report_validation_result, warnings)
+    if state.missing_evidence:
+        warnings.extend(str(item) for item in state.missing_evidence if item)
+    if not state.evidence_bundle:
+        warnings.append("evidence_bundle_empty")
+    return dedupe(warnings)
+
+
+def collect_warning_values(value: Any, warnings: list[str]) -> None:
+    if isinstance(value, dict):
+        warning = value.get("warning")
+        if warning:
+            warnings.append(str(warning))
+        nested_warnings = value.get("warnings")
+        if isinstance(nested_warnings, list):
+            warnings.extend(str(item) for item in nested_warnings if item)
+        for nested in value.values():
+            collect_warning_values(nested, warnings)
+    elif isinstance(value, list):
+        for item in value:
+            collect_warning_values(item, warnings)
+
+
+def dedupe(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
