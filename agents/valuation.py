@@ -89,7 +89,12 @@ def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
 
 
 def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    raw = call_llm(prompt, model=settings.openai_valuation_model, temperature=0)
+    raw = call_llm(
+        prompt,
+        model=settings.openai_valuation_model,
+        temperature=0,
+        reasoning_effort=settings.openai_valuation_reasoning_effort,
+    )
     parsed = parse_json_object(raw)
     if not parsed:
         raw = call_llm(build_json_repair_prompt(axis=axis, raw=raw))

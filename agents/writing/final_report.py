@@ -40,6 +40,8 @@ def run_final_report_llm_required(
         call_llm(
             build_final_report_prompt(state=state, valuation_result=valuation_result),
             model=settings.openai_writing_model,
+            reasoning_effort=settings.openai_writing_reasoning_effort,
+            verbosity=settings.openai_writing_verbosity,
         ).strip()
     )
     if not markdown:

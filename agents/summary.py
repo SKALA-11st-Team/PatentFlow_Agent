@@ -42,6 +42,8 @@ def run_summary_llm_required(state: PatentWorkflowState, summary_result: dict[st
     markdown = call_llm(
         build_summary_prompt(state=state, summary_result=summary_result),
         model=settings.openai_writing_model,
+        reasoning_effort=settings.openai_writing_reasoning_effort,
+        verbosity=settings.openai_writing_verbosity,
     ).strip()
     if not markdown:
         raise RuntimeError("LLM summary response was empty.")
