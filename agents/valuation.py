@@ -103,7 +103,8 @@ def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, An
 
 
 def run_axis_llm_once(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    raw = call_llm(prompt, seed=valuation_seed())
+    # 재현성: seed 지원 모델 + temperature=0 + 고정 seed로 동일 입력→동일 점수를 보장한다.
+    raw = call_llm(prompt, model=settings.valuation_model, temperature=0.0, seed=valuation_seed())
     parsed = parse_json_object(raw)
     if not parsed:
         raise RuntimeError(f"LLM valuation response for {axis} was not valid JSON.")

@@ -44,8 +44,12 @@ class Settings(BaseModel):
     evaluate_max_concurrency: int = int(getenv("EVALUATE_MAX_CONCURRENCY", "2"))
     valuation_schema_strict: bool = getenv("VALUATION_SCHEMA_STRICT", "true").lower() == "true"
     valuation_ensemble_runs: int = int(getenv("VALUATION_ENSEMBLE_RUNS", "1"))
-    valuation_seed: int | None = int(getenv("VALUATION_SEED")) if getenv("VALUATION_SEED") else None
-    valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "false").lower() == "true"
+    # 점수 재현성(VAL-01): 평가 축은 seed 지원 모델을 고정해 동일 입력→동일 점수를 보장한다.
+    # gpt-5 계열은 seed/temperature를 적용하지 않으므로, 평가 축 LLM 호출만 별도 seed 지원 모델을 사용한다.
+    # (모델/seed는 환경변수로 재정의 가능. 사용 모델이 seed 미지원이면 VALUATION_SEED_SUPPORTED=false로 끈다.)
+    valuation_model: str = getenv("VALUATION_MODEL", "gpt-4o-mini")
+    valuation_seed: int | None = int(getenv("VALUATION_SEED", "20260608"))
+    valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "true").lower() == "true"
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
     enable_shared_db_fallback: bool = getenv("ENABLE_SHARED_DB_FALLBACK", "false").lower() == "true"
     
