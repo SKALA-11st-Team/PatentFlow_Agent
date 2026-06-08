@@ -44,10 +44,10 @@ class Settings(BaseModel):
     evaluate_max_concurrency: int = int(getenv("EVALUATE_MAX_CONCURRENCY", "2"))
     valuation_schema_strict: bool = getenv("VALUATION_SCHEMA_STRICT", "true").lower() == "true"
     valuation_ensemble_runs: int = int(getenv("VALUATION_ENSEMBLE_RUNS", "1"))
-    # 점수 재현성(VAL-01): 평가 축은 seed 지원 모델을 고정해 동일 입력→동일 점수를 보장한다.
-    # gpt-5 계열은 seed/temperature를 적용하지 않으므로, 평가 축 LLM 호출만 별도 seed 지원 모델을 사용한다.
-    # (모델/seed는 환경변수로 재정의 가능. 사용 모델이 seed 미지원이면 VALUATION_SEED_SUPPORTED=false로 끈다.)
-    valuation_model: str = getenv("VALUATION_MODEL", "gpt-4o-mini")
+    # 점수 재현성(VAL-01): 평가 축 LLM 호출에 고정 seed를 전달해 동일 입력→동일 점수를 보장한다.
+    # 기본 모델은 메인 챗 모델(gpt-5-mini)을 그대로 사용하고, 필요 시 VALUATION_MODEL로 재정의한다.
+    # (사용 모델/엔드포인트가 seed를 수용하지 않으면 VALUATION_SEED_SUPPORTED=false로 끈다.)
+    valuation_model: str = getenv("VALUATION_MODEL") or openai_chat_model
     valuation_seed: int | None = int(getenv("VALUATION_SEED", "20260608"))
     valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "true").lower() == "true"
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
