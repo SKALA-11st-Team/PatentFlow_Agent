@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ MAX_SEARCH_QUERIES = settings.search_query_count
 MAX_INDUSTRY_RAG_QUERIES = settings.industry_rag_query_count
 API_REQUEST_MAX_ATTEMPTS = 3
 API_REQUEST_RETRY_STATUS_CODES = {502, 503, 504}
+DEFAULT_NEWS_SEARCH_WORKERS = 4
 
 
 def rewrite_search_queries(
@@ -146,56 +148,52 @@ def collect_external_evidence(
     warnings: list[str] = []
 
     if include_naver:
-        for query in selected_queries:
-            try:
-                raw = request_json(
-                    api_base_url,
-                    "/api/news/search",
-                    {"query": query, "display": news_results_per_query, "start": 1, "sort": "sim"},
+        for search_result in collect_news_queries_concurrently(
+            api_base_url=api_base_url,
+            queries=selected_queries,
+            provider="naver",
+            results_per_query=news_results_per_query,
+            fetch_news_full_text=fetch_news_full_text,
+        ):
+            if search_result["warning"]:
+                warnings.append(search_result["warning"])
+                continue
+            items = search_result["items"]
+            sources.append(items)
+            if save:
+                path = save_evidence_collection(
+                    source_type="news",
+                    source="naver_news",
+                    items=items,
+                    query=search_result["query"],
+                    patent_id=patent_id,
+                    output_dir=output_dir or settings.output_dir / "api_evidence",
                 )
-                items = enrich_news_items_with_full_text(
-                    normalize_naver_news_response(raw, query=query),
-                    enabled=fetch_news_full_text,
-                )
-                sources.append(items)
-                if save:
-                    path = save_evidence_collection(
-                        source_type="news",
-                        source="naver_news",
-                        items=items,
-                        query=query,
-                        patent_id=patent_id,
-                        output_dir=output_dir or settings.output_dir / "api_evidence",
-                    )
-                    saved_paths.append(str(path))
-            except requests.RequestException as exc:
-                warnings.append(f"naver_news call failed for query '{query}': {exc}")
+                saved_paths.append(str(path))
 
     if include_gnews:
-        for gnews_query in selected_gnews_queries:
-            try:
-                raw = request_json(
-                    api_base_url,
-                    "/api/v4/search",
-                    {"q": gnews_query, "lang": "en", "max": news_results_per_query, "page": 1},
+        for search_result in collect_news_queries_concurrently(
+            api_base_url=api_base_url,
+            queries=selected_gnews_queries,
+            provider="gnews",
+            results_per_query=news_results_per_query,
+            fetch_news_full_text=fetch_news_full_text,
+        ):
+            if search_result["warning"]:
+                warnings.append(search_result["warning"])
+                continue
+            items = search_result["items"]
+            sources.append(items)
+            if save:
+                path = save_evidence_collection(
+                    source_type="news",
+                    source="gnews",
+                    items=items,
+                    query=search_result["query"],
+                    patent_id=patent_id,
+                    output_dir=output_dir or settings.output_dir / "api_evidence",
                 )
-                items = enrich_news_items_with_full_text(
-                    normalize_gnews_response(raw, query=gnews_query),
-                    enabled=fetch_news_full_text,
-                )
-                sources.append(items)
-                if save:
-                    path = save_evidence_collection(
-                        source_type="news",
-                        source="gnews",
-                        items=items,
-                        query=gnews_query,
-                        patent_id=patent_id,
-                        output_dir=output_dir or settings.output_dir / "api_evidence",
-                    )
-                    saved_paths.append(str(path))
-            except requests.RequestException as exc:
-                warnings.append(f"gnews call failed for query '{gnews_query}': {exc}")
+                saved_paths.append(str(path))
 
     if include_kipris and application_number:
         try:
@@ -256,6 +254,59 @@ def collect_external_evidence(
         "saved_collections": saved_paths,
         "warnings": warnings,
     }
+
+
+def collect_news_queries_concurrently(
+    *,
+    api_base_url: str,
+    queries: list[str],
+    provider: str,
+    results_per_query: int,
+    fetch_news_full_text: bool,
+) -> list[dict[str, Any]]:
+    if not queries:
+        return []
+
+    def collect_query(query: str) -> dict[str, Any]:
+        try:
+            if provider == "naver":
+                raw = request_json(
+                    api_base_url,
+                    "/api/news/search",
+                    {"query": query, "display": results_per_query, "start": 1, "sort": "sim"},
+                )
+                items = normalize_naver_news_response(raw, query=query)
+                source = "naver_news"
+            elif provider == "gnews":
+                raw = request_json(
+                    api_base_url,
+                    "/api/v4/search",
+                    {"q": query, "lang": "en", "max": results_per_query, "page": 1},
+                )
+                items = normalize_gnews_response(raw, query=query)
+                source = "gnews"
+            else:
+                raise ValueError(f"Unknown news provider: {provider}")
+            return {
+                "query": query,
+                "source": source,
+                "items": enrich_news_items_with_full_text(items, enabled=fetch_news_full_text),
+                "warning": None,
+            }
+        except requests.RequestException as exc:
+            source = "naver_news" if provider == "naver" else "gnews"
+            return {
+                "query": query,
+                "source": source,
+                "items": [],
+                "warning": f"{source} call failed for query '{query}': {exc}",
+            }
+
+    max_workers = min(DEFAULT_NEWS_SEARCH_WORKERS, len(queries))
+    if max_workers <= 1:
+        return [collect_query(query) for query in queries]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(collect_query, queries))
 
 
 def compact_queries(queries: list[str]) -> list[str]:

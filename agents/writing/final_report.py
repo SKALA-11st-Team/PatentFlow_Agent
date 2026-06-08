@@ -37,7 +37,10 @@ def run_final_report_llm_required(
     if state.user_input.get("use_llm_final_report", True) is False:
         raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
     markdown = sanitize_final_report_markdown(
-        call_llm(build_final_report_prompt(state=state, valuation_result=valuation_result)).strip()
+        call_llm(
+            build_final_report_prompt(state=state, valuation_result=valuation_result),
+            model=settings.openai_writing_model,
+        ).strip()
     )
     if not markdown:
         raise RuntimeError("LLM final report response was empty.")

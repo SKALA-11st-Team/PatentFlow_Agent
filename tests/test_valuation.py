@@ -70,7 +70,7 @@ def test_final_report_prompt_uses_rights_scope_explanation_for_legal_axis():
     assert "patent.rights_scope_context.representative_figure_detail" in final_report
     assert "도면에 나타난 주요 구성 또는 처리 단계가 청구항의 어느 필수 구성과 연결되는지 매칭하세요." in final_report
     assert "도면상 구성/흐름 → 청구항 필수 구성 → 권리범위 형성 의미" in final_report
-    assert "왼쪽 열에는 도면 이미지와 도면 설명만 작성하고 권리범위 판단을 쓰지 마세요." in final_report
+    assert "표 셀 안에는 도면 이미지를 넣지 말고 설명 텍스트만 작성하세요." in final_report
     assert "아이디어 자체보다" not in final_report
 
 
@@ -86,7 +86,7 @@ def test_market_prompt_uses_40_40_20_market_structure():
 
 
 def test_run_valuation_agent_sets_result():
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         if "Return ONLY Markdown" in prompt:
             return "# LLM 최종 보고서"
         return '{"score":70,"grade":"B","rationale":"LLM 평가","evidence_ids":[],"risk_factors":["추가 확인"],"missing_information":[],"confidence":0.7}'
@@ -133,8 +133,9 @@ def test_run_valuation_agent_sets_result():
     assert set(axes) == {"legal", "technology", "market", "business_fit"}
     assert "strategy" not in axes
     assert axes["business_fit"]["label"] == "사업 연계성"
-    assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
-    assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 4, 1)
+    core_axes = ("legal", "technology", "market")
+    assert result.valuation_result["total_score"] == sum(axes[name]["score"] for name in core_axes)
+    assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 3, 1)
     assert "평균 점수는" in result.valuation_result["decision_rationale"][0]
     assert axes["market"]["subscores"]["market_growth"]["score"] is None
     assert "final_report_markdown" not in result.valuation_result
@@ -143,7 +144,7 @@ def test_run_valuation_agent_sets_result():
 def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     captured_prompts = []
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         captured_prompts.append(prompt)
         return json.dumps(
             {
@@ -1852,7 +1853,7 @@ def test_supervisor_requires_business_fit_axis():
 def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
     captured_prompts = []
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         captured_prompts.append(prompt)
         if "Return ONLY Markdown" not in prompt:
             return '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"missing_information":[],"confidence":0.7}'
@@ -2138,7 +2139,7 @@ def test_final_report_input_payload_uses_preprocessed_drawing_context(tmp_path):
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     captured_prompts = []
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         captured_prompts.append(prompt)
         if "Return ONLY Markdown" in prompt:
             return "# LLM 최종 보고서"
@@ -2160,7 +2161,7 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
 
 
 def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         if "Return ONLY Markdown" in prompt:
             return "# LLM 최종 보고서"
         return """
@@ -2791,7 +2792,7 @@ def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):
 def test_valuation_llm_inputs_respect_no_save(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "agents.valuation.call_llm",
-        lambda prompt: "# LLM 최종 보고서" if "Return ONLY Markdown" in prompt else '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"confidence":0.7}',
+        lambda prompt, **kwargs: "# LLM 최종 보고서" if "Return ONLY Markdown" in prompt else '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"confidence":0.7}',
     )
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
@@ -3040,7 +3041,7 @@ def test_axis_llm_retries_when_first_response_is_not_json(monkeypatch):
     )
     prompts = []
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         prompts.append(prompt)
         return next(calls)
 

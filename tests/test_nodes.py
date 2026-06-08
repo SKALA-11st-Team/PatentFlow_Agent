@@ -751,7 +751,7 @@ def _report_state(markdown, total_score=223):
 def test_report_validation_passes_well_formed_report():
     from workflow.nodes import report_validation_node
 
-    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합 점수 223/400점, 평균 55.8/100점"
+    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합 점수 223/300점, 평균 74.3/100점"
     result = report_validation_node(_report_state(md)).report_validation_result
 
     assert result["passed"] is True
@@ -761,7 +761,7 @@ def test_report_validation_passes_well_formed_report():
 def test_report_validation_flags_missing_sections_and_score_mismatch():
     from workflow.nodes import report_validation_node
 
-    md = "## 1. 한눈에 보는 검토 결과\n## 2. 평가대상\n종합 점수 999/400점"
+    md = "## 1. 한눈에 보는 검토 결과\n## 2. 평가대상\n종합 점수 999/300점"
     result = report_validation_node(_report_state(md, total_score=223)).report_validation_result
 
     assert result["passed"] is False

@@ -139,17 +139,22 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
     return result
 
 
-def fetch_kipris_abstract(application_number: str) -> str:
-    """초록 텍스트만 가볍게 조회한다(인용/패밀리/citing 등 부가 호출 없이).
+def fetch_kipris_bibliography_basic(application_number: str) -> dict[str, Any]:
+    """서지상세(bibliography_detail) 1회만 호출하는 경량 버전.
 
-    분야 추천처럼 '초록만' 필요한 경로에서 fetch_kipris_bibliography의 무거운
-    네트워크 호출을 피하려고 bibliography_detail 하나만 정규화한다.
-    실패 시 빈 문자열을 반환해 호출 측이 제목만으로 폴백하게 한다.
+    포트폴리오 sibling 보강처럼 제목·초록·청구항·IPC/CPC만 필요하고 패밀리·인용·
+    피인용·인용근거는 쓰지 않는 경우에 사용한다. KIPRIS 호출을 특허당 5+회에서
+    1회로 줄인다.
     """
     client = _kipris_client()
     kipris_application_number = normalize_kipris_application_number(application_number)
     raw = client.bibliography_detail(kipris_application_number)
-    normalized = normalize_kipris_bibliography(raw, application_number=application_number)
+    return normalize_kipris_bibliography(raw, application_number=application_number)
+
+
+def fetch_kipris_abstract(application_number: str) -> str:
+    """초록만 필요한 경로에서 부가 API 호출 없이 텍스트를 조회한다."""
+    normalized = fetch_kipris_bibliography_basic(application_number)
     return (normalized.get("sections") or {}).get("abstract") or ""
 
 
@@ -302,8 +307,6 @@ def foreign_patent_metadata_from_db(patent: dict[str, Any]) -> dict[str, Any]:
         "assignee_count": 0,
         "has_co_assignee": False,
     }
-
-
 def normalize_kipris_bibliography(raw: dict[str, Any], *, application_number: str) -> dict[str, Any]:
     item = _get_path(raw, ["response", "body", "item"]) or {}
     summary = _first_item(_get_path(item, ["biblioSummaryInfoArray", "biblioSummaryInfo"])) or {}

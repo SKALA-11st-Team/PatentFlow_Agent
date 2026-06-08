@@ -1,3 +1,6 @@
+import threading
+import time
+
 import requests
 
 from services.evidence.skax_site_search_service import (
@@ -72,6 +75,48 @@ def test_collect_skax_site_evidence_uses_rewritten_query_override():
         "site:skax.co.kr 로보어드바이저 news room",
     ]
     assert result["query_generation_diagnostics"]["query_source"] == "rule_based_with_query_rewriting"
+
+
+def test_collect_skax_site_evidence_searches_queries_concurrently():
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    class SlowSearchClient:
+        def search(self, query, *, max_results=5):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.03)
+            with lock:
+                active -= 1
+            return {
+                "results": [
+                    {
+                        "title": query,
+                        "url": f"https://www.skax.co.kr/finance/{query.rsplit(' ', 1)[-1]}",
+                        "snippet": "로보어드바이저 데이터분석 금융",
+                        "content": "로보어드바이저 데이터분석 금융",
+                    }
+                ],
+                "diagnostics": {"search_provider": "fake"},
+            }
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=SlowSearchClient(),
+        queries_override=["로보어드바이저 one", "로보어드바이저 two"],
+        max_queries=2,
+        max_results_per_query=1,
+    )
+
+    assert max_active > 1
+    assert result["queries"][:2] == [
+        "site:skax.co.kr 로보어드바이저",
+        "site:skax.co.kr SK AX 로보어드바이저",
+    ]
+    assert [diagnostic["query"] for diagnostic in result["search_diagnostics"][:2]] == result["queries"][:2]
 
 
 def test_build_search_queries_adds_finance_hints_only_when_context_supports_them():

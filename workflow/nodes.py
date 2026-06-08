@@ -834,7 +834,8 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
         if missing_sections:
             issues.append(f"Final report missing required sections: {', '.join(missing_sections)}")
         total_score = valuation.get("total_score")
-        if isinstance(total_score, int) and f"{total_score}/400" not in markdown:
+        total_score_max = valuation.get("total_score_max", 300)
+        if isinstance(total_score, int) and f"{total_score}/{total_score_max}" not in markdown:
             issues.append(f"Final report total score does not match valuation total_score ({total_score})")
         recommendation = str(valuation.get("recommendation") or "").strip()
         if recommendation:

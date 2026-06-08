@@ -21,7 +21,10 @@ def _get_client() -> OpenAI:
     if _CLIENT is not None:
         return _CLIENT
 
-    client = OpenAI(api_key=settings.openai_api_key)
+    client = OpenAI(
+        api_key=settings.openai_api_key,
+        timeout=settings.openai_request_timeout_seconds,
+    )
     if settings.langsmith_tracing and settings.langsmith_api_key:
         try:
             from langsmith.wrappers import wrap_openai

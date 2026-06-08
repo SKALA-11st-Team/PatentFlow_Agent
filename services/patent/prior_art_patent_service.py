@@ -10,7 +10,7 @@ from services.patent.kipris_patent_service import (
     _download_pdf_url,
     _foreign_literature_number_candidates,
     download_and_parse_patent_pdf,
-    fetch_kipris_bibliography,
+    fetch_kipris_bibliography_basic,
     google_patents_pdf_url,
     google_patents_publication_id,
     parse_single_patent_pdf,
@@ -22,11 +22,14 @@ from services.patent.markdown_preprocess_service import (
 )
 
 
+DEFAULT_PRIOR_ART_TOP_K = 5
+
+
 def build_prior_art_patent_context(
     *,
     target_metadata: dict[str, Any],
     kipris_api_data: dict[str, Any] | None = None,
-    top_k: int | None = None,
+    top_k: int | None = DEFAULT_PRIOR_ART_TOP_K,
     collect_pdf: bool = False,
     output_dir: str | Path | None = None,
     pdf_text_limit: int | None = None,
@@ -182,7 +185,7 @@ def resolve_prior_art_candidate(
         )
     if application_number:
         try:
-            bibliography = fetch_kipris_bibliography(application_number)
+            bibliography = fetch_kipris_bibliography_basic(application_number)
             metadata = bibliography.get("metadata") or {}
             sections = bibliography.get("sections") or {}
             abstract = sections.get("abstract") if isinstance(sections, dict) else None
@@ -427,6 +430,10 @@ def candidate_search_matches(candidate: dict[str, Any]) -> list[dict[str, Any]]:
                 results.append(resolved)
         except Exception:
             continue
+        # 한 검색 방식에서 해당 선행문헌을 찾았으면 나머지 번호 방식은 시도하지 않는다
+        # (같은 특허를 4가지 번호로 중복 조회하는 KIPRIS 낭비 방지).
+        if results:
+            break
     if len(number) == 13 and number not in seen:
         results.append(
             {

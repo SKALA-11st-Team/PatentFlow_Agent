@@ -17,6 +17,10 @@ from workflow.state import PatentWorkflowState
 VALUATION_SUPERVISOR_RETRY_LIMIT = 1
 AXIS_SUPERVISOR_RETRY_LIMIT = 1
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
+# Hard code-level bound on how many times the per-axis checks may trigger an
+# external-evidence re-collection (query_rewriting). The axis prompts only judge
+# evidence *quality*; this counter — not the prompt — stops the loop.
+AXIS_EVIDENCE_RECOLLECT_LIMIT = 1
 REQUIRED_VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
 MAX_SUPERVISOR_EVIDENCE_SAMPLES = 5
 AXIS_SUPERVISOR_PROMPTS = {
@@ -182,6 +186,14 @@ def increment_axis_retry_count(state: PatentWorkflowState, axis: str) -> int:
     return counts[axis]
 
 
+def increment_evidence_recollect_count(state: PatentWorkflowState) -> int:
+    team_status = dict(state.team_status or {})
+    count = int(team_status.get("evidence_recollect_count") or 0) + 1
+    team_status["evidence_recollect_count"] = count
+    state.team_status = team_status
+    return count
+
+
 def reset_axis_retry_counts(state: PatentWorkflowState) -> None:
     if not state.team_status or "axis_retry_counts" not in state.team_status:
         return
@@ -222,9 +234,36 @@ def apply_axis_routing_targets(
       collection and are unchanged, so their prior results are reused.
     """
     if decision.next_action == "query_rewriting":
+        # The loop bound lives here, not in the prompt: honour the re-collection
+        # request only while the budget remains. Once exhausted, accept the
+        # structurally-valid result and continue instead of looping again.
+        if increment_evidence_recollect_count(state) <= AXIS_EVIDENCE_RECOLLECT_LIMIT:
+            reset_axis_retry_counts(state)
+            state.valuation_retry_axes = sorted(EXTERNAL_EVIDENCE_AXES)
+            merge_axis_evidence_gaps(state, axis_checks)
+            return decision
         reset_axis_retry_counts(state)
-        state.valuation_retry_axes = sorted(EXTERNAL_EVIDENCE_AXES)
-        merge_axis_evidence_gaps(state, axis_checks)
+        state.valuation_retry_axes = []
+        metadata = dict(decision.metadata)
+        metadata["evidence_recollect_budget"] = {
+            "limit": AXIS_EVIDENCE_RECOLLECT_LIMIT,
+            "exhausted": True,
+        }
+        decision.metadata = metadata
+        if check_valuation_result(state).passed:
+            decision.passed = True
+            decision.next_team = "writing"
+            decision.next_action = "writing_team"
+            decision.reason = (
+                "축 근거 재수집 한도에 도달해 더 재수집하지 않고, 현재 근거로 평가를 "
+                "확정하고 작성 단계로 진행합니다."
+            )
+        else:
+            decision.next_team = "valuation"
+            decision.next_action = "valuation_team"
+            decision.reason = (
+                "축 근거 재수집 한도에 도달했고 평가 구조가 불완전해 valuation을 재실행합니다."
+            )
         return decision
     if decision.next_action != "valuation_team":
         reset_axis_retry_counts(state)
@@ -325,6 +364,7 @@ def run_single_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         raw = call_llm(
             build_axis_supervisor_check_prompt(state, axis=axis),
             model=settings.openai_supervisor_model,
+            temperature=0,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -637,6 +677,7 @@ def run_writing_quality_check(state: PatentWorkflowState, key: str) -> dict[str,
         raw = call_llm(
             f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}",
             model=settings.openai_supervisor_model,
+            temperature=0,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -803,6 +844,7 @@ def run_llm_supervisor_check(
         raw = call_llm(
             build_supervisor_judge_prompt(state, prompt_name=prompt_name),
             model=settings.openai_supervisor_model,
+            temperature=0,
         )
         parsed = parse_json_object(raw)
         if not parsed:
