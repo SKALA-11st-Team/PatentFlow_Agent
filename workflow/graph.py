@@ -312,6 +312,9 @@ def run_workflow(state: PatentWorkflowState) -> PatentWorkflowState:
     # calls nest under it. See services.observability.langsmith_service.
     result = WORKFLOW_GRAPH.invoke(
         state.model_dump(),
-        config={"run_name": "patent_valuation_workflow"},
+        config={
+            "run_name": "patent_valuation_workflow",
+            "recursion_limit": settings.workflow_recursion_limit,
+        },
     )
     return PatentWorkflowState.model_validate(result)
