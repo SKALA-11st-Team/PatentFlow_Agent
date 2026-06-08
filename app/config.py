@@ -31,6 +31,10 @@ class Settings(BaseModel):
     # 채점(가치평가 축) 전용 모델. 미설정 시 openai_chat_model로 폴백.
     # 점수 결정성이 필요하면 temperature를 지원하는 모델(gpt-4.1-mini 등)을 지정한다.
     openai_valuation_model: str | None = getenv("OPENAI_VALUATION_MODEL")
+    # 최종 보고서·요약 작성 전용 모델. 미설정 시 openai_chat_model로 폴백.
+    # 서술 품질을 위해 gpt-5 같은 상위 모델을 쓰고 싶을 때 지정한다(작성은 KIPRIS
+    # 호출이 없어 느려도 워크플로우를 막지 않는다).
+    openai_writing_model: str | None = getenv("OPENAI_WRITING_MODEL")
     openai_request_timeout_seconds: float = float(getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "90"))
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     

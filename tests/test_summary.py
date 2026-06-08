@@ -32,7 +32,7 @@ def test_run_summary_agent_fails_when_llm_summary_is_disabled():
 def test_run_summary_agent_uses_llm_markdown(monkeypatch):
     captured_prompts = []
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         captured_prompts.append(prompt)
         return "## 1. 한 줄 요약\n\n- 본문"
 
