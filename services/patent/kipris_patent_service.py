@@ -138,6 +138,19 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
     return result
 
 
+def fetch_kipris_bibliography_basic(application_number: str) -> dict[str, Any]:
+    """서지상세(bibliography_detail) 1회만 호출하는 경량 버전.
+
+    포트폴리오 sibling 보강처럼 제목·초록·청구항·IPC/CPC만 필요하고 패밀리·인용·
+    피인용·인용근거는 쓰지 않는 경우에 사용한다. KIPRIS 호출을 특허당 5+회에서
+    1회로 줄인다.
+    """
+    client = _kipris_client()
+    kipris_application_number = normalize_kipris_application_number(application_number)
+    raw = client.bibliography_detail(kipris_application_number)
+    return normalize_kipris_bibliography(raw, application_number=application_number)
+
+
 def normalize_kipris_bibliography(raw: dict[str, Any], *, application_number: str) -> dict[str, Any]:
     item = _get_path(raw, ["response", "body", "item"]) or {}
     summary = _first_item(_get_path(item, ["biblioSummaryInfoArray", "biblioSummaryInfo"])) or {}
