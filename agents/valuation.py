@@ -16,6 +16,11 @@ from workflow.state import PatentWorkflowState
 
 VALUATION_AXES = list(AXIS_MODULES)
 AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
+# 종합 점수는 권리성·기술성·시장성 3축만 평균낸다(사업 연계성 제외).
+CORE_VALUATION_AXES = ("legal", "technology", "market")
+CORE_VALUATION_TOTAL_MAX = len(CORE_VALUATION_AXES) * 100
+# 사업 연계성 점수가 이 값 이상이면 3축 점수와 무관하게 종합 지표를 "유지"로 본다.
+BUSINESS_FIT_OVERRIDE_SCORE = 60
 
 
 @dataclass(frozen=True)
@@ -213,14 +218,25 @@ def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
 
 
 def build_final_valuation_result(axes: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    total_score = sum(int(axis.get("score") or 0) for axis in axes.values())
-    average_score = round(total_score / len(axes), 1) if axes else 0
-    final_indicator = total_score_to_indicator(total_score)
+    # 종합 점수는 권리성·기술성·시장성 3축의 평균으로만 산정한다.
+    # 사업 연계성(business_fit)은 합산에 넣지 않고, 일정 점수 이상이면 종합 지표를
+    # 무조건 "유지"로 끌어올리는 오버라이드로만 작용한다.
+    core_axes = {name: axes[name] for name in CORE_VALUATION_AXES if name in axes}
+    total_score = sum(int(axis.get("score") or 0) for axis in core_axes.values())
+    average_score = round(total_score / len(core_axes), 1) if core_axes else 0
+
+    business_fit = axes.get("business_fit") or {}
+    business_fit_score = int(business_fit.get("score") or 0)
+    business_fit_override = business_fit_score >= BUSINESS_FIT_OVERRIDE_SCORE
+
+    final_indicator = average_score_to_indicator(average_score)
+    if business_fit_override:
+        final_indicator = "유지"
+
     missing_information = unique_texts(
         item for axis in axes.values() for item in axis.get("missing_information", [])
     )
     required_actions = []
-    business_fit = axes.get("business_fit") or {}
     if business_fit.get("missing_information"):
         required_actions.append("사업부 적용 여부 및 향후 적용 계획 확인")
     if missing_information:
@@ -228,10 +244,21 @@ def build_final_valuation_result(axes: dict[str, dict[str, Any]]) -> dict[str, A
     result = {
         "axes": axes,
         "total_score": total_score,
+        "total_score_max": CORE_VALUATION_TOTAL_MAX,
         "average_score": average_score,
+        "core_axes": list(core_axes.keys()),
+        "business_fit_score": business_fit_score,
+        "business_fit_override": business_fit_override,
         "final_indicator": final_indicator,
         "recommendation": indicator_to_recommendation(final_indicator, missing_information),
-        "decision_rationale": build_decision_rationale(axes, total_score, average_score, final_indicator),
+        "decision_rationale": build_decision_rationale(
+            core_axes,
+            total_score,
+            average_score,
+            final_indicator,
+            business_fit_override=business_fit_override,
+            business_fit_score=business_fit_score,
+        ),
         "required_actions": unique_texts(required_actions),
         "missing_information": missing_information,
     }
@@ -255,12 +282,12 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
-def total_score_to_indicator(total_score: int) -> str:
-    if total_score >= 320:
+def average_score_to_indicator(average_score: float) -> str:
+    if average_score >= 80:
         return "유지"
-    if total_score >= 240:
+    if average_score >= 60:
         return "조건부 유지"
-    if total_score >= 160:
+    if average_score >= 40:
         return "포기 검토"
     return "매각 후보"
 
@@ -274,18 +301,28 @@ def indicator_to_recommendation(final_indicator: str, missing_information: list[
 
 
 def build_decision_rationale(
-    axes: dict[str, dict[str, Any]],
+    core_axes: dict[str, dict[str, Any]],
     total_score: int,
     average_score: float,
     final_indicator: str,
+    *,
+    business_fit_override: bool = False,
+    business_fit_score: int = 0,
 ) -> list[str]:
-    strongest = max(axes.values(), key=lambda axis: axis.get("score", 0))
-    weakest = min(axes.values(), key=lambda axis: axis.get("score", 0))
-    return [
-        f"4개 평가축 합산 점수는 {total_score}/400점, 평균 점수는 {average_score:g}/100점이며 최종 종합 지표는 {final_indicator}이다.",
+    strongest = max(core_axes.values(), key=lambda axis: axis.get("score", 0))
+    weakest = min(core_axes.values(), key=lambda axis: axis.get("score", 0))
+    rationale = [
+        f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
+        f"평균 점수는 {average_score:g}/100점이며 최종 종합 지표는 {final_indicator}이다.",
         f"가장 강한 축은 {strongest.get('label')}({strongest.get('score')}점)이다.",
         f"보완이 필요한 축은 {weakest.get('label')}({weakest.get('score')}점)이다.",
     ]
+    if business_fit_override:
+        rationale.append(
+            f"사업 연계성 점수가 {business_fit_score}점으로 기준({BUSINESS_FIT_OVERRIDE_SCORE}점) 이상이어서, "
+            f"3축 점수와 무관하게 종합 지표를 유지로 판정했다."
+        )
+    return rationale
 
 
 def normalize_text(value: Any) -> str:

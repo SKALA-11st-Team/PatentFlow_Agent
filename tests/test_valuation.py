@@ -70,7 +70,7 @@ def test_final_report_prompt_uses_rights_scope_explanation_for_legal_axis():
     assert "patent.rights_scope_context.representative_figure_detail" in final_report
     assert "도면에 나타난 주요 구성 또는 처리 단계가 청구항의 어느 필수 구성과 연결되는지 매칭하세요." in final_report
     assert "도면상 구성/흐름 → 청구항 필수 구성 → 권리범위 형성 의미" in final_report
-    assert "왼쪽 열에는 도면 이미지와 도면 설명만 작성하고 권리범위 판단을 쓰지 마세요." in final_report
+    assert "표 셀 안에는 도면 이미지를 넣지 말고 설명 텍스트만 작성하세요." in final_report
     assert "아이디어 자체보다" not in final_report
 
 
@@ -133,8 +133,9 @@ def test_run_valuation_agent_sets_result():
     assert set(axes) == {"legal", "technology", "market", "business_fit"}
     assert "strategy" not in axes
     assert axes["business_fit"]["label"] == "사업 연계성"
-    assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
-    assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 4, 1)
+    core_axes = ("legal", "technology", "market")
+    assert result.valuation_result["total_score"] == sum(axes[name]["score"] for name in core_axes)
+    assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 3, 1)
     assert "평균 점수는" in result.valuation_result["decision_rationale"][0]
     assert axes["market"]["subscores"]["market_growth"]["score"] is None
     assert "final_report_markdown" not in result.valuation_result
