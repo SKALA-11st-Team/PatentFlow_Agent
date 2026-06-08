@@ -6,6 +6,7 @@ from services.patent.kipris_patent_service import (
     fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
     get_patent,
+    resolve_foreign_prior_art_evidence,
 )
 from services.patent.markdown_preprocess_service import build_preprocessed_patent
 from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
@@ -179,6 +180,24 @@ def common_preprocess_node(state: PatentWorkflowState) -> PatentWorkflowState:
         db_metadata=patent,
         api_data=state.kipris_api_data,
     )
+    country = str((preprocessed.get("metadata") or {}).get("country") or "").upper()
+    prior_art = (preprocessed.get("metadata") or {}).get("prior_art") or []
+    if country and country != "KR" and prior_art:
+        enriched = resolve_foreign_prior_art_evidence(prior_art)
+        citation_evidence = {
+            **(state.citation_evidence or {}),
+            "foreign_claim_lookup_candidates": enriched["foreign_claim_lookup_candidates"],
+            "foreign_citation_documents": enriched["foreign_citation_documents"],
+            "foreign_identifier_only_documents": enriched["foreign_identifier_only_documents"],
+            "prior_art_collection": enriched["prior_art_collection"],
+            "warnings": [
+                *((state.citation_evidence or {}).get("warnings") or []),
+                *enriched["warnings"],
+            ],
+        }
+        state.citation_evidence = citation_evidence
+        if state.kipris_api_data is not None:
+            state.kipris_api_data["citation_evidence"] = citation_evidence
     state.preprocessed_patent = preprocessed
     if state.parsed_pdf:
         state.parsed_pdf = {key: value for key, value in state.parsed_pdf.items() if key != "markdown_text"}

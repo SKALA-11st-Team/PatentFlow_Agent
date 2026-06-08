@@ -2173,6 +2173,112 @@ def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp
     assert scored["subscores"]["portfolio_defensive_value"]["details"]["follow_on_right_signal"]["score"] == 4
 
 
+def test_attach_legal_context_marks_prior_art_unknown_without_comparison_ready_documents(tmp_path):
+    from agents.valuation_axes.legal import attach_legal_context
+
+    state = PatentWorkflowState(user_input={"artifact_dir": str(tmp_path), "no_save": True})
+    payload = {
+        "patent": {
+            "citation_evidence": {
+                "prior_art_collection": {
+                    "candidate_count": 2,
+                    "comparison_ready_count": 0,
+                    "identifier_only_count": 2,
+                    "comparison_status": "unknown",
+                }
+            }
+        }
+    }
+    result = {
+        "subscores": {
+            "right_stability": {
+                "details": {
+                    "prior_art_overlap": {
+                        "score": 25,
+                        "compared_prior_art_count": 2,
+                        "overlap_basis": "중복 없음",
+                        "rationale": "직접 중복이 낮습니다.",
+                    }
+                }
+            }
+        },
+        "prior_art_references": ["US 2010241261 A1", "US 2013063264 A1"],
+        "missing_information": [],
+    }
+
+    scored = attach_legal_context(result, payload=payload, state=state)
+    overlap = scored["subscores"]["right_stability"]["details"]["prior_art_overlap"]
+
+    assert overlap["assessment_status"] == "unknown"
+    assert overlap["compared_prior_art_count"] == 0
+    assert "판단할 수 없음" in overlap["overlap_basis"]
+    assert scored["prior_art_references"] == []
+    assert "선행문헌의 대표 청구항 또는 초록" in scored["missing_information"]
+
+
+def test_valuation_citation_evidence_preserves_foreign_document_identifier():
+    from agents.valuation_axes.legal import valuation_citation_evidence
+
+    state = PatentWorkflowState(
+        citation_evidence={
+            "foreign_citation_documents": [
+                {
+                    "country_code": "US",
+                    "document_number": "2010241261",
+                    "kind_code": "A1",
+                    "display_number": "US 2010241261 A1",
+                    "representative_claims": [{"claim_no": 1, "text": "A comparison claim"}],
+                    "comparison_status": "comparison_ready",
+                }
+            ],
+            "prior_art_collection": {"comparison_ready_count": 1},
+        }
+    )
+
+    evidence = valuation_citation_evidence(state)
+    document = evidence["foreign_citation_documents"][0]
+
+    assert document["display_number"] == "US 2010241261 A1"
+    assert document["document_number"] == "2010241261"
+    assert document["kind_code"] == "A1"
+    assert evidence["prior_art_collection"]["comparison_ready_count"] == 1
+
+
+def test_attach_legal_context_removes_resolved_prior_art_missing_message():
+    from agents.valuation_axes.legal import attach_legal_context
+
+    payload = {
+        "patent": {
+            "citation_evidence": {
+                "prior_art_collection": {
+                    "comparison_ready_count": 2,
+                    "identifier_only_count": 0,
+                }
+            }
+        }
+    }
+    result = {
+        "subscores": {
+            "right_stability": {
+                "details": {
+                    "prior_art_overlap": {
+                        "score": 18,
+                        "compared_prior_art_count": 0,
+                    }
+                }
+            }
+        },
+        "missing_information": ["선행문헌의 대표 청구항 원문", "제품 적용 여부"],
+    }
+
+    scored = attach_legal_context(result, payload=payload, state=PatentWorkflowState())
+
+    assert scored["missing_information"] == ["제품 적용 여부"]
+    overlap = scored["subscores"]["right_stability"]["details"]["prior_art_overlap"]
+    assert overlap["assessment_status"] == "comparison_ready"
+    assert overlap["compared_prior_art_count"] == 2
+
+
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},

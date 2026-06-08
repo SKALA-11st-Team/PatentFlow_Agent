@@ -183,3 +183,188 @@ def test_preprocess_prefers_ordered_drawing_section_image_over_cover_thumbnail()
     assert representative["figure_number"] == "도4"
     assert representative["image_path"] == "1020210131424_images/imageFile8.png"
     assert representative["image_source"] == "drawing_section_order"
+
+
+def test_preprocess_extracts_chinese_patent_sections():
+    raw_text = """
+(57)摘要
+
+提供了一种测量控制方法和系统。
+
+技术领域
+
+[0001] 本公开涉及半导体测量相关技术。
+
+背景技术
+
+[0002] 固定周期测量没有考虑设备质量。
+
+发明内容
+
+[0003] 本公开提供基于设备可靠性指数的动态测量方法。
+
+附图说明
+
+[0004] 图1是流程图。
+
+具体实施方式
+
+[0005] 系统实时计算风险分数。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "CN",
+            "application_number": "201880038342.9",
+            "registration_number": "CN110770661B",
+            "title_final": "测量控制方法和系统",
+        },
+        api_data={
+            "metadata": {"country": "CN"},
+            "claims": [
+                {
+                    "claim_no": 1,
+                    "text": "一种测量控制方法。",
+                    "is_independent": True,
+                    "dependency": None,
+                }
+            ],
+            "claim_stats": {"active_claim_count": 1},
+        },
+    )
+
+    assert result["sections"]["abstract"] == "提供了一种测量控制方法和系统。"
+    assert "半导体测量相关技术" in result["sections"]["technical_field"]
+    assert "固定周期测量" in result["sections"]["background_art"]
+    assert "设备可靠性指数" in result["sections"]["solution"]
+    assert "实时计算风险分数" in result["sections"]["detailed_description"]
+    assert "sections.claims_text" not in result["validation"]["missing_fields"]
+
+
+def test_preprocess_uses_first_chinese_drawing_as_representative():
+    raw_text = """
+附图说明
+
+图1是控制方法的流程图。
+
+### 图1
+
+![image 28](<CN110770661B_images/imageFile28.png>)
+
+### 图2
+
+![image 31](<CN110770661B_images/imageFile31.png>)
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        source={"markdown_paths": ["/tmp/CN110770661B.md"]},
+    )
+
+    representative = result["drawing_context"]["representative_drawing"]
+    assert representative == {
+        "figure_number": "도1",
+        "image_path": "CN110770661B_images/imageFile28.png",
+        "image_source": "foreign_drawing_section",
+        "markdown_path": "/tmp/CN110770661B.md",
+    }
+
+
+def test_preprocess_extracts_japanese_inline_bracket_sections():
+    raw_text = """
+(57)【特許請求の範囲】 【請求項１】 計測制御方法。
+【発明の詳細な説明】 【技術分野】 【０００１】 本発明は半導体計測に関する。
+【背景技術】 【０００２】 固定周期の計測には問題がある。
+【発明の概要】 【発明が解決しようとする課題】 【０００３】 動的な計測を提供する。
+【課題を解決するための手段】 【０００４】 装備信頼指数を算定する。
+【発明の効果】 【０００５】 品質を向上できる。
+【発明を実施するための形態】 【０００６】 リスクスコアを計算する。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "JP",
+            "application_number": "2019-565924",
+            "registration_number": "6947850",
+            "title_final": "計測制御方法及びシステム",
+        },
+        api_data={
+            "metadata": {"country": "JP"},
+            "sections": {"abstract": "装備信頼指数に基づく計測制御技術。"},
+            "claims": [
+                {
+                    "claim_no": 1,
+                    "text": "計測制御方法。",
+                    "is_independent": True,
+                    "dependency": None,
+                }
+            ],
+            "claim_stats": {"active_claim_count": 1},
+        },
+    )
+
+    assert "半導体計測" in result["sections"]["technical_field"]
+    assert "固定周期" in result["sections"]["background_art"]
+    assert "動的な計測" in result["sections"]["problem"]
+    assert "装備信頼指数" in result["sections"]["solution"]
+    assert "品質を向上" in result["sections"]["effect"]
+    assert "リスクスコア" in result["sections"]["detailed_description"]
+    assert result["validation"]["is_valid"] is True
+
+
+def test_preprocess_extracts_us_patent_sections():
+    raw_text = """
+(57) ABSTRACT
+
+A system identifies associations from document data.
+
+FIELD OF THE INVENTION
+
+The invention relates to document analysis.
+
+BACKGROUND OF THE INVENTION
+
+Existing systems do not explain associations.
+
+SUMMARY OF THE INVENTION
+
+The system extracts factors and identifies an association.
+
+BRIEF DESCRIPTION OF THE DRAWINGS
+
+FIG. 1 is a system diagram.
+
+DETAILED DESCRIPTION OF THE EMBODIMENTS
+
+The processor analyzes document data.
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "US",
+            "application_number": "18/020,829",
+            "registration_number": "12,417,849",
+            "title_final": "Method for Identifying Association",
+        },
+        api_data={
+            "metadata": {"country": "US"},
+            "claims": [
+                {
+                    "claim_no": 1,
+                    "text": "A system comprising a processor.",
+                    "is_independent": True,
+                    "dependency": None,
+                }
+            ],
+            "claim_stats": {"active_claim_count": 1},
+        },
+    )
+
+    assert result["sections"]["abstract"] == "A system identifies associations from document data."
+    assert "document analysis" in result["sections"]["technical_field"]
+    assert "do not explain associations" in result["sections"]["background_art"]
+    assert "extracts factors" in result["sections"]["solution"]
+    assert "processor analyzes" in result["sections"]["detailed_description"]

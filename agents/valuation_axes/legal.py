@@ -100,10 +100,57 @@ def attach_legal_context(
     payload: dict[str, Any],
     state: PatentWorkflowState,
 ) -> dict[str, Any]:
+    result = enforce_prior_art_comparison_status(result, payload)
     return {
         **result,
         "legal_context": build_legal_context(state=state, payload=payload),
     }
+
+
+def enforce_prior_art_comparison_status(
+    result: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    citation_evidence = ((payload.get("patent") or {}).get("citation_evidence") or {})
+    collection = citation_evidence.get("prior_art_collection") or {}
+    ready_count = int(collection.get("comparison_ready_count") or 0)
+    subscores = result.get("subscores")
+    if not isinstance(subscores, dict):
+        return result
+    right_stability = subscores.get("right_stability")
+    if not isinstance(right_stability, dict):
+        return result
+    details = right_stability.get("details")
+    if not isinstance(details, dict):
+        return result
+    overlap = details.get("prior_art_overlap")
+    if not isinstance(overlap, dict):
+        return result
+
+    overlap["compared_prior_art_count"] = ready_count
+    overlap["assessment_status"] = "comparison_ready" if ready_count else "unknown"
+    if ready_count and int(collection.get("identifier_only_count") or 0) == 0:
+        missing = result.get("missing_information")
+        if isinstance(missing, list):
+            result["missing_information"] = [
+                item
+                for item in missing
+                if not _is_resolved_prior_art_missing_message(item)
+            ]
+    if ready_count == 0:
+        overlap["overlap_basis"] = "상세 내용이 확보된 선행문헌이 없어 청구항 중복도를 판단할 수 없음"
+        overlap["rationale"] = "선행문헌 식별번호만 확인되어 청구항·초록 기반 비교는 수행하지 않음"
+        result["prior_art_references"] = []
+        missing = result.setdefault("missing_information", [])
+        message = "선행문헌의 대표 청구항 또는 초록"
+        if isinstance(missing, list) and message not in missing:
+            missing.append(message)
+    return result
+
+
+def _is_resolved_prior_art_missing_message(value: Any) -> bool:
+    text = normalize_text(value)
+    return "선행문헌" in text and any(token in text for token in ("청구항", "초록", "원문", "전문"))
 
 
 def build_legal_context(
@@ -248,6 +295,18 @@ def valuation_citation_evidence(state: PatentWorkflowState, *, claim_text_limit:
             for item in (evidence.get("foreign_claim_lookup_candidates") or [])
             if isinstance(item, dict)
         ],
+        "foreign_identifier_only_documents": [
+            {
+                "country_code": item.get("country_code"),
+                "document_number": item.get("document_number"),
+                "kind_code": item.get("kind_code"),
+                "display_number": item.get("display_number"),
+                "comparison_status": "identifier_only",
+            }
+            for item in (evidence.get("foreign_identifier_only_documents") or [])
+            if isinstance(item, dict)
+        ],
+        "prior_art_collection": evidence.get("prior_art_collection") or {},
         "warnings": evidence.get("warnings") or [],
     }
 
@@ -282,6 +341,9 @@ def _valuation_reference_document_payload(
         "application_number": item.get("application_number"),
         "registration_number": item.get("registration_number"),
         "publication_number": item.get("publication_number"),
+        "document_number": item.get("document_number"),
+        "kind_code": item.get("kind_code"),
+        "display_number": item.get("display_number"),
         "title": item.get("title"),
         "abstract": normalize_text(item.get("abstract"))[:1500],
         "register_status": item.get("register_status"),
@@ -298,4 +360,5 @@ def _valuation_reference_document_payload(
         ],
         "lookup_status": item.get("lookup_status"),
         "lookup_source": item.get("lookup_source"),
+        "comparison_status": item.get("comparison_status"),
     }

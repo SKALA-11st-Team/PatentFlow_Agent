@@ -80,3 +80,47 @@ def test_resolve_foreign_prior_art_collects_registration_fulltext(monkeypatch, t
     assert client.registration_calls[0] == ("000004002589B2", "JP")
     assert client.open_calls == []
     assert client.session.calls[0]["url"] == "https://example.com/jp_registration.pdf"
+
+
+def test_resolve_foreign_prior_art_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
+    class Client:
+        def __init__(self):
+            self.session = Session()
+            self.timeout = 30.0
+
+        def overseas_registration_fulltext(self, literature_number, country_code):
+            return {"response": {"body": {"items": {}}}}
+
+        def overseas_open_fulltext(self, literature_number, country_code):
+            return {"response": {"body": {"items": {}}}}
+
+    monkeypatch.setattr("services.patent.prior_art_patent_service.KiprisClient", Client)
+    monkeypatch.setattr(
+        "services.patent.prior_art_patent_service.google_patents_pdf_url",
+        lambda *args, **kwargs: "https://example.com/us-publication.pdf",
+    )
+    monkeypatch.setattr(
+        "services.patent.prior_art_patent_service.parse_single_patent_pdf",
+        lambda pdf_path, output_dir: {
+            "markdown_paths": [str(output_dir / "us_publication.md")],
+            "markdown_text": "What is claimed is:\n1. A method comprising a processor and a memory.",
+        },
+    )
+
+    result = resolve_prior_art_candidate(
+        {
+            "display_number": "US 2010241261 A1",
+            "country_code": "US",
+            "standard_number": "2010241261",
+            "kind_code": "A1",
+            "original_number": "US 2010241261 A1",
+        },
+        output_dir=tmp_path,
+        collect_pdf=True,
+        text_limit=None,
+    )
+
+    assert result["foreign_fulltext_type"] == "google_patents"
+    assert result["literature_number"] == "US20100241261A1"
+    assert result["pdf_collected"] is True
+    assert "What is claimed is" in result["pdf_text"]
