@@ -26,8 +26,9 @@ BE 레포에 이미 있는 값들을 **에이전트 레포에도** 등록해야 
 | **`OPENAI_API_KEY`** | **LLM 호출용 — 신규 등록 필요** | ⚠️ 신규 |
 | `KIPRIS_SERVICE_KEYS` | 초록/평가용 KIPRIS **다중 키**(콤마 구분, 한도 분산 권장) = BE `PATENTFLOW_KIPRIS_SERVICE_KEYS` 값 | 값 동일, 이름 다름 |
 | `KIPRIS_SERVICE_KEY` | (대안) 단일 KIPRIS 키. KEYS가 있으면 불필요 | 값 동일, 이름 다름 |
-| `OPENAI_SUPERVISOR_MODEL` | (선택) supervisor 모델 | 신규(선택) |
 | `LANGSMITH_API_KEY` | (선택) 트레이싱 | 신규(선택) |
+
+> `OPENAI_SUPERVISOR_MODEL`은 자격증명이 아니라 모델명이라 **Secret이 아닌 Variable**로 둔다(아래 Variables 표). 비우면 `OPENAI_CHAT_MODEL`로 폴백한다.
 
 ### 평가(evaluate) 워크플로 전용 — 분류(recommend-fields)에는 불필요
 근거수집(시장성/뉴스/재무) 단계에서 쓰인다. 미등록 시 빈 값으로 들어가 **해당 근거만 degrade**되고
@@ -48,7 +49,8 @@ BE 레포에 이미 있는 값들을 **에이전트 레포에도** 등록해야 
 | Variable | 기본값 |
 |---|---|
 | `KUBE_NAMESPACE` | `patentflow` → 실제는 `skala3-finalproj-class3-team11` 로 설정 권장 |
-| `OPENAI_CHAT_MODEL` | `gpt-5-mini` |
+| `OPENAI_CHAT_MODEL` | `gpt-5-mini` (축별 평가·요약·분류 등 기본 모델) |
+| `OPENAI_SUPERVISOR_MODEL` | (비움) → 비우면 `OPENAI_CHAT_MODEL` 사용. supervisor 전용 모델 지정 시에만 |
 | `ENABLE_SHARED_DB_FALLBACK` | `true` (evaluate가 patent_id로 공유 DB 식별자 조회) |
 | `UNIFIED_API_BASE_URL` | `http://team11-patentflow-be-svc:80` |
 | `PGVECTOR_HOST/DB/USER` | `team11-patentflow-postgres-svc` / `patentflow` / `patentflow` |

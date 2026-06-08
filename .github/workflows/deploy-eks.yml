@@ -16,6 +16,8 @@ env:
   PGVECTOR_DB: ${{ vars.PGVECTOR_DB || 'patentflow' }}
   PGVECTOR_USER: ${{ vars.PGVECTOR_USER || 'patentflow' }}
   OPENAI_CHAT_MODEL: ${{ vars.OPENAI_CHAT_MODEL || 'gpt-5-mini' }}
+  # supervisor 모델도 그냥 모델명(자격증명 아님) → Variable. 비우면 OPENAI_CHAT_MODEL로 폴백.
+  OPENAI_SUPERVISOR_MODEL: ${{ vars.OPENAI_SUPERVISOR_MODEL || '' }}
   ENABLE_SHARED_DB_FALLBACK: ${{ vars.ENABLE_SHARED_DB_FALLBACK || 'true' }}
   UNIFIED_API_BASE_URL: ${{ vars.UNIFIED_API_BASE_URL || 'http://team11-patentflow-be-svc:80' }}
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
@@ -153,7 +155,6 @@ jobs:
           # 가진 것을 넣으면 된다. 에이전트 KiprisClient는 KEYS를 우선 읽고 라운드로빈/실패 시 재시도한다.
           KIPRIS_SERVICE_KEY_VALUE: ${{ secrets.KIPRIS_SERVICE_KEY }}
           KIPRIS_SERVICE_KEYS_VALUE: ${{ secrets.KIPRIS_SERVICE_KEYS }}
-          OPENAI_SUPERVISOR_MODEL_VALUE: ${{ secrets.OPENAI_SUPERVISOR_MODEL }}
           LANGSMITH_API_KEY_VALUE: ${{ secrets.LANGSMITH_API_KEY }}
           POSTGRES_PASSWORD_VALUE: ${{ secrets.POSTGRES_PASSWORD }}
           # 평가(evaluate) 근거수집용 외부 API. 분류(recommend-fields)는 사용 안 함.
@@ -172,7 +173,6 @@ jobs:
             --from-literal=OPENAI_API_KEY="${OPENAI_API_KEY_VALUE}" \
             --from-literal=KIPRIS_SERVICE_KEY="${KIPRIS_SERVICE_KEY_VALUE}" \
             --from-literal=KIPRIS_SERVICE_KEYS="${KIPRIS_SERVICE_KEYS_VALUE}" \
-            --from-literal=OPENAI_SUPERVISOR_MODEL="${OPENAI_SUPERVISOR_MODEL_VALUE}" \
             --from-literal=LANGSMITH_API_KEY="${LANGSMITH_API_KEY_VALUE}" \
             --from-literal=PGVECTOR_DATABASE_URL="${PGVECTOR_DATABASE_URL}" \
             --from-literal=DART_KEY="${DART_KEY_VALUE}" \
@@ -189,6 +189,7 @@ jobs:
           kubectl create configmap team11-patentflow-agent-config \
             --namespace="${KUBE_NAMESPACE}" \
             --from-literal=OPENAI_CHAT_MODEL="${OPENAI_CHAT_MODEL}" \
+            --from-literal=OPENAI_SUPERVISOR_MODEL="${OPENAI_SUPERVISOR_MODEL}" \
             --from-literal=ENABLE_SHARED_DB_FALLBACK="${ENABLE_SHARED_DB_FALLBACK}" \
             --from-literal=UNIFIED_API_BASE_URL="${UNIFIED_API_BASE_URL}" \
             --from-literal=PGVECTOR_TABLE_NAME="industry_report_chunks" \
