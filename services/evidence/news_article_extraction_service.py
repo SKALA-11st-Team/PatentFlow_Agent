@@ -5,6 +5,7 @@ from typing import Any
 from urllib.parse import urlparse
 import ipaddress
 import re
+import socket
 
 import requests
 
@@ -204,6 +205,17 @@ def fetch_article_text(url: str) -> dict[str, str | None]:
     return {"text": text[:ARTICLE_MAX_CHARS], "title": article_title, "error": None, "source": "full_text_fallback_parser"}
 
 
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or not ip.is_global
+        or ip == BLOCKED_LINK_LOCAL_IP
+    )
+
+
 def validate_article_url(url: str) -> str | None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -216,9 +228,23 @@ def validate_article_url(url: str) -> str | None:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        return None
-    if ip.is_loopback or ip.is_private or ip.is_link_local or ip == BLOCKED_LINK_LOCAL_IP:
-        return "article_url_blocked:private_or_link_local_ip"
+        ip = None
+    if ip is not None:
+        return "article_url_blocked:private_or_link_local_ip" if _is_blocked_ip(ip) else None
+    # EVID-05: 호스트가 도메인명이면 DNS로 해석한 모든 IP를 검사한다.
+    # (A레코드가 사설/링크로컬로 해석되는 도메인을 통한 SSRF — 예: 클라우드 메타데이터 169.254.169.254 — 차단)
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return "article_url_blocked:dns_resolution_failed"
+    for entry in resolved:
+        address = entry[4][0]
+        try:
+            resolved_ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if _is_blocked_ip(resolved_ip):
+            return "article_url_blocked:private_or_link_local_ip"
     return None
 
 

@@ -1,3 +1,5 @@
+import socket
+
 from services.evidence.news_article_extraction_service import enrich_news_items_with_full_text, fetch_article_text
 
 
@@ -22,7 +24,25 @@ class FakeResponse:
         return None
 
 
+def _fake_getaddrinfo(ip: str):
+    def _resolver(*args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, 0))]
+
+    return _resolver
+
+
+def _failing_getaddrinfo(*args, **kwargs):
+    raise socket.gaierror("name resolution failed")
+
+
+def _patch_dns(monkeypatch, resolver):
+    monkeypatch.setattr(
+        "services.evidence.news_article_extraction_service.socket.getaddrinfo", resolver
+    )
+
+
 def test_enrich_news_items_updates_title_from_crawled_article(monkeypatch):
+    _patch_dns(monkeypatch, _fake_getaddrinfo("93.184.216.34"))
     monkeypatch.setattr(
         "services.evidence.news_article_extraction_service.requests.get",
         lambda *args, **kwargs: FakeResponse(),
@@ -58,4 +78,72 @@ def test_fetch_article_text_blocks_private_ip_url(monkeypatch):
     result = fetch_article_text("http://127.0.0.1/internal")
 
     assert result["error"] == "article_url_blocked:private_or_link_local_ip"
+    assert called is False
+
+
+def test_fetch_article_text_blocks_private_dns_host(monkeypatch):
+    # EVID-05: 도메인이 사설 IP로 해석되면 차단되어야 한다.
+    called = False
+
+    def fake_get(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    _patch_dns(monkeypatch, _fake_getaddrinfo("10.0.0.5"))
+    monkeypatch.setattr("services.evidence.news_article_extraction_service.requests.get", fake_get)
+
+    result = fetch_article_text("http://internal.example/article")
+
+    assert result["error"] == "article_url_blocked:private_or_link_local_ip"
+    assert called is False
+
+
+def test_fetch_article_text_blocks_link_local_dns_host(monkeypatch):
+    # EVID-05: 클라우드 메타데이터(169.254.169.254)로 해석되는 도메인 차단.
+    called = False
+
+    def fake_get(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    _patch_dns(monkeypatch, _fake_getaddrinfo("169.254.169.254"))
+    monkeypatch.setattr("services.evidence.news_article_extraction_service.requests.get", fake_get)
+
+    result = fetch_article_text("http://metadata.attacker.example/latest/meta-data/")
+
+    assert result["error"] == "article_url_blocked:private_or_link_local_ip"
+    assert called is False
+
+
+def test_fetch_article_text_allows_public_dns_host(monkeypatch):
+    # 회귀 가드: 글로벌 IP로 해석되는 정상 도메인은 차단되지 않고 실제 요청까지 진행한다.
+    called = {"value": False}
+
+    def fake_get(*args, **kwargs):
+        called["value"] = True
+        return FakeResponse()
+
+    _patch_dns(monkeypatch, _fake_getaddrinfo("8.8.8.8"))
+    monkeypatch.setattr("services.evidence.news_article_extraction_service.requests.get", fake_get)
+
+    result = fetch_article_text("https://news.example/article")
+
+    assert called["value"] is True
+    assert not str(result["error"] or "").startswith("article_url_blocked")
+
+
+def test_fetch_article_text_blocks_dns_failure(monkeypatch):
+    # EVID-05: DNS 해석 실패 호스트는 차단(해석 불가 = 신뢰 불가).
+    called = False
+
+    def fake_get(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    _patch_dns(monkeypatch, _failing_getaddrinfo)
+    monkeypatch.setattr("services.evidence.news_article_extraction_service.requests.get", fake_get)
+
+    result = fetch_article_text("http://does-not-resolve.example/")
+
+    assert result["error"] == "article_url_blocked:dns_resolution_failed"
     assert called is False
