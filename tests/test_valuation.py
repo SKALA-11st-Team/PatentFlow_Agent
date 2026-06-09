@@ -52,6 +52,40 @@ def test_legal_prompt_does_not_treat_missing_foreign_claims_as_weakness():
     assert "해외 패밀리 또는 해외 등록 정보는 확인된 경우에만 보조 긍정 근거로 사용한다." in text
 
 
+def test_foreign_legal_result_removes_unavailable_citing_and_family_claim_gaps():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "JP"},
+        kipris_api_data={
+            "citing_stats": {
+                "available": False,
+                "missing_reason": "foreign_citing_api_not_connected",
+            }
+        },
+    )
+    result = reconcile_legal_scores(
+        {
+            "score": 0,
+            "grade": "D",
+            "risk_factors": [
+                "피인용/후속 권리화 신호 조회 불가",
+                "독립항의 특정 조건으로 보호범위 해석에 영향 가능",
+            ],
+            "missing_information": [
+                "피인용/후속 참조 통계",
+                "포트폴리오상 해외 관련 특허군의 청구항 전문",
+                "선행문헌의 대표 청구항",
+            ],
+            "subscores": {},
+        },
+        state=state,
+    )
+
+    assert result["risk_factors"] == ["독립항의 특정 조건으로 보호범위 해석에 영향 가능"]
+    assert result["missing_information"] == ["선행문헌의 대표 청구항"]
+
+
 def test_final_report_prompt_does_not_require_benchmark_data():
     final_report = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
@@ -1916,6 +1950,33 @@ def test_final_report_markdown_sanitizes_meta_note_lines():
     assert "해외 패밀리는 확인되지 않았습니다" in markdown
 
 
+def test_final_report_markdown_omits_rights_scope_table_without_representative_drawing():
+    from agents.writing.final_report import sanitize_final_report_markdown
+
+    markdown = sanitize_final_report_markdown(
+        "\n".join(
+            [
+                "## 4. 평가축별 상세 근거",
+                "",
+                "**권리범위 참고도 및 이해**",
+                "",
+                "| 권리범위 참고도 | 권리범위 이해 |",
+                "| --- | --- |",
+                "| 도면 설명 | 권리범위 설명 |",
+                "",
+                "### 4.1 권리성",
+                "",
+                "- **점수/등급**: 78, B",
+            ]
+        ),
+        include_rights_scope_reference=False,
+    )
+
+    assert "권리범위 참고도 및 이해" not in markdown
+    assert "| 권리범위 참고도 |" not in markdown
+    assert "### 4.1 권리성" in markdown
+
+
 def test_final_report_input_payload_is_compact_without_raw_technology_sources():
     from agents.writing.final_report import build_final_report_input_payload
 
@@ -2041,6 +2102,8 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
     assert [item["evidence_id"] for item in payload["evidence_references"]] == ["news_001"]
     assert payload["evidence_references"][0]["citation_title"] == "문서변환 SW 시장 확대"
     assert payload["evidence_references"][0]["url"] == "https://example.com/news"
+    assert payload["evidence_references"][0]["cited_by_axes"] == ["market"]
+    assert "related_axes" not in payload["evidence_references"][0]
     assert "compressed_summary" not in payload["evidence_references"][0]
     assert "key_facts" not in payload["evidence_references"][0]
 
@@ -2110,7 +2173,7 @@ def test_final_report_input_payload_uses_preprocessed_drawing_context(tmp_path):
 
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(run_dir)},
-        patent_structured={"title_final": "권리범위 설명 특허"},
+        patent_structured={"title_final": "권리범위 설명 특허", "country": "KR"},
         preprocessed_patent={
             "drawing_context": {
                 "representative_drawing": {
@@ -2138,6 +2201,83 @@ def test_final_report_input_payload_uses_preprocessed_drawing_context(tmp_path):
     )
     assert "도면 섹션의 원본 이미지" in rights_scope["figure_description"]
     assert "입력 문장을 토큰화하고(S410)" in rights_scope["representative_figure_detail"]
+
+
+def test_final_report_input_payload_omits_drawing_context_for_foreign_patent(tmp_path):
+    from agents.writing.final_report import build_final_report_input_payload
+
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path / "run")},
+        patent_structured={"title_final": "해외 특허", "country": "JP"},
+        preprocessed_patent={
+            "drawing_context": {
+                "representative_drawing": {
+                    "figure_number": "도1",
+                    "image_path": "images/figure1.png",
+                },
+                "figure_description": "도 1 설명",
+            }
+        },
+        summary_result={"plain_summary": "요약"},
+    )
+
+    payload = build_final_report_input_payload(
+        state=state,
+        valuation_result={"total_score": 200, "average_score": 66.7, "axes": {}},
+    )
+
+    assert payload["patent"]["metadata"]["country"] == "JP"
+    assert "rights_scope_context" not in payload["patent"]
+
+
+def test_final_report_evidence_references_use_actual_axis_citations():
+    from agents.writing.final_report import build_evidence_references
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "broad_news",
+                "source_type": "news",
+                "source": "naver_news",
+                "title": "공정 계측 기사",
+                "url": "https://example.com/news",
+                "related_axes": ["market", "technology", "business_fit"],
+            },
+            {
+                "evidence_id": "official_page",
+                "source_type": "company_disclosure",
+                "source": "sk_ax_official",
+                "title": "공식 제조 솔루션",
+                "url": "https://www.skax.co.kr/manufacturing/example",
+                "related_axes": ["business_fit"],
+            },
+            {
+                "evidence_id": "owned_media",
+                "source_type": "news",
+                "source": "sk_group_owned_media",
+                "source_domain": "skcareersjournal.com",
+                "source_tier": "sk_related_owned_media",
+                "title": "SK AX 제조 사업 인터뷰",
+                "url": "https://www.skcareersjournal.com/example",
+                "content": "SK AX의 제조 사업과 공정 혁신 서비스를 소개한다.",
+                "related_axes": ["business_fit"],
+            },
+        ]
+    )
+    valuation_result = {
+        "axes": {
+            "market": {"evidence_ids": ["broad_news"]},
+            "business_fit": {"evidence_ids": ["official_page", "owned_media"]},
+        }
+    }
+
+    references = build_evidence_references(state, valuation_result)
+
+    assert references[0]["cited_by_axes"] == ["market"]
+    assert references[1]["cited_by_axes"] == ["business_fit"]
+    assert references[2]["cited_by_axes"] == ["business_fit"]
+    assert references[2]["source_domain"] == "skcareersjournal.com"
+    assert references[2]["source_tier"] == "sk_related_owned_media"
 
 
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):

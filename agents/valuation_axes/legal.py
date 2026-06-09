@@ -75,12 +75,46 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
         total += score
         total_max += effective_max_score
     total = normalize_score_to_100(total, total_max)
-    return {
+    reconciled_result = {
         **result,
         "subscores": {**subscores, **reconciled},
         "score": total,
         "grade": grade_for_score(total),
     }
+    return sanitize_foreign_legal_information_gaps(
+        reconciled_result,
+        exclude_citing_metric=exclude_citing_metric,
+        foreign_patent=is_foreign_patent(state),
+    )
+
+
+def sanitize_foreign_legal_information_gaps(
+    result: dict[str, Any],
+    *,
+    exclude_citing_metric: bool,
+    foreign_patent: bool,
+) -> dict[str, Any]:
+    if not foreign_patent:
+        return result
+
+    def should_remove(value: Any) -> bool:
+        text = normalize_text(value).lower()
+        if exclude_citing_metric and any(
+            token in text for token in ("피인용", "후속 참조", "후속 권리화", "citing signal")
+        ):
+            return True
+        return (
+            any(token in text for token in ("관련 특허군", "포트폴리오", "해외 출원", "해외 패밀리"))
+            and "청구항" in text
+            and any(token in text for token in ("부재", "미제공", "전문", "상세", "확보"))
+        )
+
+    sanitized = dict(result)
+    for field in ("risk_factors", "missing_information"):
+        values = result.get(field)
+        if isinstance(values, list):
+            sanitized[field] = [value for value in values if not should_remove(value)]
+    return sanitized
 
 
 def sum_detail_scores(details: dict[str, Any], excluded_detail_keys: set[str] | None = None) -> int | None:

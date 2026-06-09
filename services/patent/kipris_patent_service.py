@@ -2,6 +2,8 @@ from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
 from html import unescape
 import sqlite3
+import shutil
+import subprocess
 from typing import Any
 import io
 import re
@@ -1608,6 +1610,7 @@ def download_and_parse_foreign_patent_pdf(
     parsed_result = _download_and_parse_foreign_selection(
         client,
         selected,
+        country=patent.get("country"),
         pdf_dir=pdf_dir,
         parse_output_dir=parse_output_dir,
     )
@@ -1620,6 +1623,7 @@ def download_and_parse_foreign_patent_pdf(
             google_result = _download_and_parse_foreign_selection(
                 client,
                 google_selection,
+                country=patent.get("country"),
                 pdf_dir=pdf_dir,
                 parse_output_dir=parse_output_dir / "google_patents",
             )
@@ -1642,6 +1646,7 @@ def _download_and_parse_foreign_selection(
     client: Any,
     selected: dict[str, Any],
     *,
+    country: Any = None,
     pdf_dir: Path,
     parse_output_dir: Path,
 ) -> dict[str, Any]:
@@ -1653,6 +1658,7 @@ def _download_and_parse_foreign_selection(
         timeout=client.timeout,
     )
     parsed = parse_single_patent_pdf(pdf_path, output_dir=parse_output_dir)
+    parsed = apply_foreign_pdf_ocr_fallback(parsed, country=country)
     return {
         "literature_number": selected["literature_number"],
         "selected_type": selected["selected_type"],
@@ -1662,7 +1668,125 @@ def _download_and_parse_foreign_selection(
         "parse_output_dir": str(parse_output_dir),
         "markdown_paths": parsed.get("markdown_paths") or [],
         "markdown_text": parsed.get("markdown_text") or "",
+        "ocr_applied": bool(parsed.get("ocr_applied")),
+        "ocr_language": parsed.get("ocr_language"),
+        "ocr_warning": parsed.get("ocr_warning"),
     }
+
+
+def apply_foreign_pdf_ocr_fallback(
+    parsed: dict[str, Any],
+    *,
+    country: Any,
+) -> dict[str, Any]:
+    country_code = str(country or "").strip().upper()
+    language = {"CN": "chi_sim+eng", "JP": "jpn+eng"}.get(country_code)
+    markdown_text = str(parsed.get("markdown_text") or "")
+    if not language or foreign_fulltext_parse_is_usable(markdown_text):
+        return parsed
+
+    tesseract_path = shutil.which("tesseract")
+    if not tesseract_path:
+        return {
+            **parsed,
+            "ocr_warning": "tesseract_not_installed",
+        }
+
+    markdown_paths = [Path(path) for path in parsed.get("markdown_paths") or []]
+    image_entries = foreign_markdown_image_entries(markdown_paths)
+    if not image_entries:
+        return {
+            **parsed,
+            "ocr_warning": "image_only_markdown_has_no_local_images",
+        }
+
+    sections = [
+        f"# {markdown_paths[0].stem} OCR 전문",
+        "",
+        (
+            f"> Tesseract OCR(`{language}`, `--psm 6`) 결과입니다. "
+            "인식 오류가 있을 수 있으므로 각 페이지 원본 이미지와 함께 확인해야 합니다."
+        ),
+        "",
+    ]
+    recognized_chars = 0
+    for index, (image_path, image_reference) in enumerate(image_entries, 1):
+        try:
+            completed = subprocess.run(
+                [
+                    tesseract_path,
+                    str(image_path),
+                    "stdout",
+                    "-l",
+                    language,
+                    "--psm",
+                    "6",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            return {
+                **parsed,
+                "ocr_warning": f"tesseract_failed:{exc.__class__.__name__}",
+            }
+        ocr_text = completed.stdout.strip()
+        recognized_chars += len(re.sub(r"\s+", "", ocr_text))
+        sections.extend(
+            [
+                f"## 페이지 {index}",
+                "",
+                f"![페이지 {index}](<{image_reference}>)",
+                "",
+                "### OCR 텍스트",
+                "",
+                "```text",
+                ocr_text,
+                "```",
+                "",
+            ]
+        )
+
+    ocr_markdown = "\n".join(sections).strip() + "\n"
+    if recognized_chars < 300:
+        return {
+            **parsed,
+            "ocr_warning": "tesseract_text_too_short",
+        }
+
+    output_path = markdown_paths[0]
+    output_path.write_text(ocr_markdown, encoding="utf-8")
+    return {
+        **parsed,
+        "markdown_paths": [str(output_path)],
+        "markdown_text": ocr_markdown,
+        "ocr_applied": True,
+        "ocr_language": language,
+        "ocr_warning": None,
+    }
+
+
+def foreign_markdown_image_entries(markdown_paths: list[Path]) -> list[tuple[Path, str]]:
+    entries: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+    for markdown_path in markdown_paths:
+        if not markdown_path.exists():
+            continue
+        markdown_text = markdown_path.read_text(encoding="utf-8", errors="ignore")
+        references = re.findall(r"!\[[^\]]*]\((?:<([^>]+)>|([^)]+))\)", markdown_text)
+        for bracketed, plain in references:
+            reference = (bracketed or plain).strip()
+            image_path = Path(reference)
+            if not image_path.is_absolute():
+                image_path = markdown_path.parent / image_path
+            image_path = image_path.resolve()
+            if image_path in seen or not image_path.is_file():
+                continue
+            seen.add(image_path)
+            entries.append((image_path, reference))
+    return entries
 
 
 def foreign_fulltext_parse_is_usable(markdown_text: str) -> bool:
@@ -2004,7 +2128,8 @@ def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
     normalized_text = _foreign_claims_section_text(str(text or ""))
     patterns = [
         r"(?im)^\s*(?:claim|claims?)\s*([0-9]+)\s*[:.)-]?\s*(.*)$",
-        r"(?m)^\s*-?\s*([0-9]+)\s*[.)]\s*(.*)$",
+        r"(?m)^\s*([0-9]{1,3})\s*[、．]\s*(.*)$",
+        r"(?m)^\s*-?\s*([0-9]{1,3})\s*[.)]\s*(.*)$",
         r"(?m)^\s*权利要求\s*([0-9]+)\s*(.*)$",
     ]
     matches = []
@@ -2017,7 +2142,11 @@ def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
         claim_no = _int_or_none(match.group(1)) or (index + 1)
         first_line = match.group(2).strip() if len(match.groups()) >= 2 else ""
         start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(normalized_text)
+        if index + 1 < len(matches):
+            end = matches[index + 1].start()
+        else:
+            next_ocr_page = re.search(r"(?m)^\s*##\s*페이지\s+\d+\s*$", normalized_text[start:])
+            end = start + next_ocr_page.start() if next_ocr_page else len(normalized_text)
         body = re.sub(r"\s+", " ", f"{first_line} {normalized_text[start:end]}").strip()
         if len(body) < 20:
             continue
@@ -2044,7 +2173,7 @@ def _foreign_claims_section_text(text: str) -> str:
         r"\bwe\s+claim\s*:",
         r"(?im)^\s*#{1,6}\s*claims?\s*$",
         r"(?im)^\s*claims?\s*$",
-        r"权利要求书",
+        r"(?im)^\s*权利要求书\s*$",
     ]
     starts = []
     for marker in markers:

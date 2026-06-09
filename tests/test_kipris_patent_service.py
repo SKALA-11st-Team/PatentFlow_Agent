@@ -1,5 +1,6 @@
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
+    apply_foreign_pdf_ocr_fallback,
     download_and_parse_foreign_patent_pdf,
     fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
@@ -479,6 +480,144 @@ def test_foreign_fulltext_parse_rejects_image_only_markdown():
         "What is claimed is:\n"
         "1. A method comprising calculating an equipment reliability index and controlling measurement."
     )
+
+
+def test_extract_foreign_claims_accepts_chinese_ocr_numbering():
+    claims = extract_foreign_claims_from_text(
+        """
+        200710112054.7 权利要求书
+        1、一种导航装置，包括输入单元、地图数据存储器、图像存储器和控制单元。
+        2、如权利要求 1 所述的导航装置，其中，控制单元显示导航信息。
+        ## 페이지 3
+        ![페이지 3](<images/page3.png>)
+        ### OCR 텍스트
+        3、如权利要求 1 所述的导航装置，其中，控制单元切换背景图像。
+        ## 페이지 4
+        说明书
+        本发明涉及导航装置。
+        """
+    )
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2, 3]
+    assert claims[0]["is_independent"] is True
+    assert claims[1]["dependency"] == 1
+    assert "说明书" not in claims[2]["text"]
+
+
+def test_foreign_pdf_ocr_fallback_keeps_usable_text(monkeypatch, tmp_path):
+    markdown_path = tmp_path / "CN110770661B.md"
+    markdown_text = "测量控制方法和系统" * 40
+    markdown_path.write_text(markdown_text, encoding="utf-8")
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.shutil.which",
+        lambda name: (_ for _ in ()).throw(AssertionError("OCR must not be called")),
+    )
+
+    result = apply_foreign_pdf_ocr_fallback(
+        {
+            "markdown_paths": [str(markdown_path)],
+            "markdown_text": markdown_text,
+        },
+        country="CN",
+    )
+
+    assert result["markdown_text"] == markdown_text
+    assert "ocr_applied" not in result
+
+
+def test_foreign_pdf_ocr_fallback_rewrites_image_only_cn_markdown(monkeypatch, tmp_path):
+    image_dir = tmp_path / "CN101275848_images"
+    image_dir.mkdir()
+    for index in (1, 2):
+        (image_dir / f"imageFile{index}.png").write_bytes(b"fake-png")
+    markdown_path = tmp_path / "CN101275848.md"
+    markdown_path.write_text(
+        "\n\n".join(
+            [
+                "![image 1](<CN101275848_images/imageFile1.png>)",
+                "![image 2](<CN101275848_images/imageFile2.png>)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    calls = []
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.shutil.which",
+        lambda name: "/opt/homebrew/bin/tesseract",
+    )
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+
+        class Result:
+            stdout = (
+                "1、一种导航装置，包括输入单元、地图数据存储器和控制单元。\n"
+                + "本发明提供具有相框功能的导航装置及其操作方法。" * 20
+            )
+
+        return Result()
+
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.subprocess.run",
+        fake_run,
+    )
+
+    result = apply_foreign_pdf_ocr_fallback(
+        {
+            "markdown_paths": [str(markdown_path)],
+            "markdown_text": markdown_path.read_text(encoding="utf-8"),
+        },
+        country="CN",
+    )
+
+    assert result["ocr_applied"] is True
+    assert result["ocr_language"] == "chi_sim+eng"
+    assert len(calls) == 2
+    assert calls[0][-4:] == ["-l", "chi_sim+eng", "--psm", "6"]
+    assert "## 페이지 1" in result["markdown_text"]
+    assert "### OCR 텍스트" in result["markdown_text"]
+    assert "1、一种导航装置" in markdown_path.read_text(encoding="utf-8")
+
+
+def test_foreign_pdf_ocr_fallback_uses_japanese_language_pack(monkeypatch, tmp_path):
+    image_dir = tmp_path / "JP123_images"
+    image_dir.mkdir()
+    (image_dir / "imageFile1.png").write_bytes(b"fake-png")
+    markdown_path = tmp_path / "JP123.md"
+    markdown_path.write_text(
+        "![image 1](<JP123_images/imageFile1.png>)",
+        encoding="utf-8",
+    )
+    commands = []
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.shutil.which",
+        lambda name: "/opt/homebrew/bin/tesseract",
+    )
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+
+        class Result:
+            stdout = "請求項１ 装置の計測データの微細変動検知方法及びシステム。" * 20
+
+        return Result()
+
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.subprocess.run",
+        fake_run,
+    )
+
+    result = apply_foreign_pdf_ocr_fallback(
+        {
+            "markdown_paths": [str(markdown_path)],
+            "markdown_text": markdown_path.read_text(encoding="utf-8"),
+        },
+        country="JP",
+    )
+
+    assert result["ocr_applied"] is True
+    assert result["ocr_language"] == "jpn+eng"
+    assert commands[0][-4:] == ["-l", "jpn+eng", "--psm", "6"]
 
 
 def test_foreign_pdf_parse_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
