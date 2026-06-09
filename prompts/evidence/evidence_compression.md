@@ -19,10 +19,7 @@ source_type이 "news"인 경우, 다음 형식으로 반환하세요:
   "sk_ax_relevant": false,
   "relation_type": "direct",
   "compressed_summary": "핵심 요약",
-  "key_facts": ["사실 1", "사실 2", ...],
-  "axis_context": {
-    "market": "해당 평가축과 연결되는 맥락"
-  }
+  "key_facts": ["사실 1", "사실 2", ...]
 }
 
 source_type이 "company_disclosure"인 경우(SK AX 공식 사이트/계열 매체), 다음 형식으로 반환하세요:

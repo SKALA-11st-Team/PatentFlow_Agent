@@ -50,11 +50,9 @@ def test_compress_evidence_items_normalizes_news_and_rag_shapes():
         if "AI 로보어드바이저 경쟁" in prompt:
             response = {
                 "is_relevant": True,
-                "related_axes": ["market", "business_fit"],
                 "relation_type": "indirect",
                 "compressed_summary": "AI 로보어드바이저 경쟁이 확대되고 있다.",
                 "key_facts": ["퇴직연금 시장에서 AI 로보어드바이저 경쟁이 확대된다."],
-                "axis_context": {"market": "시장 확대 맥락이다."},
             }
         else:
             response = {

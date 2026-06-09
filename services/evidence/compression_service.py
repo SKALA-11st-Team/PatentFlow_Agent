@@ -14,7 +14,6 @@ from services.llm.prompt_service import load_prompt
 
 DEFAULT_COMPRESSED_EVIDENCE_DIR = settings.output_dir / "compressed_evidence"
 DEFAULT_RAG_SCORE_THRESHOLD = settings.rag_score_threshold
-ALLOWED_AXES = {"legal", "technology", "market", "business_fit", "strategy"}
 DEFAULT_TEXT_LIMIT = 6000
 DEFAULT_COMPRESSION_WORKERS = settings.compression_workers
 
@@ -188,7 +187,6 @@ def normalize_news_compression(item: dict[str, Any], parsed: dict[str, Any]) -> 
         "relation_type": normalize_relation_type(parsed.get("relation_type")),
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
-        "axis_context": normalize_axis_context(parsed.get("axis_context")),
     }
 
 
@@ -258,16 +256,6 @@ def parse_json_object(raw: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
     return parsed if isinstance(parsed, dict) else None
-
-
-def normalize_axis_context(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    return {
-        axis: normalize_text(text)
-        for axis, text in value.items()
-        if axis in ALLOWED_AXES and normalize_text(text)
-    }
 
 
 def normalize_text_list(value: Any) -> list[str]:
