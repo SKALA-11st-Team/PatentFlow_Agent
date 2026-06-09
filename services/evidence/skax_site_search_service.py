@@ -213,12 +213,21 @@ class TavilySearchClient(SearchClient):
             diagnostics["search_failure_reason"] = "missing_config"
             return {"results": [], "diagnostics": diagnostics}
 
+        # Tavily는 구글식 `site:` 연산자를 이해하지 못하고, 도메인 제한은 이미
+        # include_domains로 처리한다. 공유 쿼리에 붙은 `site:<domain>` 토큰은
+        # Tavily에서는 노이즈가 되어 시맨틱 매칭을 떨어뜨리므로 제거한다.
+        tavily_query = strip_site_operators(query)
+        diagnostics["tavily_effective_query"] = tavily_query
+        if not tavily_query:
+            diagnostics["search_failure_reason"] = "empty_query_after_site_strip"
+            return {"results": [], "diagnostics": diagnostics}
+
         try:
             response = requests.post(
                 TAVILY_SEARCH_URL,
                 json={
                     "api_key": self.api_key,
-                    "query": query,
+                    "query": tavily_query,
                     "search_depth": "basic",
                     "include_domains": list(SK_OWNED_DOMAINS),
                     "include_raw_content": self.include_raw_content,
@@ -1302,6 +1311,17 @@ def patent_field(patent_context: dict[str, Any], field: str) -> str:
         if value:
             return value
     return ""
+
+
+def strip_site_operators(query: str) -> str:
+    """쿼리에서 `site:<domain>` 연산자 토큰을 제거한다.
+
+    `site:`는 Google HTML/Custom Search용 연산자다. Tavily는 이를 지원하지 않고
+    도메인 제한을 include_domains로 처리하므로, Tavily에 보낼 때는 노이즈가 되는
+    이 토큰을 벗겨내고 키워드만 남긴다.
+    """
+    tokens = [token for token in normalize_text(query).split() if not token.lower().startswith("site:")]
+    return " ".join(tokens).strip()
 
 
 def compact_query(parts: list[Any]) -> str:

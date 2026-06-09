@@ -1190,7 +1190,9 @@ def test_tavily_search_client_extracts_only_skax_results(monkeypatch):
 
     assert captured["url"] == "https://api.tavily.com/search"
     assert captured["json"]["api_key"] == "tavily-key"
-    assert captured["json"]["query"] == "site:skax.co.kr 로보어드바이저"
+    # Tavily는 site: 연산자를 지원하지 않으므로 도메인 제한은 include_domains로만 하고,
+    # 쿼리 텍스트에서는 site:<domain> 토큰을 제거해 키워드만 보낸다.
+    assert captured["json"]["query"] == "로보어드바이저"
     assert captured["json"]["include_domains"] == ["skax.co.kr", "skcareersjournal.com", "openapi.sk.com"]
     assert captured["json"]["include_raw_content"] is True
     assert captured["json"]["search_depth"] == "basic"
