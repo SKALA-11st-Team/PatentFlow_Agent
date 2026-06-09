@@ -36,6 +36,21 @@ STOPWORDS = {
 }
 BROAD_TERMS = {"ai", "data", "cloud", "제조", "솔루션", "서비스", "플랫폼", "데이터"}
 WEAK_TERMS = {"예측", "분석", "관리", "서비스", "플랫폼", "솔루션"}
+# VAL-08: 영문/타산업 특허 핵심어 추출이 한국어 STOPWORDS에만 의존해 무력화되던 문제 보완.
+# 영문 특허 명칭의 일반어(system/method/apparatus 등)·연결어를 대소문자 무관하게 불용어로 거른다.
+ENGLISH_STOPWORDS = {
+    "system", "systems", "method", "methods", "apparatus", "device", "devices",
+    "process", "processes", "means", "unit", "units", "module", "modules",
+    "assembly", "component", "components", "structure", "arrangement",
+    "and", "for", "the", "with", "based", "using", "via", "said", "comprising",
+    "wherein", "having", "configured", "thereof", "from", "into", "between",
+}
+
+
+def is_stopword(text: str) -> bool:
+    """한국어·영문 불용어를 대소문자 무관하게 판정한다(VAL-08)."""
+    lowered = text.lower()
+    return lowered in STOPWORDS or lowered in ENGLISH_STOPWORDS
 BUSINESS_FIT_SUBSCORE_MAX = {
     "official_business_evidence": 30,
     "product_function_direct_match": 45,
@@ -424,7 +439,7 @@ def extract_business_fit_core_terms(description: dict[str, Any]) -> dict[str, An
     weak_terms = []
     for value in raw_terms:
         text = normalize_core_term(value)
-        if not text or text in core_terms or text in STOPWORDS:
+        if not text or text in core_terms or is_stopword(text):
             continue
         if text.lower() in BROAD_TERMS or text in WEAK_TERMS:
             weak_terms.append(text)
@@ -445,7 +460,7 @@ def product_match_level_for(related_product: str, evidence_text_value: str) -> s
     product = related_product.lower()
     if product in evidence_text_value:
         return "direct"
-    tokens = [token.lower() for token in title_keyword_terms(related_product, limit=4) if token not in STOPWORDS]
+    tokens = [token.lower() for token in title_keyword_terms(related_product, limit=4) if not is_stopword(token)]
     matched = [token for token in tokens if token in evidence_text_value and token.lower() not in BROAD_TERMS]
     if matched:
         return "partial"
@@ -462,7 +477,7 @@ def ratio(numerator: int, denominator: int) -> float:
 
 def normalize_core_term(value: Any) -> str:
     text = strip_korean_particle(normalize_text(value).strip("()[]{}.,;:·"))
-    return "" if text in STOPWORDS else text
+    return "" if is_stopword(text) else text
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
@@ -669,13 +684,10 @@ def title_keyword_terms(title: Any, *, limit: int = 4) -> list[str]:
         if len(terms) >= limit:
             return terms
 
-    stopwords = {
-        *STOPWORDS,
-        "상품",
-    }
+    extra_stopwords = {"상품"}
     for token in normalized_title.replace("/", " ").replace("-", " ").split():
         text = strip_korean_particle(token.strip("()[]{}.,;:·"))
-        if text in stopwords:
+        if is_stopword(text) or text in extra_stopwords:
             continue
         if len(text) >= 2 and text not in terms:
             terms.append(text)

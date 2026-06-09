@@ -652,6 +652,19 @@ def test_business_fit_quantitative_metrics_uses_sk_owned_media_as_lower_tier_evi
     assert payload["business_fit_context"]["sk_owned_media_evidence"][0]["source_domain"] == "skcareersjournal.com"
 
 
+def test_title_keyword_terms_extracts_meaningful_terms_from_english_patent():
+    # VAL-08: 영문 특허에서 일반어(System/method/and/for)를 거르고 핵심어를 추출한다(타산업·영문 무력화 해소).
+    from agents.valuation_axes.business_fit import title_keyword_terms
+
+    title = "System and method for semiconductor wafer defect detection using deep learning"
+    terms = title_keyword_terms(title, limit=6)
+
+    assert terms == ["semiconductor", "wafer", "defect", "detection", "deep", "learning"]
+    # 영문 명칭의 일반어는 핵심어로 추출되지 않는다.
+    for generic in ("system", "method", "and", "for", "using"):
+        assert generic not in terms
+
+
 def test_business_fit_quantitative_metrics_limits_match_when_core_terms_are_missing():
     from agents.valuation_axes.business_fit import build_business_fit_quantitative_metrics, title_keyword_terms
 
