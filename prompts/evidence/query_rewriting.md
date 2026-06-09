@@ -15,19 +15,16 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
 - 기사 검색에서 너무 좁거나 논문형인 표현은 필요한 경우 더 넓은 기사형, 서비스/시장 표현으로 치환한다.
 - 각 검색어는 실제 검색창에 넣을 수 있는 짧은 키워드형으로 작성한다.
 - ko 검색어는 원칙적으로 2~4개 어절로 작성한다.
-- en 검색어는 원칙적으로 1~2개 영어 단어(최대 3개)로 짧고 일반적으로 작성한다. 수식어를 여러 개 쌓아 좁히지 않는다.
+- en 검색어는 영어 뉴스에 나올 법한 자연스러운 키워드로 작성한다. 핵심 기술/서비스를 나타내는 구체 표현을 써도 되며, 억지로 한두 단어로 줄이지 않는다.
 - 하나의 검색어에 여러 의도를 모두 담지 말고, 핵심 키워드 중심으로 작성한다.
 - ko는 Naver News용 한국어 검색어로 작성한다.
 - en은 글로벌 뉴스용 영어 검색어로 작성하며, 한글을 포함하지 않는다.
 - en(글로벌 뉴스) 전용 규칙:
-  - 글로벌 뉴스는 글로벌 영어 일반 뉴스를 색인한다. 검색 결과가 거의 안 나오므로 **최대한 일반적이고 넓은 산업·트렌드 키워드**로 작성한다.
-  - 영어 뉴스 헤드라인에 자주 쓰이는 잘 알려진 산업 카테고리 용어를 그대로 쓴다(예: smart factory, factory automation, industrial IoT, digital twin, predictive maintenance, robo advisor).
-  - layout optimization, production line layout, manufacturing facility layout 같은 엔지니어링/공정 세부 표현은 영어 뉴스에 거의 없으므로 쓰지 않는다.
-  - **수식어를 2개 이상 쌓아 좁히지 않는다.** wireless sensors, condition monitoring, connectivity 같은 구체 기능어를 산업명 뒤에 덧붙이면 검색이 안 되므로, 그 산업의 가장 넓은 상위 표현 하나로 줄인다(예: `smart factory wireless sensors` → `smart factory`, `industrial condition monitoring` → `predictive maintenance` 또는 `industrial IoT`).
-  - 핵심 기술이 특정 언어/지역에 종속적이면(예: 한국어 숫자 표기 처리) 영어로 직역하지 말고 상위 응용 분야의 넓은 영어 표현으로 바꾼다(예: conversational AI, chatbot, speech recognition).
-  - 합성어는 영어 뉴스에서 통용되는 띄어쓰기/하이픈 형태로 쓴다(roboadvisor 아님, robo advisor).
-  - 한국 회사명(SK, SK Inc 등)은 글로벌 영어 뉴스에 거의 안 나오므로 en 검색어에 회사명을 붙이지 않는다(예: `SK Inc industrial IoT` 금지). 전 세계적으로 보도되는 글로벌 기업/제품명일 때만 회사명 1개를 쓸 수 있다.
-  - en 4개 중 최소 2개는 단어 1~2개짜리 가장 넓은 산업·트렌드 표현으로 만든다(예: smart factory, industrial IoT).
+  - 글로벌 뉴스(Tavily)는 글로벌 영어 뉴스를 폭넓게 색인하며 구체적인 기술·제품·서비스 표현도 잘 검색된다. 억지로 가장 넓은 상위 표현으로 줄이지 말고, 특허의 핵심 기술/서비스를 나타내는 자연스러운 영어 키워드로 작성한다.
+  - 영어 뉴스/업계에서 실제 통용되는 표현을 쓴다(예: smart factory, industrial IoT, digital twin, predictive maintenance, robo advisor, MLOps, model serving). 필요하면 구체 기능어를 함께 써도 된다.
+  - 합성어는 영어에서 통용되는 띄어쓰기/하이픈 형태로 쓴다(roboadvisor 아님, robo advisor).
+  - 회사명은 en 검색어에 넣지 않는다(예: `SK Inc industrial IoT`, `SK AX model serving` 금지). 권리자/출원인 등 회사명은 ko 검색어에서만 사용한다.
+  - `Korean`, `Korea` 같은 언어/국가 한정어를 en 검색어에 넣지 않는다(예: `Korean numeral conversion` 금지). 한국어/한국 특화 기술이면 국가 한정어 없이 상위 응용 분야의 영어 표현으로 바꾼다(예: conversational AI, speech recognition).
 - 하이픈, 슬래시, 콜론, 따옴표, 괄호 같은 특수문자를 넣지 않는다.
 - 관련 제품명이 길면 전체를 그대로 복사하지 말고 핵심 제품명만 사용한다.
 - 예: `CMP Pad Press Cutting, Aging` → `CMP 패드` 또는 `CMP Pad`
@@ -63,23 +60,20 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
 - skax_site 배열은 제품 변형 검색어 2~3개를 포함한다(제품명 그대로 검색어는 시스템이 별도로 추가).
 - 반드시 JSON object만 출력하고, 설명/Markdown은 출력하지 않는다.
 
-좋은 en 검색어 예시 (짧고 넓은 산업·트렌드 표현):
+좋은 en 검색어 예시 (자연스러운 산업·기술·서비스 표현, 구체적이어도 됨):
 - smart factory
 - industrial IoT
-- factory automation
-- digital twin
 - predictive maintenance
+- model serving platform
+- MLOps deployment
 - robo advisor
-
-나쁜 en 검색어 예시 (영어 일반 뉴스에 거의 안 나옴, 사용 금지):
-- SK Inc industrial IoT            (한국 회사명 결합)
-- smart factory wireless sensors   (수식어를 쌓아 좁힘 → `smart factory`로)
-- industrial condition monitoring  (구체 기능어 → `predictive maintenance`로)
-- smart factory connectivity       (`connectivity` 군더더기 → `smart factory`로)
-- factory layout optimization
 - production line layout
-- Korean numeral conversion
-- roboadvisor
+
+나쁜 en 검색어 예시 (사용 금지):
+- SK Inc industrial IoT            (회사명 결합 → 회사명은 ko에서만)
+- SK AX model serving             (회사명 결합 → 회사명은 ko에서만)
+- Korean numeral conversion        (언어/국가 한정어 → 상위 응용 분야 영어 표현으로)
+- roboadvisor                      (철자 → `robo advisor`)
 
 좋은 ko 검색어 예시:
 - AI 투자 서비스
