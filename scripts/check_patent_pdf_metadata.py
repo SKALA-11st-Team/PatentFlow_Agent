@@ -15,10 +15,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from services.patent.kipris_patent_service import (
     download_and_parse_patent_pdf,
+    extract_pdf_text_left_then_right,
+    extract_pdf_text_with_ocr,
     fetch_foreign_patent_rights_data,
     find_cached_foreign_patent_pdf,
     get_patent,
+    has_meaningful_pdf_text,
     parse_single_patent_pdf,
+    should_run_ocr_fallback,
 )
 from services.patent.markdown_preprocess_service import build_preprocessed_patent
 
@@ -40,6 +44,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--java-home", help="Optional JDK home. If omitted, common macOS JDK paths are searched.")
     parser.add_argument("--save-cleaned-markdown", action="store_true", help="Save cleaned markdown text.")
     parser.add_argument("--json", action="store_true", help="Print the full check result as JSON.")
+    parser.add_argument(
+        "--stdout",
+        action="store_true",
+        help="Print results to stdout. By default this script only saves artifacts and stays silent.",
+    )
     return parser.parse_args()
 
 
@@ -137,6 +146,14 @@ def parse_single_pdf_with_fallback(pdf_path: Path, *, output_dir: Path) -> dict[
 def extract_text_without_java(pdf_path: Path) -> str:
     errors: list[str] = []
     try:
+        text = extract_pdf_text_left_then_right(pdf_path)
+        if has_meaningful_pdf_text(text):
+            return text
+        errors.append("pdfplumber_left_then_right:extracted_empty_text")
+    except Exception as exc:
+        errors.append(f"pdfplumber_left_then_right:{exc.__class__.__name__}:{str(exc)[:200]}")
+
+    try:
         import pdfplumber
 
         pages: list[str] = []
@@ -161,10 +178,21 @@ def extract_text_without_java(pdf_path: Path) -> str:
             if text.strip():
                 pages.append(text)
         if pages:
-            return "\n\n".join(pages)
+            merged = "\n\n".join(pages)
+            if has_meaningful_pdf_text(merged):
+                return merged
         errors.append("pypdf:extracted_empty_text")
     except Exception as exc:
         errors.append(f"pypdf:{exc.__class__.__name__}:{str(exc)[:200]}")
+
+    if should_run_ocr_fallback("\n\n".join(errors)):
+        try:
+            ocr_text = extract_pdf_text_with_ocr(pdf_path)
+            if has_meaningful_pdf_text(ocr_text):
+                return ocr_text
+            errors.append("ocr:extracted_empty_text")
+        except Exception as exc:
+            errors.append(f"ocr:{exc.__class__.__name__}:{str(exc)[:200]}")
 
     missing_tools = [tool for tool in ("tesseract", "pdftoppm") if shutil.which(tool) is None]
     if not find_java_home():
@@ -279,10 +307,19 @@ def build_check_result(patent: dict[str, Any], api_data: dict[str, Any], parsed_
             "cpc": metadata.get("cpc") or [],
             "abstract": sections.get("abstract") or "",
             "abstract_char_count": len(sections.get("abstract") or ""),
+            "full_text_after_drawings": sections.get("full_text_after_drawings") or "",
+            "full_text_after_drawings_char_count": len(sections.get("full_text_after_drawings") or ""),
             "claim_count": metadata.get("claim_count"),
             "active_claim_count": (preprocessed.get("claim_stats") or {}).get("active_claim_count"),
             "metadata_source": metadata.get("metadata_source") or {},
             "validation": preprocessed.get("validation") or {},
+        },
+        "api_debug": {
+            "source_type": api_data.get("source_type"),
+            "foreign_bibliography_literature_number": api_data.get("foreign_bibliography_literature_number"),
+            "bibliography_attempts": api_data.get("bibliography_attempts") or [],
+            "raw_bibliography": api_data.get("raw_bibliography"),
+            "warnings": api_data.get("warnings") or [],
         },
         "preprocessed": preprocessed,
     }
@@ -337,9 +374,9 @@ def main() -> None:
         cleaned = result["preprocessed"].get("cleaned_markdown") or ""
         (artifact_dir / "cleaned.md").write_text(cleaned, encoding="utf-8")
 
-    if args.json:
+    if args.stdout and args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    else:
+    elif args.stdout:
         print_human_summary(result, output_path)
 
 

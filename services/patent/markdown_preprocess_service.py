@@ -429,6 +429,7 @@ def build_preprocessed_patent(
                 }
                 for claim in api_claims
             ]
+            claims = _repair_foreign_api_claims_if_needed(claims, sections.get("claims_text", ""))
         else:
             claims = extract_claims(sections.get("claims_text", ""))
         claim_stats = {
@@ -688,6 +689,46 @@ def extract_english_claims(claims_text: str) -> list[dict[str, Any]]:
             }
         )
     return claims
+
+
+def _repair_foreign_api_claims_if_needed(
+    claims: list[dict[str, Any]],
+    claims_text: str,
+) -> list[dict[str, Any]]:
+    if len(claims) != 1:
+        return claims
+    only_claim = claims[0] if claims else {}
+    only_text = str(only_claim.get("text") or "")
+    if not only_text:
+        return claims
+
+    # Some foreign bibliographic APIs return every claim concatenated into a
+    # single claimText entry. In that case the trailing "claim 1" references in
+    # later claims incorrectly mark the whole blob as dependent. Re-split from
+    # the richer claims_text section when numbered English claims are visible.
+    split_source = claims_text or only_text
+    reparsed = extract_english_claims(split_source)
+    if len(reparsed) <= 1:
+        return claims
+    if not any(claim.get("is_independent") for claim in reparsed):
+        return claims
+    return reparsed
+
+
+def _extract_english_claim_dependency(text: str) -> int | None:
+    dependency = _extract_int(
+        r"\bclaim\s+(\d+)\b(?:\s*(?:,|and|or)\s*claim\s+\d+\b)*",
+        text,
+    )
+    if dependency is not None:
+        return dependency
+    dependency = _extract_int(
+        r"\baccording to claim\s+(\d+)\b",
+        text,
+    )
+    if dependency is not None:
+        return dependency
+    return None
 
 
 def extract_text_after_drawings(text: str, *, country: str = "") -> str:

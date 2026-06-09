@@ -376,6 +376,22 @@ class KiprisClient:
             auth_param="accessKey",
         )
 
+    def overseas_bibliographic_info(
+        self,
+        literature_number: str,
+        country_code: str,
+    ) -> dict[str, Any]:
+        """해외특허 / 서지정보 / 서지상세 - bibliographicInfo"""
+        return self.request(
+            "bibliographicInfo",
+            {
+                "literatureNumber": literature_number,
+                "countryCode": country_code,
+            },
+            service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
     def overseas_us_patent_documents(
         self,
         literature_number: str,
