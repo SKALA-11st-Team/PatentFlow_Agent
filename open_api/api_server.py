@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import hmac
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -49,13 +51,23 @@ app.add_middleware(
 )
 
 
+_gateway_logger = logging.getLogger("patentflow.gateway")
+if not os.getenv("UNIFIED_API_KEY"):
+    # SEC-01: 키 미설정 시 게이트웨이가 인증 없이 동작하는 fail-open을 운영자가 인지하도록 경고를 남긴다
+    # (개발/compose 편의는 유지하되, 운영 배포 시 UNIFIED_API_KEY 설정을 강제하는 신호).
+    _gateway_logger.warning(
+        "UNIFIED_API_KEY 미설정 — 게이트웨이가 인증 없이 동작합니다(개발 모드). 운영 배포에선 반드시 설정하세요."
+    )
+
+
 @app.middleware("http")
 async def require_api_key(request: Request, call_next: Any) -> Any:
     expected = os.getenv("UNIFIED_API_KEY")
     if not expected or request.method == "OPTIONS" or request.url.path in {"/", "/docs", "/redoc", "/openapi.json"}:
         return await call_next(request)
     provided = request.headers.get("X-API-Key")
-    if provided != expected:
+    # SEC-01: 타이밍 공격 방지를 위해 상수시간 비교(hmac.compare_digest). provided가 없으면 즉시 거부.
+    if not provided or not hmac.compare_digest(provided, expected):
         return JSONResponse(status_code=401, content={"detail": "유효한 X-API-Key 헤더가 필요합니다."})
     return await call_next(request)
 
