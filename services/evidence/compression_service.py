@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 import json
+import re
 
 from app.config import settings
 from services.evidence.store_service import now_iso, safe_filename
@@ -115,8 +116,17 @@ def patent_prompt_payload(preprocessed_patent: dict[str, Any]) -> dict[str, Any]
     }
 
 
+# SEC-03: 외부 근거 텍스트의 비가시 제어문자를 제거한다(숨은 지시·출력 조작에 악용되는 C0/DEL 문자 차단).
+# 줄바꿈(\n)·탭(\t)은 보존하고 그 외 제어문자만 제거한다.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_external_text(text: str) -> str:
+    return _CONTROL_CHARS_RE.sub("", text)
+
+
 def evidence_prompt_payload(item: dict[str, Any]) -> dict[str, Any]:
-    text = str(item.get("content") or item.get("context") or "")[:DEFAULT_TEXT_LIMIT]
+    text = sanitize_external_text(str(item.get("content") or item.get("context") or ""))[:DEFAULT_TEXT_LIMIT]
     return {
         "evidence_id": item.get("evidence_id"),
         "source_type": item.get("source_type"),
