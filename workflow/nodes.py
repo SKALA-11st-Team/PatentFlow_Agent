@@ -871,6 +871,12 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 issues.append(
                     f"Final report recommendation does not match valuation recommendation ({recommendation})"
                 )
+        country = str((state.patent_structured or {}).get("country") or "").strip().upper()
+        if country and country != "KR":
+            if re.search(r"국내\s*(?:권|특허|출원|등록)", markdown):
+                issues.append("Foreign patent report contains domestic-patent wording")
+            if "권리범위 참고도 및 이해" in markdown:
+                issues.append("Foreign patent report must omit the representative-drawing rights-scope block")
     # Forbidden expressions / evaluator tone are judged by the LLM final check
     # (it reads the report body), not by brittle substring matching here.
     passed = not issues

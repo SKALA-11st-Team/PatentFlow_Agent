@@ -2851,6 +2851,7 @@ def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
 
     state = PatentWorkflowState(
         patent_structured={"country": "JP"},
+        citation_evidence={"prior_art_collection": {"comparison_ready_count": 1}},
         kipris_api_data={
             "citing_stats": {
                 "available": False,
@@ -2877,8 +2878,9 @@ def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
     scored = reconcile_legal_scores(result, state=state)
 
     assert scored["subscores"]["portfolio_defensive_value"]["score"] == 21
-    assert scored["subscores"]["portfolio_defensive_value"]["max_score"] == 21
-    assert scored["score"] == 100
+    assert scored["subscores"]["portfolio_defensive_value"]["max_score"] == 25
+    assert scored["subscores"]["portfolio_defensive_value"]["details"]["follow_on_right_signal"]["score"] is None
+    assert scored["score"] == 96
 
 
 def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign_patent():
@@ -2905,8 +2907,28 @@ def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign
     scored = reconcile_legal_scores(result, state=state)
 
     assert scored["subscores"]["right_stability"]["score"] == 7
-    assert scored["subscores"]["right_stability"]["max_score"] == 10
-    assert scored["score"] == 61
+    assert scored["subscores"]["right_stability"]["max_score"] == 35
+    assert scored["subscores"]["right_stability"]["details"]["prior_art_overlap"]["score"] is None
+    assert scored["score"] == 46
+
+
+def test_reconcile_legal_scores_caps_missing_foreign_details_without_renormalizing():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(patent_structured={"country": "CN"})
+    result = {
+        "subscores": {
+            "right_stability": {"score": 35},
+            "claim_protection": {"score": 40},
+            "portfolio_defensive_value": {"score": 25},
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+
+    assert scored["subscores"]["right_stability"]["score"] == 10
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 21
+    assert scored["score"] == 71
 
 
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):

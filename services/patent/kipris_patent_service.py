@@ -1090,12 +1090,13 @@ def _google_patents_html_document(
             response.raise_for_status()
         except Exception:
             continue
-        title = _google_patents_meta_content(response.text, "DC.title")
+        html = decode_google_patents_html_response(response)
+        title = _google_patents_meta_content(html, "DC.title")
         abstract = (
-            _google_patents_meta_content(response.text, "DC.description")
-            or _google_patents_section_text(response.text, "abstract")
+            _google_patents_meta_content(html, "DC.description")
+            or _google_patents_section_text(html, "abstract")
         )
-        claim_text = "\n".join(_google_patents_claim_texts(response.text))
+        claim_text = "\n".join(_google_patents_claim_texts(html))
         claims = extract_foreign_claims_from_text(claim_text)
         document = _foreign_prior_art_document(
             candidate,
@@ -1824,13 +1825,14 @@ def download_google_patents_html_fulltext(
             response.raise_for_status()
         except Exception:
             continue
-        markdown_text = google_patents_html_to_markdown(response.text)
+        html = decode_google_patents_html_response(response)
+        markdown_text = google_patents_html_to_markdown(html)
         if not foreign_fulltext_parse_is_usable(markdown_text):
             continue
         output_dir.mkdir(parents=True, exist_ok=True)
         figure_markdown = download_google_patents_representative_figure(
             client,
-            response.text,
+            html,
             publication_id=publication_id,
             output_dir=output_dir,
         )
@@ -1849,6 +1851,13 @@ def download_google_patents_html_fulltext(
             "markdown_text": markdown_text,
         }
     return {}
+
+
+def decode_google_patents_html_response(response: Any) -> str:
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes) and content:
+        return content.decode("utf-8-sig", errors="replace")
+    return str(getattr(response, "text", "") or "")
 
 
 def google_patents_html_to_markdown(text: str) -> str:
@@ -2042,7 +2051,7 @@ def google_patents_pdf_url(
             response.raise_for_status()
         except Exception:
             continue
-        html = response.text
+        html = decode_google_patents_html_response(response)
         match = re.search(r'<meta\s+name=["\']citation_pdf_url["\']\s+content=["\']([^"\']+)["\']', html, re.I)
         if match:
             return match.group(1)
@@ -2147,7 +2156,7 @@ def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
         else:
             next_ocr_page = re.search(r"(?m)^\s*##\s*페이지\s+\d+\s*$", normalized_text[start:])
             end = start + next_ocr_page.start() if next_ocr_page else len(normalized_text)
-        body = re.sub(r"\s+", " ", f"{first_line} {normalized_text[start:end]}").strip()
+        body = _clean_foreign_claim_body(f"{first_line} {normalized_text[start:end]}")
         if len(body) < 20:
             continue
         dependency = extract_foreign_claim_dependency(body)
@@ -2165,6 +2174,28 @@ def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
     for claim in claims:
         claims_by_number.setdefault(claim["claim_no"], claim)
     return [claims_by_number[claim_no] for claim_no in sorted(claims_by_number)]
+
+
+def _clean_foreign_claim_body(text: str) -> str:
+    cleaned_lines = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if (
+            not stripped
+            or stripped.startswith("![")
+            or re.fullmatch(r"#{2,6}\s*(?:페이지\s+\d+|OCR 텍스트)", stripped, re.I)
+            or re.fullmatch(r"```(?:text)?", stripped, re.I)
+            or re.fullmatch(r"\d{1,3}", stripped)
+            or re.match(r"^\d{6,}[\d.\s]*.*第.*(?:页|頁|丰)\s*$", stripped)
+        ):
+            continue
+        cleaned_lines.append(stripped)
+    cleaned = re.sub(r"\s+", " ", " ".join(cleaned_lines)).strip()
+    return re.sub(
+        r"(权利要求)\s*[|Il](?=\s|所述|记载|記載|的)",
+        r"\g<1> 1",
+        cleaned,
+    )
 
 
 def _foreign_claims_section_text(text: str) -> str:

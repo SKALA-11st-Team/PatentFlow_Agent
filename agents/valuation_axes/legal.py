@@ -37,7 +37,6 @@ LEGAL_SUBSCORE_MAX = {
 FOREIGN_LEGAL_EXCLUDED_DETAILS = {"prior_art_overlap"}
 LEGAL_DETAIL_MAX = {
     "prior_art_overlap": 25,
-    "claim_structure_stability": 10,
     "follow_on_right_signal": 4,
 }
 
@@ -46,7 +45,6 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     reconciled: dict[str, Any] = {}
     total = 0
-    total_max = 0
     exclude_prior_art_metric = is_foreign_patent(state) and not has_comparison_ready_prior_art(state)
     exclude_citing_metric = is_foreign_patent(state) and not has_available_citing_signal(state)
     for key, max_score in LEGAL_SUBSCORE_MAX.items():
@@ -57,24 +55,21 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
             excluded_detail_keys.update(FOREIGN_LEGAL_EXCLUDED_DETAILS)
         if exclude_citing_metric and key == "portfolio_defensive_value":
             excluded_detail_keys.add("follow_on_right_signal")
-        effective_max_score = max_score
         if excluded_detail_keys:
-            effective_max_score = legal_subscore_max_without_details(
-                max_score=max_score,
-                details=details,
-                excluded_detail_keys=excluded_detail_keys,
-            )
+            details = mark_legal_details_unknown(details, excluded_detail_keys)
         detail_sum = sum_detail_scores(
             details,
             excluded_detail_keys=excluded_detail_keys or None,
         )
         raw_score = coerce_int(item.get("score"))
         score = detail_sum if detail_sum is not None else raw_score
-        score = max(0, min(effective_max_score, score or 0))
-        reconciled[key] = {**item, "score": score, "max_score": effective_max_score}
+        available_max_score = max_score - sum(
+            LEGAL_DETAIL_MAX.get(detail_key, 0) for detail_key in excluded_detail_keys
+        )
+        score = max(0, min(available_max_score, score or 0))
+        reconciled[key] = {**item, "score": score, "max_score": max_score, "details": details}
         total += score
-        total_max += effective_max_score
-    total = normalize_score_to_100(total, total_max)
+    total = normalize_score_to_100(total, sum(LEGAL_SUBSCORE_MAX.values()))
     reconciled_result = {
         **result,
         "subscores": {**subscores, **reconciled},
@@ -129,17 +124,20 @@ def sum_detail_scores(details: dict[str, Any], excluded_detail_keys: set[str] | 
     return sum(values) if values else None
 
 
-def legal_subscore_max_without_details(
-    *,
-    max_score: int,
+def mark_legal_details_unknown(
     details: dict[str, Any],
     excluded_detail_keys: set[str],
-) -> int:
-    excluded_total = 0
+) -> dict[str, Any]:
+    marked = dict(details)
     for key in excluded_detail_keys:
-        if key in details:
-            excluded_total += LEGAL_DETAIL_MAX.get(key, 0)
-    return max(0, max_score - excluded_total)
+        detail = marked.get(key)
+        if isinstance(detail, dict):
+            marked[key] = {
+                **detail,
+                "score": None,
+                "assessment_status": "unknown",
+            }
+    return marked
 
 
 def normalize_score_to_100(score: int, max_score: int) -> int:
