@@ -124,6 +124,9 @@ def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
             "citation_evidence": {},
             "citation_stats": {"total_count": 0},
             "citing_stats": {"total_count": 0},
+            "citing_document_records": [
+                {"display_number": "JP 6816175 B2", "source": "google_patents_html_forward_references"}
+            ],
         }
 
     monkeypatch.setattr("workflow.nodes.fetch_foreign_patent_rights_data", fake_foreign_fetch)
@@ -135,6 +138,7 @@ def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
     assert result.kipris_api_data["source_type"] == "kipris_foreign_patent"
     assert result.kipris_api_data["metadata"]["country"] == "US"
     assert result.patent_structured["kipris_api"]["metadata"]["country"] == "US"
+    assert result.patent_structured["kipris_api"]["citing_documents"][0]["display_number"] == "JP 6816175 B2"
     assert captured_kwargs["collect_pdf"] is True
 
 

@@ -2544,7 +2544,16 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
         citation_evidence=citation_evidence,
-        kipris_api_data={"citing_stats": {"total_count": 2, "standardized_count": 1, "non_standardized_count": 1}},
+        kipris_api_data={
+            "citing_stats": {"total_count": 2, "standardized_count": 1, "non_standardized_count": 1},
+            "citing_document_records": [
+                {
+                    "display_number": "JP 6816175 B2",
+                    "title": "제품 측정 결과 표시 시스템",
+                    "source": "google_patents_html_forward_references",
+                }
+            ],
+        },
     )
 
     from agents.valuation_axes.legal import build_input_payload as build_legal_input_payload
@@ -2572,6 +2581,13 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
         "missing_reason": None,
         "used_for": "portfolio_defensive_value_only",
     }
+    assert citation_evidence["citing_documents"] == [
+        {
+            "display_number": "JP 6816175 B2",
+            "title": "제품 측정 결과 표시 시스템",
+            "source": "google_patents_html_forward_references",
+        }
+    ]
     assert citation_evidence["foreign_citation_documents"][0]["publication_number"] == "JP-2017047511-A"
     assert [claim["text"] for claim in citation_evidence["foreign_citation_documents"][0]["representative_claims"]] == [
         "foreign claim 1",

@@ -68,6 +68,7 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 "family_patents": state.kipris_family_patents,
                 "citation_stats": state.kipris_api_data.get("citation_stats", {}),
                 "citing_stats": state.kipris_api_data.get("citing_stats", {}),
+                "citing_documents": state.kipris_api_data.get("citing_document_records", []),
             },
         }
     patent_country = str((patent or {}).get("country") or "").strip().upper()

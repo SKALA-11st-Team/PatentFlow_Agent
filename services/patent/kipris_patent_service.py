@@ -118,9 +118,11 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
         result["citing_documents"] = normalize_kipris_citing_documents(
             client.citing_info(kipris_application_number)
         )
+        result["citing_document_records"] = citing_document_records(result["citing_documents"])
         result["citing_stats"] = build_citing_stats(result["citing_documents"])
     except Exception as exc:
         result["citing_documents"] = []
+        result["citing_document_records"] = []
         result["citing_stats"] = {"total_count": 0, "standardized_count": 0, "non_standardized_count": 0}
         result.setdefault("warnings", []).append(
             f"citing_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
@@ -568,6 +570,30 @@ def build_citing_stats(citing_documents: list[dict[str, Any]]) -> dict[str, int]
         "standardized_count": sum(1 for item in citing_documents if item.get("is_standardized")),
         "non_standardized_count": sum(1 for item in citing_documents if not item.get("is_standardized")),
     }
+
+
+def citing_document_records(citing_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fields = (
+        "country_code",
+        "document_number",
+        "kind_code",
+        "display_number",
+        "publication_number",
+        "priority_date",
+        "publication_date",
+        "assignee",
+        "title",
+        "examiner_cited",
+        "citing_application_number",
+        "standard_citation_application_number",
+        "is_standardized",
+        "source",
+    )
+    return [
+        {key: item.get(key) for key in fields if item.get(key) is not None}
+        for item in citing_documents
+        if isinstance(item, dict)
+    ]
 
 
 def resolve_citation_evidence(
@@ -1524,6 +1550,7 @@ def fetch_foreign_target_reference_data(
         "citation_documents": cited_documents,
         "citation_stats": stats,
         "citing_documents": citing_documents,
+        "citing_document_records": citing_document_records(citing_documents),
         "citing_stats": citing_stats,
         "citation_evidence": {
             "kr_citation_documents": [],
