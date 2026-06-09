@@ -570,7 +570,6 @@ def check_business_fit_axis_rules(
 ) -> tuple[str, list[str]]:
     from agents.valuation_axes.business_fit import (
         BUSINESS_FIT_SUBSCORE_MAX,
-        has_sk_ax_or_cnc_mention,
         is_sk_ax_official_evidence,
         is_sk_owned_media_evidence,
     )
@@ -589,20 +588,18 @@ def check_business_fit_axis_rules(
     available_business_evidence = [
         item
         for item in state.evidence_bundle or []
-        if is_sk_ax_official_evidence(item)
-        or (is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item))
+        if is_sk_ax_official_evidence(item) or is_sk_owned_media_evidence(item)
     ]
     cited_business_evidence = [
         item
         for item in cited_items
-        if is_sk_ax_official_evidence(item)
-        or (is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item))
+        if is_sk_ax_official_evidence(item) or is_sk_owned_media_evidence(item)
     ]
     improper_citations = [
         str(item.get("evidence_id"))
         for item in cited_items
         if not is_sk_ax_official_evidence(item)
-        and not (is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item))
+        and not is_sk_owned_media_evidence(item)
         and item.get("source_type") != "portfolio_context"
     ]
 

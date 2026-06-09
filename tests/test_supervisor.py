@@ -939,7 +939,7 @@ def test_business_fit_rule_requests_search_when_sk_evidence_is_absent():
     assert any("SK AX 공식" in issue for issue in result["issues"])
 
 
-def test_business_fit_rule_does_not_accept_owned_media_without_sk_ax_mention():
+def test_business_fit_rule_accepts_owned_media_tier_without_text_marker():
     from workflow.supervisor import build_rule_axis_supervisor_check
 
     state = PatentWorkflowState(
@@ -975,7 +975,8 @@ def test_business_fit_rule_does_not_accept_owned_media_without_sk_ax_mention():
 
     result = build_rule_axis_supervisor_check(state, "business_fit")
 
-    assert result["status"] == "query_rewriting"
+    assert result["status"] == "valuation_retry"
+    assert any("evidence_ids" in issue for issue in result["issues"])
 
 
 

@@ -46,38 +46,39 @@ def test_compress_evidence_items_normalizes_news_and_rag_shapes():
         },
     ]
 
-    responses = iter(
-        [
-            {
+    def fake_llm(prompt):
+        if "AI 로보어드바이저 경쟁" in prompt:
+            response = {
                 "is_relevant": True,
                 "related_axes": ["market", "business_fit"],
                 "relation_type": "indirect",
                 "compressed_summary": "AI 로보어드바이저 경쟁이 확대되고 있다.",
                 "key_facts": ["퇴직연금 시장에서 AI 로보어드바이저 경쟁이 확대된다."],
                 "axis_context": {"market": "시장 확대 맥락이다."},
-            },
-            {
+            }
+        else:
+            response = {
                 "related_axes": ["market"],
                 "compressed_summary": "자동차 내수 반등 요인이 제한적이다.",
                 "key_facts": ["경기침체와 가격 상승이 내수에 부정적이다."],
-            },
-        ]
-    )
+            }
+        return json.dumps(response, ensure_ascii=False)
 
     result = compress_evidence_items(
         items,
         preprocessed_patent={"metadata": {"title": "테스트 특허"}, "sections": {"abstract": "초록"}},
         rag_score_threshold=0.5,
-        llm=lambda prompt: json.dumps(next(responses), ensure_ascii=False),
+        llm=fake_llm,
     )
 
     assert result["stats"]["compressed_count"] == 2
-    news = result["items"][0]
+    items_by_id = {item["evidence_id"]: item for item in result["items"]}
+    news = items_by_id["news_1"]
     assert news["is_relevant"] is True
     assert news["compressed_summary"] == "AI 로보어드바이저 경쟁이 확대되고 있다."
     assert "content" not in news
 
-    rag = result["items"][1]
+    rag = items_by_id["rag_1"]
     assert rag["retrieval_score"] == 0.63
     assert rag["compressed_summary"] == "자동차 내수 반등 요인이 제한적이다."
     assert "context" not in rag

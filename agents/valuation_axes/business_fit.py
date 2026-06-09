@@ -239,7 +239,7 @@ def build_sk_owned_media_evidence_summary(
     media_items = [
         item
         for item in evidence_items
-        if is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item)
+        if is_sk_owned_media_evidence(item)
     ]
     summaries = []
     for item in sort_official_evidence(media_items, [])[: max(1, int(max_items))]:
@@ -311,7 +311,7 @@ def build_business_fit_quantitative_metrics(
     owned_media_items = [
         item
         for item in evidence
-        if is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item)
+        if is_sk_owned_media_evidence(item)
     ]
     business_evidence_items = sort_official_evidence(
         [*official_site_items, *owned_media_items],
@@ -544,7 +544,7 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
         if is_sk_ax_official_evidence(item):
             official_matches.append(item)
             continue
-        if is_sk_owned_media_evidence(item) and has_sk_ax_or_cnc_mention(item):
+        if is_sk_owned_media_evidence(item):
             owned_media_matches.append(item)
             continue
         if item.get("sk_ax_relevant") is True:
