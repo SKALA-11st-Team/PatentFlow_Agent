@@ -79,7 +79,8 @@
   - best_relevance_score
   - official_business_evidence
   - product_function_direct_match
-- evidence 목록 중 `sk_ax_official`, `company_disclosure`, `portfolio_context`, 관련 뉴스
+- evidence 목록 중 `sk_ax_official`, `sk_group_owned_media` (모두 SK AX 공식 사이트/계열 매체 콘텐츠)
+  - 뉴스 기사는 사업 연계성 근거로 제공되지 않는다(시장성 축에서만 사용). 입력에 뉴스가 보여도 사업 연계성 판단 근거로 쓰지 않는다.
 
 
 사용 금지 정보:

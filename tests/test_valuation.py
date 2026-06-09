@@ -279,7 +279,8 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     assert "citation_evidence" in captured_prompts[0]
 
 
-def test_business_fit_selects_only_news_with_sk_ax_or_cnc_context():
+def test_business_fit_excludes_news_even_when_it_mentions_sk_ax():
+    # SK AX를 언급한 뉴스라도 사업연계성에는 들어가지 않는다(시장성 축으로만 간다).
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": False, "use_llm_final_report": False},
         patent_structured={
@@ -307,7 +308,7 @@ def test_business_fit_selects_only_news_with_sk_ax_or_cnc_context():
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected] == ["news_001"]
+    assert selected == []
 
 
 def test_business_fit_prioritizes_sk_ax_official_evidence():
@@ -347,7 +348,8 @@ def test_business_fit_prioritizes_sk_ax_official_evidence():
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected[:3]] == ["skax_high", "skax_low", "news_001"]
+    # 공식 콘텐츠만 점수 순으로 남고, SK를 언급한 뉴스(news_001)는 제외된다.
+    assert [item["evidence_id"] for item in selected] == ["skax_high", "skax_low"]
 
 
 def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
@@ -375,7 +377,7 @@ def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
     assert selected[0]["evidence_id"] == "skax_meta"
 
 
-def test_business_fit_prioritizes_owned_media_before_sk_mentioned_news_and_secondary():
+def test_business_fit_uses_only_sk_ax_official_content_excluding_news_and_portfolio():
     state = PatentWorkflowState(
         patent_structured={
             "related_product": "문서변환 SW",
@@ -421,7 +423,9 @@ def test_business_fit_prioritizes_owned_media_before_sk_mentioned_news_and_secon
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected] == ["owned_media", "sk_news", "portfolio_001"]
+    # SK를 언급한 뉴스(sk_news)와 portfolio_context는 더 이상 사업연계성에 포함되지
+    # 않고, SK AX 공식/계열 콘텐츠(owned_media)만 남는다.
+    assert [item["evidence_id"] for item in selected] == ["owned_media"]
 
 
 def test_business_fit_input_context_uses_summary_and_limited_official_evidence():

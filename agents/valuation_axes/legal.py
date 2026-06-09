@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_types_or_axes
+from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_source_types
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context, unique_texts
 from workflow.state import PatentWorkflowState
 
@@ -139,10 +139,9 @@ def coerce_int(value: Any) -> int | None:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     del state
-    return select_by_types_or_axes(
+    return select_by_source_types(
         items,
         source_types={"portfolio_context", "patent_api", "prior_art", "citation"},
-        axes={AXIS},
     )
 
 

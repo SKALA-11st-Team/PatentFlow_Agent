@@ -492,29 +492,20 @@ def normalize_core_term(value: Any) -> str:
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
+    # 사업연계성은 SK AX 공식 사이트 콘텐츠만 근거로 쓴다.
+    # SK를 언급한 뉴스 기사는 시장성 축(market)으로만 가고, 여기서는 제외한다.
     keywords = business_fit_keywords(state)
     official_matches = []
     owned_media_matches = []
-    sk_mentioned_matches = []
-    secondary_matches = []
     for item in items:
         if is_sk_ax_official_evidence(item):
             official_matches.append(item)
             continue
         if is_sk_owned_media_evidence(item):
             owned_media_matches.append(item)
-            continue
-        source_type = item.get("source_type")
-        if source_type in {"company_disclosure", "news"} and has_sk_ax_or_cnc_mention(item):
-            sk_mentioned_matches.append(item)
-            continue
-        if source_type in {"company_disclosure", "portfolio_context"}:
-            secondary_matches.append(item)
     return [
         *sort_official_evidence(official_matches, keywords),
         *sort_official_evidence(owned_media_matches, keywords),
-        *sort_official_evidence(sk_mentioned_matches, keywords),
-        *sort_official_evidence(secondary_matches, keywords),
     ][:5]
 
 
@@ -574,23 +565,6 @@ def is_sk_owned_media_evidence(item: dict[str, Any]) -> bool:
     return any(normalize_text(value) == "sk_group_owned_media" for value in values) or any(
         normalize_text(value) in {"skcareersjournal.com", "openapi.sk.com", "sk_related_owned_media"}
         for value in values
-    )
-
-
-def has_sk_ax_or_cnc_mention(item: dict[str, Any]) -> bool:
-    text = evidence_text(item).lower()
-    return any(
-        marker in text
-        for marker in (
-            "sk ax",
-            "sk c&c",
-            "sk㈜ ax",
-            "sk㈜ c&c",
-            "sk(주) ax",
-            "sk(주) c&c",
-            "sk주식회사 ax",
-            "sk주식회사 c&c",
-        )
     )
 
 

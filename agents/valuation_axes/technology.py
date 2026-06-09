@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agents.valuation_axes.common import grade_for_score, select_by_types_or_axes
+from agents.valuation_axes.common import grade_for_score, select_by_source_types
 from agents.valuation_axes.market import clamp_int, extract_patent_country, extract_representative_cpc, extract_representative_ipc
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
@@ -39,10 +39,9 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     del state
-    return select_by_types_or_axes(
+    return select_by_source_types(
         items,
         source_types={"portfolio_context", "industry_report", "patent_api"},
-        axes={AXIS},
     )
 
 
