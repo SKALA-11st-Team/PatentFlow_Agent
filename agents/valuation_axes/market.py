@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from agents.valuation_axes.common import grade_for_score, select_by_types_or_axes
+from agents.valuation_axes.common import grade_for_score, select_by_source_types
 from agents.valuation_axes.payload_common import build_base_input_payload
 from services.evidence.api_normalizers import extract_kipris_items
 from workflow.state import PatentWorkflowState
@@ -37,10 +37,9 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
-    selected = select_by_types_or_axes(
+    selected = select_by_source_types(
         items,
         source_types={"industry_report", "news"},
-        axes={AXIS},
         limit=None,
     )
     if is_foreign_patent(state):
@@ -87,7 +86,7 @@ def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, li
             groups["industry_report_evidence_ids"].append(evidence_id)
         elif source == "naver_news":
             groups["naver_news_evidence_ids"].append(evidence_id)
-        elif source == "gnews":
+        elif source == "global_news":
             groups["gnews_evidence_ids"].append(evidence_id)
     return groups
 
@@ -387,7 +386,7 @@ FOREIGN_COUNTRY_HINTS = {
 
 
 def build_global_business_metrics(evidence: list[dict[str, Any]], *, patent_country: str | None = None) -> dict[str, Any]:
-    gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "gnews"]
+    gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "global_news"]
     if patent_country and patent_country != "KR":
         quality_items = [item for item in gnews_items if has_foreign_global_business_signal(item, patent_country=patent_country)]
     else:
@@ -605,7 +604,7 @@ def build_market_subscores(
                 "global_business_status": normalize_text(metrics.get("global_business_status")),
             },
             "rationale": normalize_text(global_business.get("rationale"))
-            or "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
+            or "글로벌 해외 뉴스 근거로 산정된 코드 계산값입니다.",
         },
     }
 

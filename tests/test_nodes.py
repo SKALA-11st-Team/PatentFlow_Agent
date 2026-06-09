@@ -518,6 +518,9 @@ def test_evidence_compression_merges_portfolio_evidence(monkeypatch):
 
 
 def test_evidence_compression_preserves_skax_official_evidence(monkeypatch):
+    # SK AX 공식 근거도 이제 압축 단계를 거치되 식별 필드(source/source_type/url/
+    # related_axes/content)는 그대로 보존된다(normalize_company_disclosure_compression).
+    skax_content = "SK AX 공식 금융 서비스 근거 본문"
     monkeypatch.setattr(
         "workflow.nodes.compress_evidence_items",
         lambda items, **kwargs: {
@@ -527,13 +530,23 @@ def test_evidence_compression_preserves_skax_official_evidence(monkeypatch):
                     "source": "naver_news",
                     "source_type": "news",
                     "compressed_summary": "뉴스 요약",
-                }
+                },
+                {
+                    "evidence_id": "skax_site_001",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "title": "SK AX 금융 서비스",
+                    "url": "https://www.skax.co.kr/finance/service",
+                    "content": skax_content,
+                    "related_axes": ["business_fit"],
+                    "compressed_summary": "SK AX 금융 서비스 요약",
+                    "sk_ax_relevant": True,
+                },
             ],
             "warnings": [],
-            "stats": {"compressed_count": 1, "input_count": len(items)},
+            "stats": {"compressed_count": 2, "input_count": len(items)},
         },
     )
-    skax_content = "SK AX 공식 금융 서비스 근거 본문"
     state = PatentWorkflowState(
         user_input={"no_save": True},
         patent_structured={"id": 1, "related_product": "로보어드바이저"},
@@ -624,9 +637,25 @@ def test_evidence_compression_deduplicates_preserved_skax_official_evidence(monk
 def test_evidence_compression_preserved_skax_reaches_business_fit_input(monkeypatch):
     from agents.valuation_axes.business_fit import build_input_payload
 
+    # skax는 이제 압축 단계를 통과하므로, 압축 결과에 식별 필드를 보존한 채 담겨
+    # business_fit 입력의 skax_official_evidence로 도달한다.
     monkeypatch.setattr(
         "workflow.nodes.compress_evidence_items",
-        lambda items, **kwargs: {"items": [], "warnings": [], "stats": {"compressed_count": 0}},
+        lambda items, **kwargs: {
+            "items": [
+                {
+                    "evidence_id": "skax_site_001",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "title": "SK AX 금융 서비스",
+                    "url": "https://www.skax.co.kr/finance/service",
+                    "content": "로보어드바이저와 금융 서비스 공식 근거",
+                    "related_axes": ["business_fit"],
+                }
+            ],
+            "warnings": [],
+            "stats": {"compressed_count": 1},
+        },
     )
     state = PatentWorkflowState(
         user_input={"no_save": True},

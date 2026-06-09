@@ -13,7 +13,7 @@ from services.evidence.store_service import now_iso, safe_filename
 DEFAULT_FILTERED_NEWS_DIR = settings.output_dir / "filtered_evidence" / "news"
 DEFAULT_PREVIEW_CHARS = 100
 DEFAULT_MAX_CONTENT_CHARS = 5000
-DEFAULT_MAX_AGE_DAYS = 365 * 5
+DEFAULT_MAX_AGE_DAYS = settings.news_max_age_days
 
 KOREAN_STOPWORDS = {
     "그리고",

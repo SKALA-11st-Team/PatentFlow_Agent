@@ -191,8 +191,11 @@ def test_filter_search_results_keeps_skax_non_file_urls_and_sorts_by_relevance()
 
     filtered = filter_search_results(results, PATENT_CONTEXT)
 
+    # 관련성 점수로 더는 버리지 않는다. skax.co.kr 비파일 URL은 모두 통과하고,
+    # 점수가 높은 항목이 앞에 오도록 정렬만 한다(외부 도메인/PDF/중복은 여전히 제외).
     assert [item["url"] for item in filtered] == [
         "https://www.skax.co.kr/financial/robo-advisor",
+        "https://www.skax.co.kr/data/analytics",
     ]
     assert "로보어드바이저" in filtered[0]["matched_keywords"]
     assert "matched_related_product" in filtered[0]["score_reasons"]
@@ -267,10 +270,12 @@ def test_collect_skax_site_evidence_fetches_relevant_results_and_normalizes_evid
     assert "로보어드바이저" in evidence["matched_keywords"]
     assert result["stats"]["generated_query_count"] == 1
     assert result["stats"]["searched_result_count"] == 4
-    assert result["stats"]["filtered_result_count"] == 1
+    # 관련성으로 더는 버리지 않으므로 skax 비파일 URL 2건이 모두 통과한다(외부/PNG 제외).
+    assert result["stats"]["filtered_result_count"] == 2
     assert result["stats"]["fetched_url_count"] == 1
     assert result["stats"]["collected_evidence_count"] == 1
-    assert result["stats"]["skipped_url_count"] == 3
+    # data/analytics가 이제 필터를 통과하므로(외부/PNG만 제외) 덜 버려진다.
+    assert result["stats"]["skipped_url_count"] == 2
     assert result["stats"]["failed_url_count"] == 0
 
 
@@ -1190,7 +1195,9 @@ def test_tavily_search_client_extracts_only_skax_results(monkeypatch):
 
     assert captured["url"] == "https://api.tavily.com/search"
     assert captured["json"]["api_key"] == "tavily-key"
-    assert captured["json"]["query"] == "site:skax.co.kr 로보어드바이저"
+    # Tavily는 site: 연산자를 지원하지 않으므로 도메인 제한은 include_domains로만 하고,
+    # 쿼리 텍스트에서는 site:<domain> 토큰을 제거해 키워드만 보낸다.
+    assert captured["json"]["query"] == "로보어드바이저"
     assert captured["json"]["include_domains"] == ["skax.co.kr", "skcareersjournal.com", "openapi.sk.com"]
     assert captured["json"]["include_raw_content"] is True
     assert captured["json"]["search_depth"] == "basic"
@@ -1579,7 +1586,7 @@ def test_aicc_scores_lower_than_finance_ai_candidate():
     assert "matched_preferred_path:/finance" in filtered[0]["score_reasons"]
 
 
-def test_blockchain_broad_hints_alone_do_not_select_unrelated_finance_pages():
+def test_blockchain_related_page_ranks_first_unrelated_page_still_kept():
     context = {
         "management_number": "P202307002-KR0",
         "title_final": "블록체인 합의 과정에서의 서명 검증 방법 및 시스템",
@@ -1604,9 +1611,15 @@ def test_blockchain_broad_hints_alone_do_not_select_unrelated_finance_pages():
         context,
     )
 
-    assert [item["url"] for item in filtered] == ["https://www.skax.co.kr/security/chainz"]
+    # 관련성 점수로 더는 버리지 않는다(실제 관련성 판단은 압축 단계로 이관).
+    # 두 skax 페이지 모두 통과하되, 대상 특허와 직접 관련된 ChainZ 페이지가
+    # 더 높은 점수로 맨 앞에 온다.
+    assert filtered[0]["url"] == "https://www.skax.co.kr/security/chainz"
     assert "matched_related_product" in filtered[0]["score_reasons"]
     assert "matched_strong_term:블록체인" in filtered[0]["score_reasons"]
+    assert "https://www.skax.co.kr/finance/payment-convenience-improvement" in [
+        item["url"] for item in filtered
+    ]
 
 
 def test_manufacturing_query_generation_includes_mcs_hint_without_finance_terms():

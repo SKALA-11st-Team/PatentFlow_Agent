@@ -43,6 +43,7 @@ def call_llm(
     temperature: float = 0.2,
     reasoning_effort: str | None = None,
     verbosity: str | None = None,
+    timeout: float | None = None,
 ) -> str:
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not set.")
@@ -63,6 +64,11 @@ def call_llm(
         level = verbosity or settings.openai_verbosity
         if level:
             request["text"] = {"verbosity": level}
+
+    # 호출별 timeout 오버라이드(전역 클라이언트 timeout보다 우선). 긴 출력의 작성
+    # 단계처럼 일반 호출보다 시간이 더 필요한 경우에 사용한다.
+    if timeout is not None:
+        request["timeout"] = timeout
 
     response = _get_client().responses.create(**request)
     output_text = getattr(response, "output_text", None)

@@ -672,16 +672,16 @@ def compress_evidence_safely(
     output_dir: Path,
     save: bool,
 ) -> dict:
+    # SK AX 공식 근거(company_disclosure)도 이제 압축 단계를 함께 거친다(요약 + 관련성
+    # 판단). skax_items는 압축이 통째로 실패했을 때 원문을 보존하기 위한 폴백용이다.
     skax_items = [item for item in items if is_skax_official_evidence(item)]
-    compressible_items = [item for item in items if not is_skax_official_evidence(item)]
     try:
         result = compress_evidence_items(
-            compressible_items,
+            items,
             preprocessed_patent=preprocessed_patent,
             rag_score_threshold=DEFAULT_RAG_SCORE_THRESHOLD,
         )
-        merged_items = merge_evidence_items(result.get("items", []), skax_items)
-        merged_items = merge_evidence_items(merged_items, portfolio_items)
+        merged_items = merge_evidence_items(result.get("items", []), portfolio_items)
         result = {
             **result,
             "items": merged_items,

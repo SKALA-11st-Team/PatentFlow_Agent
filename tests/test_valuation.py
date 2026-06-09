@@ -279,7 +279,8 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     assert "citation_evidence" in captured_prompts[0]
 
 
-def test_business_fit_selects_only_news_with_sk_ax_or_cnc_context():
+def test_business_fit_excludes_news_even_when_it_mentions_sk_ax():
+    # SK AX를 언급한 뉴스라도 사업연계성에는 들어가지 않는다(시장성 축으로만 간다).
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": False, "use_llm_final_report": False},
         patent_structured={
@@ -307,7 +308,7 @@ def test_business_fit_selects_only_news_with_sk_ax_or_cnc_context():
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected] == ["news_001"]
+    assert selected == []
 
 
 def test_business_fit_prioritizes_sk_ax_official_evidence():
@@ -347,7 +348,8 @@ def test_business_fit_prioritizes_sk_ax_official_evidence():
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected[:3]] == ["skax_high", "skax_low", "news_001"]
+    # 공식 콘텐츠만 점수 순으로 남고, SK를 언급한 뉴스(news_001)는 제외된다.
+    assert [item["evidence_id"] for item in selected] == ["skax_high", "skax_low"]
 
 
 def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
@@ -375,7 +377,7 @@ def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
     assert selected[0]["evidence_id"] == "skax_meta"
 
 
-def test_business_fit_prioritizes_owned_media_before_sk_mentioned_news_and_secondary():
+def test_business_fit_uses_only_sk_ax_official_content_excluding_news_and_portfolio():
     state = PatentWorkflowState(
         patent_structured={
             "related_product": "문서변환 SW",
@@ -421,7 +423,9 @@ def test_business_fit_prioritizes_owned_media_before_sk_mentioned_news_and_secon
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected] == ["owned_media", "sk_news", "portfolio_001"]
+    # SK를 언급한 뉴스(sk_news)와 portfolio_context는 더 이상 사업연계성에 포함되지
+    # 않고, SK AX 공식/계열 콘텐츠(owned_media)만 남는다.
+    assert [item["evidence_id"] for item in selected] == ["owned_media"]
 
 
 def test_business_fit_input_context_uses_summary_and_limited_official_evidence():
@@ -1017,7 +1021,7 @@ def test_market_score_helpers_apply_40_40_20_structure():
                 "gnews_quality_evidence_count": 0,
                 "global_business_status": "",
             },
-            "rationale": "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
+            "rationale": "글로벌 해외 뉴스 근거로 산정된 코드 계산값입니다.",
         },
     }
 
@@ -1063,9 +1067,9 @@ def test_market_score_helpers_apply_40_40_20_structure():
 
     assert build_global_business_metrics(
         [
-            {"evidence_id": "g0", "source": "gnews", "compressed_summary": "글로벌 AI 투자 흐름"},
-            {"evidence_id": "g1", "source": "gnews", "compressed_summary": "해외 고객사의 서비스 도입 사례"},
-            {"evidence_id": "g2", "source": "gnews", "key_facts": ["글로벌 시장에서 관련 제품 출시"]},
+            {"evidence_id": "g0", "source": "global_news", "compressed_summary": "글로벌 AI 투자 흐름"},
+            {"evidence_id": "g1", "source": "global_news", "compressed_summary": "해외 고객사의 서비스 도입 사례"},
+            {"evidence_id": "g2", "source": "global_news", "key_facts": ["글로벌 시장에서 관련 제품 출시"]},
             {"evidence_id": "n1", "source": "naver_news", "compressed_summary": "국내 뉴스"},
         ]
     ) == {
@@ -1085,21 +1089,21 @@ def test_foreign_global_business_keeps_same_country_article_when_other_market_si
         [
             {
                 "evidence_id": "us_1",
-                "source": "gnews",
+                "source": "global_news",
                 "title": "US company launches AI service across Europe and Japan",
                 "content": "American provider expands deployment across Europe with international customer demand",
                 "metadata": {"publisher": "US News"},
             },
             {
                 "evidence_id": "eu_1",
-                "source": "gnews",
+                "source": "global_news",
                 "title": "European provider launches AI platform",
                 "content": "Healthcare service deployment expands across Europe",
                 "metadata": {"publisher": "Euronews"},
             },
             {
                 "evidence_id": "jp_1",
-                "source": "gnews",
+                "source": "global_news",
                 "title": "Japanese partner launches AI service",
                 "content": "AI service launch expands in Japan with customer demand",
                 "metadata": {"publisher": "Nikkei Asia"},
@@ -1122,14 +1126,14 @@ def test_foreign_global_business_excludes_same_country_only_signal():
         [
             {
                 "evidence_id": "us_only",
-                "source": "gnews",
+                "source": "global_news",
                 "title": "US hospital deploys AI service",
                 "content": "American healthcare provider launches new AI service for local market adoption",
                 "metadata": {"publisher": "US News"},
             },
             {
                 "evidence_id": "eu_1",
-                "source": "gnews",
+                "source": "global_news",
                 "title": "European provider launches AI platform",
                 "content": "Healthcare service deployment expands across Europe",
                 "metadata": {"publisher": "Euronews"},
@@ -1149,7 +1153,7 @@ def test_market_prompt_uses_18_month_lagged_three_window_activity():
 
     assert "18개월 전을 마지막 시점으로 하는 3개 1년 구간" in prompt
     assert "최근 3개년 공개 활동성" not in prompt
-    assert "`source`가 `gnews`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다." in prompt
+    assert "`source`가 `global_news`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다." in prompt
     assert "해당 국가를 제외한 해외 시장의 진출, 도입, 활용, 확산 흐름" in prompt
     assert "시장성 점수(100) = 산업 시장성(40) + 시장 성장성(40) + 글로벌 사업성(20)" in prompt
     assert "시장성 총점은 원칙적으로 55점을 넘기지 않는다" not in prompt
@@ -1166,8 +1170,8 @@ def test_technology_prompt_supports_foreign_ipc_country_comparison_group():
 def test_final_report_prompt_uses_gnews_for_global_business():
     prompt = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
-    assert "글로벌 적용성은 GNews 등 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 중심으로 설명하세요." in prompt
-    assert "GNews 기반 글로벌 시장 근거가 없다는 사실만으로 시장성이 낮다고 단정하지 마세요." in prompt
+    assert "글로벌 적용성은 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 중심으로 설명하세요." in prompt
+    assert "글로벌 뉴스 기반 글로벌 시장 근거가 없다는 사실만으로 시장성이 낮다고 단정하지 마세요." in prompt
     assert "해외 Patent Family가 확인되지 않아 글로벌 사업성은 국내 단독 출원 기준으로 낮게 반영되었습니다." not in prompt
 
 
@@ -1420,7 +1424,7 @@ def test_foreign_market_select_evidence_prioritizes_named_industry_reports():
         {
             "evidence_id": "news_1",
             "source_type": "news",
-            "source": "gnews",
+            "source": "global_news",
             "related_axes": ["market"],
         },
     ]

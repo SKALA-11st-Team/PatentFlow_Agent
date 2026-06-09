@@ -196,7 +196,11 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
     assert len(rewritten["ko"]) <= MAX_SEARCH_QUERIES
     assert any("MarketCaster" in query for query in rewritten["ko"])
     assert rewritten["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
-    assert rewritten["skax_site"] == ["site:skax.co.kr 로보어드바이저 금융 자산관리"]
+    # skax_site 1번은 관련제품명을 그대로(변형 없이), 2번부터 LLM 변형 검색어.
+    assert rewritten["skax_site"] == [
+        "site:skax.co.kr MarketCaster",
+        "site:skax.co.kr 로보어드바이저 금융 자산관리",
+    ]
     assert rewritten["meta"]["product_query_enforced"] is True
 
 
@@ -378,18 +382,21 @@ def test_collect_external_evidence_searches_news_queries_concurrently(monkeypatc
 
 def test_collect_external_evidence_uses_configured_news_results_per_query(monkeypatch, tmp_path):
     observed = []
+    tavily_calls = []
 
     def fake_request_json(base_url, path, params, *, timeout=20):
         del base_url, timeout
         observed.append((path, dict(params)))
-        if path == "/api/news/search":
-            assert params["display"] == 3
-            return {"items": []}
-        assert path == "/api/v4/search"
-        assert params["max"] == 3
-        return {"articles": []}
+        assert path == "/api/news/search"
+        assert params["display"] == 3
+        return {"items": []}
+
+    def fake_tavily_news(query, *, max_results):
+        tavily_calls.append((query, max_results))
+        return {"results": []}
 
     monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
+    monkeypatch.setattr("services.evidence.external_search_service.search_global_news_via_tavily", fake_tavily_news)
     monkeypatch.setattr("services.evidence.external_search_service.save_evidence_collection", lambda **kwargs: tmp_path / "x.json")
     monkeypatch.setattr("services.evidence.external_search_service.settings.news_results_per_query", 3, raising=False)
 
@@ -404,4 +411,6 @@ def test_collect_external_evidence_uses_configured_news_results_per_query(monkey
         fetch_news_full_text=False,
     )
 
-    assert [path for path, _ in observed] == ["/api/news/search", "/api/v4/search"]
+    # 네이버는 통합 서버, 글로벌 뉴스(gnews 자리)는 Tavily로 호출된다.
+    assert [path for path, _ in observed] == ["/api/news/search"]
+    assert tavily_calls == [("conversational AI chatbot", 3)]

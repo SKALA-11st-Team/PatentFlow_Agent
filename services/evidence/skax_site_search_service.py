@@ -213,12 +213,21 @@ class TavilySearchClient(SearchClient):
             diagnostics["search_failure_reason"] = "missing_config"
             return {"results": [], "diagnostics": diagnostics}
 
+        # Tavily는 구글식 `site:` 연산자를 이해하지 못하고, 도메인 제한은 이미
+        # include_domains로 처리한다. 공유 쿼리에 붙은 `site:<domain>` 토큰은
+        # Tavily에서는 노이즈가 되어 시맨틱 매칭을 떨어뜨리므로 제거한다.
+        tavily_query = strip_site_operators(query)
+        diagnostics["tavily_effective_query"] = tavily_query
+        if not tavily_query:
+            diagnostics["search_failure_reason"] = "empty_query_after_site_strip"
+            return {"results": [], "diagnostics": diagnostics}
+
         try:
             response = requests.post(
                 TAVILY_SEARCH_URL,
                 json={
                     "api_key": self.api_key,
-                    "query": query,
+                    "query": tavily_query,
                     "search_depth": "basic",
                     "include_domains": list(SK_OWNED_DOMAINS),
                     "include_raw_content": self.include_raw_content,
@@ -1142,9 +1151,11 @@ def filter_search_results(results: list[dict[str, Any]], patent_context: dict[st
         if not url or url in seen or not is_skax_url(url) or is_file_url(url):
             continue
         seen.add(url)
+        # 관련성 점수는 정렬(우선순위)용으로만 쓰고, 여기서 버리지 않는다.
+        # skax.co.kr 공식 도메인 페이지는 제품명 정확매칭이 없어도(예: 제품을
+        # AIOps Platform 같은 일반 표현으로 소개) 일단 근거 후보로 올린 뒤,
+        # 실제 관련성 판단·요약은 뒤의 압축 단계(LLM)에서 처리한다.
         score = score_search_result(result, patent_context)
-        if score["relevance_score"] <= 0 or not score["is_relevant"]:
-            continue
         filtered.append({**result, "url": url, **score})
     filtered.sort(key=lambda item: item["relevance_score"], reverse=True)
     return filtered
@@ -1302,6 +1313,17 @@ def patent_field(patent_context: dict[str, Any], field: str) -> str:
         if value:
             return value
     return ""
+
+
+def strip_site_operators(query: str) -> str:
+    """쿼리에서 `site:<domain>` 연산자 토큰을 제거한다.
+
+    `site:`는 Google HTML/Custom Search용 연산자다. Tavily는 이를 지원하지 않고
+    도메인 제한을 include_domains로 처리하므로, Tavily에 보낼 때는 노이즈가 되는
+    이 토큰을 벗겨내고 키워드만 남긴다.
+    """
+    tokens = [token for token in normalize_text(query).split() if not token.lower().startswith("site:")]
+    return " ".join(tokens).strip()
 
 
 def compact_query(parts: list[Any]) -> str:

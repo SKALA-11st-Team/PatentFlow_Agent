@@ -42,6 +42,7 @@ def run_final_report_llm_required(
             model=settings.openai_writing_model,
             reasoning_effort=settings.openai_writing_reasoning_effort,
             verbosity=settings.openai_writing_verbosity,
+            timeout=settings.openai_writing_timeout_seconds,
         ).strip()
     )
     if not markdown:
