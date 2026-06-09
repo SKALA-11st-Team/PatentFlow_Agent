@@ -315,3 +315,23 @@ def test_evaluate_patent_passes_through_rich_evidence(monkeypatch):
     assert news_detail["source"]["url"] == "https://example.com/news/1"
     legal_axis = next(s for s in body["scores"] if s["category"] == "권리성")
     assert legal_axis["evidenceDetails"] == []
+
+
+def test_inbound_auth_passes_through_when_key_unset(monkeypatch):
+    # SEC-01: AGENT_INBOUND_API_KEY 미설정 시 인바운드 인증 없이 통과(기존 배포 호환).
+    monkeypatch.delenv("AGENT_INBOUND_API_KEY", raising=False)
+    assert client.get("/health").status_code == 200
+
+
+def test_inbound_auth_required_when_key_set(monkeypatch):
+    # 키 설정 시 보호 경로는 X-API-Key 없으면 401, /health는 면제.
+    monkeypatch.setenv("AGENT_INBOUND_API_KEY", "agent-secret")
+    assert client.get("/health").status_code == 200
+    unauthorized = client.post("/api/v1/ai/patents/PAT-X/evaluate", json={"noSave": True})
+    assert unauthorized.status_code == 401
+    wrong_key = client.post(
+        "/api/v1/ai/patents/PAT-X/evaluate",
+        json={"noSave": True},
+        headers={"X-API-Key": "wrong"},
+    )
+    assert wrong_key.status_code == 401

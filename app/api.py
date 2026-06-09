@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hmac
+import os
 from datetime import datetime, timezone
 from threading import BoundedSemaphore
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from agents.field_recommendation import recommend_fields
@@ -21,6 +24,22 @@ app = FastAPI(
     version="0.1.0",
     description="AI workflow serving API for PatentFlow.",
 )
+
+# SEC-01: BE→agent 내부 호출(ClusterIP)에 대한 opt-in 인바운드 인증. AGENT_INBOUND_API_KEY가
+# 설정된 경우에만 X-API-Key를 상수시간 비교로 요구한다(미설정 시 통과 — 기존 배포 호환).
+# BE(AiReportAgentClient)가 동일 키를 X-API-Key로 보내도록 동시 설정해야 활성화된다.
+_AUTH_EXEMPT_PATHS = {"/", "/health", "/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def require_inbound_api_key(request: Request, call_next: Any) -> Any:
+    expected = os.getenv("AGENT_INBOUND_API_KEY")
+    if not expected or request.method == "OPTIONS" or request.url.path in _AUTH_EXEMPT_PATHS:
+        return await call_next(request)
+    provided = request.headers.get("X-API-Key")
+    if not provided or not hmac.compare_digest(provided, expected):
+        return JSONResponse(status_code=401, content={"detail": "유효한 X-API-Key 헤더가 필요합니다."})
+    return await call_next(request)
 
 _EVALUATE_WORKERS = max(1, int(settings.evaluate_max_concurrency or 1))
 _EVALUATE_SEMAPHORE = BoundedSemaphore(_EVALUATE_WORKERS)
