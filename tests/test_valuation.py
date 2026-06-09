@@ -86,7 +86,7 @@ def test_market_prompt_uses_40_40_20_market_structure():
 
 
 def test_run_valuation_agent_sets_result():
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         if "Return ONLY Markdown" in prompt:
             return "# LLM 최종 보고서"
         return '{"score":70,"grade":"B","rationale":"LLM 평가","evidence_ids":[],"risk_factors":["추가 확인"],"missing_information":[],"confidence":0.7}'
@@ -206,7 +206,7 @@ def test_final_valuation_result_rejects_missing_or_deprecated_axis():
 def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     captured_prompts = []
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         captured_prompts.append(prompt)
         return json.dumps(
             {
@@ -1852,7 +1852,7 @@ def test_supervisor_requires_business_fit_axis():
 def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
     captured_prompts = []
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         captured_prompts.append(prompt)
         if "Return ONLY Markdown" not in prompt:
             return '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"missing_information":[],"confidence":0.7}'
@@ -2138,7 +2138,7 @@ def test_final_report_input_payload_uses_preprocessed_drawing_context(tmp_path):
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
     captured_prompts = []
 
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         captured_prompts.append(prompt)
         if "Return ONLY Markdown" in prompt:
             return "# LLM 최종 보고서"
@@ -2160,7 +2160,7 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
 
 
 def test_valuation_llm_inputs_are_saved(monkeypatch, tmp_path):
-    def fake_call_llm(prompt):
+    def fake_call_llm(prompt, **kwargs):
         if "Return ONLY Markdown" in prompt:
             return "# LLM 최종 보고서"
         return """
@@ -2690,7 +2690,7 @@ def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):
 def test_valuation_llm_inputs_respect_no_save(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "agents.valuation.call_llm",
-        lambda prompt: "# LLM 최종 보고서" if "Return ONLY Markdown" in prompt else '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"confidence":0.7}',
+        lambda prompt, **kwargs: "# LLM 최종 보고서" if "Return ONLY Markdown" in prompt else '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"confidence":0.7}',
     )
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
