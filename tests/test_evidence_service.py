@@ -196,7 +196,11 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
     assert len(rewritten["ko"]) <= MAX_SEARCH_QUERIES
     assert any("MarketCaster" in query for query in rewritten["ko"])
     assert rewritten["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
-    assert rewritten["skax_site"] == ["site:skax.co.kr 로보어드바이저 금융 자산관리"]
+    # skax_site 1번은 관련제품명을 그대로(변형 없이), 2번부터 LLM 변형 검색어.
+    assert rewritten["skax_site"] == [
+        "site:skax.co.kr MarketCaster",
+        "site:skax.co.kr 로보어드바이저 금융 자산관리",
+    ]
     assert rewritten["meta"]["product_query_enforced"] is True
 
 

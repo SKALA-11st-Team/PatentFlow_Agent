@@ -52,6 +52,7 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
 - industry_rag 배열은 {{industry_rag_query_count}}개의 검색어를 포함한다.
 - skax_site는 SK AX 공식 사이트 검색용 한국어/영문 혼합 검색어로 작성한다.
 - skax_site 검색은 시스템이 자동으로 skax.co.kr 도메인으로 제한하므로, 검색어에 `site:skax.co.kr` 연산자나 `SK AX` 접두사를 넣지 않는다. 도메인은 이미 제한되어 있어 중복이고, 제품명 검색에서는 오히려 일반 회사 소개 페이지를 끌어올려 정확도를 떨어뜨린다.
+- 관련제품명을 그대로 쓴 검색어는 시스템이 첫 번째 skax_site 검색어로 자동 추가하므로, 여기서는 제품명을 그대로 반복하지 말고 그 제품의 기술/서비스 변형 표현 위주로 2~3개 작성한다.
 - skax_site는 제품명·서비스명·사업 표현 같은 핵심 키워드만으로 작성한다.
 - skax_site는 외부 뉴스, 블로그, SK그룹 다른 도메인, 미러링 사이트를 찾기 위한 검색어를 만들지 않는다.
 - skax_site는 입력의 related_product, business_area, technology_area, title, abstract, problem, solution을 보고 SK AX 공식 사업/서비스 페이지에서 쓰일 법한 제품·서비스·사업 표현으로 작성한다.
@@ -59,7 +60,7 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
 - skax_site에는 특허 관리번호, 출원번호, 등록번호를 넣지 않는다.
 - skax_site에는 특허 문서형 표현인 알고리즘, 시스템, 방법, 장치, 특허, 청구항, patent, claim, method, apparatus를 가급적 넣지 않는다.
 - skax_site는 하나의 검색어에 여러 의도를 모두 담지 말고, 2~5개 핵심 키워드 중심으로 작성한다.
-- skax_site 배열은 {{search_query_count}}개의 검색어를 포함한다.
+- skax_site 배열은 제품 변형 검색어 2~3개를 포함한다(제품명 그대로 검색어는 시스템이 별도로 추가).
 - 반드시 JSON object만 출력하고, 설명/Markdown은 출력하지 않는다.
 
 좋은 en 검색어 예시 (짧고 넓은 산업·트렌드 표현):
