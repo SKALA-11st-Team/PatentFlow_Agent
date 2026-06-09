@@ -635,8 +635,19 @@ def extract_claims(claims_text: str) -> list[dict[str, Any]]:
     return claims
 
 
+# EXT-06: 종속 청구항 인용은 인용 종결어미(에 있어서/에 따른/에 기재된/의 등)를 반드시 동반한다.
+# 단순 구성요소 나열(예: "제1 또는 제2 위치")을 종속 인용으로 오판(false-positive)하지 않으면서,
+# "제1항에 따른/기재된/의" 같은 인용 표현 누락(false-negative)도 방지한다.
+_CLAIM_DEPENDENCY_PATTERN = (
+    r"(?:청구항|제)\s*(\d+)\s*항?"
+    r"(?:\s*(?:내지|또는|및)\s*(?:청구항|제)?\s*\d+\s*항?)*"
+    r"\s*(?:중\s*)?(?:어느\s*(?:한|하나의?)\s*항)?"
+    r"\s*(?:에\s*있어서|에\s*기재된|에\s*따른|에\s*의한|에\s*있어|에서|의\s|에\s)"
+)
+
+
 def _extract_claim_dependency(text: str) -> int | None:
-    return _extract_int(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
+    return _extract_int(_CLAIM_DEPENDENCY_PATTERN, text)
 
 
 def build_claim_stats(reported_claim_count: int | None, claims: list[dict[str, Any]]) -> dict[str, Any]:

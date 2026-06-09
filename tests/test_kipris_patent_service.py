@@ -1165,3 +1165,58 @@ def test_foreign_literature_number_candidates_converts_jp_era_open_number():
         "2017047511A0",
     ]
     assert "000029047511A0" in candidates
+
+
+import pytest
+
+from services.patent.kipris_patent_service import (
+    _extract_claim_dependency,
+    _strip_register_suffix,
+)
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # 종속 인용 — 인용 종결어미를 동반하므로 종속항으로 인식한다.
+        ("제1항에 있어서, 상기 장치는", 1),
+        ("제2항에 따른 방법", 2),
+        ("제3항에 기재된 시스템", 3),
+        ("청구항 1에 있어서", 1),
+        ("제1항 또는 제2항에 있어서", 1),
+        ("제1항 내지 제3항 중 어느 한 항에 있어서", 1),
+        ("제10항 내지 제12항 중 어느 하나의 항에 있어서", 10),
+        ("제1항의 방법을 수행하는 장치", 1),
+        ("제5항에 의한 화합물", 5),
+        ("제1항에서, 상기", 1),
+        # 독립항 — 단순 구성요소 나열은 인용 종결어미가 없으므로 종속으로 오판하지 않는다.
+        ("제1 또는 제2 위치에 배치되는 부재를 포함하는 장치", None),
+        ("상기 제1 모드 또는 제2 모드에서 동작하는 장치", None),
+        ("제1 단계 및 제2 단계를 포함하는 방법", None),
+        ("복수의 항목을 포함하고", None),
+    ],
+)
+def test_extract_claim_dependency_requires_citation_terminator(text, expected):
+    assert _extract_claim_dependency(text) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        # 13자리 압축 등록번호 → 항차 4자리 제거.
+        ("1003093140000", "100309314"),
+        ("1020000000000", "102000000"),
+        ("  1003093140000  ", "100309314"),
+        # 하이픈 표기 → 항차 4자리 제거.
+        ("10-0309314-0001", "10-0309314"),
+        ("10-0309314-0000", "10-0309314"),
+        # 해외 번호(13자리 아님) → 원형 보존.
+        ("CN1234567", "CN1234567"),
+        ("US2024000001", "US2024000001"),
+        # 빈 값 → None.
+        (None, None),
+        ("", None),
+    ],
+)
+def test_strip_register_suffix_handles_compact_and_hyphenated_numbers(value, expected):
+    assert _strip_register_suffix(value) == expected

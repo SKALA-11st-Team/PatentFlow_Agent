@@ -449,8 +449,19 @@ def _normalize_kipris_claims(raw_claims: list[dict[str, Any]]) -> list[dict[str,
     return result
 
 
+# EXT-06: 종속 청구항 인용은 인용 종결어미(에 있어서/에 따른/에 기재된/의 등)를 반드시 동반한다.
+# 단순 구성요소 나열(예: "제1 또는 제2 위치")을 종속 인용으로 오판(false-positive)하지 않으면서,
+# "제1항에 따른/기재된/의" 같은 인용 표현 누락(false-negative)도 방지한다.
+_CLAIM_DEPENDENCY_PATTERN = (
+    r"(?:청구항|제)\s*(\d+)\s*항?"
+    r"(?:\s*(?:내지|또는|및)\s*(?:청구항|제)?\s*\d+\s*항?)*"
+    r"\s*(?:중\s*)?(?:어느\s*(?:한|하나의?)\s*항)?"
+    r"\s*(?:에\s*있어서|에\s*기재된|에\s*따른|에\s*의한|에\s*있어|에서|의\s|에\s)"
+)
+
+
 def _extract_claim_dependency(text: str) -> int | None:
-    match = re.search(r"(?:청구항|제)\s*(\d+)\s*항?\s*(?:에 있어서|내지|또는|및|중)", text)
+    match = re.search(_CLAIM_DEPENDENCY_PATTERN, text)
     return _int_or_none(match.group(1) if match else None)
 
 
@@ -1953,9 +1964,15 @@ def _get_path(data: dict[str, Any], keys: list[str]) -> Any:
 
 
 def _strip_register_suffix(value: str | None) -> str | None:
+    # EXT-09: 등록번호 항차(권리 구분 4자리) 제거. 하이픈 표기('10-0309314-0001')와
+    # 13자리 압축 표기('1003093140000')를 모두 처리하되, 13자리가 아닌 해외 번호는 보존한다.
     if not value:
         return None
-    return re.sub(r"-0000$", "", value)
+    text = str(value).strip()
+    text = re.sub(r"-\d{4}$", "", text)
+    if re.fullmatch(r"\d{13}", text):
+        text = text[:-4]
+    return text or None
 
 
 def _normalize_dot_date(value: str | None) -> str | None:

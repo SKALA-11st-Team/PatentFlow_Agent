@@ -368,3 +368,29 @@ The processor analyzes document data.
     assert "do not explain associations" in result["sections"]["background_art"]
     assert "extracts factors" in result["sections"]["solution"]
     assert "processor analyzes" in result["sections"]["detailed_description"]
+
+
+import pytest
+
+from services.patent.markdown_preprocess_service import _extract_claim_dependency
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        # 종속 인용 — 인용 종결어미를 동반하므로 종속항으로 인식한다.
+        ("제1항에 있어서, 상기 방법은", 1),
+        ("제2항에 따른 장치", 2),
+        ("제3항에 기재된 시스템", 3),
+        ("청구항 1에 있어서", 1),
+        ("제1항 또는 제2항에 있어서", 1),
+        ("제1항 내지 제3항 중 어느 한 항에 있어서", 1),
+        ("제1항의 방법을 수행하는 장치", 1),
+        # 독립항 — 인용 종결어미가 없는 구성요소 나열은 종속으로 오판하지 않는다.
+        ("제1 또는 제2 위치에 배치되는 부재를 포함하는 장치", None),
+        ("제1 단계 및 제2 단계를 포함하는 방법", None),
+        ("복수의 항목을 포함하고", None),
+    ],
+)
+def test_extract_claim_dependency_requires_citation_terminator(text, expected):
+    assert _extract_claim_dependency(text) == expected
