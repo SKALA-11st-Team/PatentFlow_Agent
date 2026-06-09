@@ -1073,6 +1073,7 @@ def evidence_summary_payload(
     payload = {
         "total_count": len(evidence_bundle),
         "source_type_counts": source_type_counts(evidence_bundle),
+        "source_counts": source_counts(evidence_bundle),
         "known_evidence_ids": sorted(known_evidence_ids(evidence_bundle)),
     }
     if include_samples:
@@ -1148,6 +1149,16 @@ def source_type_counts(evidence_bundle: list[dict[str, Any]]) -> dict[str, int]:
     for evidence in evidence_bundle:
         source_type = str(evidence.get("source_type") or "unknown")
         counts[source_type] = counts.get(source_type, 0) + 1
+    return counts
+
+
+def source_counts(evidence_bundle: list[dict[str, Any]]) -> dict[str, int]:
+    """source별(naver_news/gnews/...) 개수. supervisor가 국내(naver) vs 글로벌(gnews)
+    근거 유무를 source_type만으로는 구분할 수 없어 별도로 제공한다."""
+    counts: dict[str, int] = {}
+    for evidence in evidence_bundle:
+        source = str(evidence.get("source") or "unknown")
+        counts[source] = counts.get(source, 0) + 1
     return counts
 
 

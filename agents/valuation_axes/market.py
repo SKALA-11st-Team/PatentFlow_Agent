@@ -87,7 +87,7 @@ def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, li
             groups["industry_report_evidence_ids"].append(evidence_id)
         elif source == "naver_news":
             groups["naver_news_evidence_ids"].append(evidence_id)
-        elif source == "gnews":
+        elif source == "global_news":
             groups["gnews_evidence_ids"].append(evidence_id)
     return groups
 
@@ -387,7 +387,7 @@ FOREIGN_COUNTRY_HINTS = {
 
 
 def build_global_business_metrics(evidence: list[dict[str, Any]], *, patent_country: str | None = None) -> dict[str, Any]:
-    gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "gnews"]
+    gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "global_news"]
     if patent_country and patent_country != "KR":
         quality_items = [item for item in gnews_items if has_foreign_global_business_signal(item, patent_country=patent_country)]
     else:
@@ -605,7 +605,7 @@ def build_market_subscores(
                 "global_business_status": normalize_text(metrics.get("global_business_status")),
             },
             "rationale": normalize_text(global_business.get("rationale"))
-            or "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
+            or "글로벌 해외 뉴스 근거로 산정된 코드 계산값입니다.",
         },
     }
 

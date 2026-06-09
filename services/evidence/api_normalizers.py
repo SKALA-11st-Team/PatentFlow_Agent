@@ -87,8 +87,7 @@ def normalize_tavily_news_response(
 ) -> list[dict[str, Any]]:
     """Tavily(topic=news) 검색 결과를 공통 뉴스 evidence shape로 변환한다.
 
-    GNews 대체용 글로벌 뉴스이므로 다운스트림(시장성 글로벌 사업성)이 그대로 쓰도록
-    source는 "gnews"로 유지한다.
+    글로벌/해외 뉴스 근거이므로 source는 "global_news"로 태깅한다(시장성 글로벌 사업성).
     """
     collected_at = collected_at or now_iso()
     results = raw if isinstance(raw, list) else raw.get("results", [])
@@ -105,7 +104,7 @@ def normalize_tavily_news_response(
             {
                 "evidence_id": None,
                 "source_type": "news",
-                "source": "gnews",
+                "source": "global_news",
                 "title": item.get("title"),
                 "url": item.get("url"),
                 "published_at": published_at,

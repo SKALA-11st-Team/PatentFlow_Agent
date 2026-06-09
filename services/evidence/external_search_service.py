@@ -198,7 +198,7 @@ def collect_external_evidence(
         for search_result in collect_news_queries_concurrently(
             api_base_url=api_base_url,
             queries=selected_gnews_queries,
-            provider="gnews",
+            provider="global_news",
             results_per_query=news_results_per_query,
             fetch_news_full_text=fetch_news_full_text,
         ):
@@ -210,7 +210,7 @@ def collect_external_evidence(
             if save:
                 path = save_evidence_collection(
                     source_type="news",
-                    source="gnews",
+                    source="global_news",
                     items=items,
                     query=search_result["query"],
                     patent_id=patent_id,
@@ -276,10 +276,10 @@ def collect_news_queries_concurrently(
                 )
                 items = normalize_naver_news_response(raw, query=query)
                 source = "naver_news"
-            elif provider == "gnews":
+            elif provider == "global_news":
                 raw = search_global_news_via_tavily(query, max_results=results_per_query)
                 items = normalize_tavily_news_response(raw, query=query)
-                source = "gnews"
+                source = "global_news"
             else:
                 raise ValueError(f"Unknown news provider: {provider}")
             return {
@@ -289,7 +289,7 @@ def collect_news_queries_concurrently(
                 "warning": None,
             }
         except requests.RequestException as exc:
-            source = "naver_news" if provider == "naver" else "gnews"
+            source = "naver_news" if provider == "naver" else "global_news"
             return {
                 "query": query,
                 "source": source,
