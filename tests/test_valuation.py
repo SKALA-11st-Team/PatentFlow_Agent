@@ -1040,11 +1040,11 @@ def test_market_score_helpers_apply_40_40_20_structure():
             "score": 20,
             "max_score": 20,
             "details": {
-                "gnews_evidence_count": 0,
-                "gnews_quality_evidence_count": 0,
+                "family_size": 0,
+                "foreign_country_codes": [],
                 "global_business_status": "",
             },
-            "rationale": "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
+            "rationale": "Patent Family(출원 국가 수) 기준으로 산정된 코드 계산값입니다.",
         },
     }
 
@@ -1088,87 +1088,65 @@ def test_market_score_helpers_apply_40_40_20_structure():
     assert result["score"] == 100
     assert "market_score_cap_reason" not in result["marketability_metrics"]
 
-    assert build_global_business_metrics(
-        [
-            {"evidence_id": "g0", "source": "gnews", "compressed_summary": "글로벌 AI 투자 흐름"},
-            {"evidence_id": "g1", "source": "gnews", "compressed_summary": "해외 고객사의 서비스 도입 사례"},
-            {"evidence_id": "g2", "source": "gnews", "key_facts": ["글로벌 시장에서 관련 제품 출시"]},
-            {"evidence_id": "n1", "source": "naver_news", "compressed_summary": "국내 뉴스"},
-        ]
-    ) == {
-        "gnews_evidence_count": 3,
-        "gnews_quality_evidence_count": 2,
-        "gnews_evidence_ids": ["g1", "g2"],
-        "global_business_status": "limited_gnews_global_signal",
-        "global_business_score": 10,
-        "global_business_excluded_country": None,
-    }
+    # VAL-03/10: 글로벌 사업성은 Patent Family(출원 국가 수)로 산정.
+    family_metrics = build_global_business_metrics(
+        [{"country_code": "KR"}, {"country_code": "EP"}], patent_country="KR"
+    )
+    assert family_metrics["global_business_score"] == 10
+    assert family_metrics["global_business_status"] == "foreign_application_exists"
+    assert family_metrics["family_size"] == 2
+    assert family_metrics["foreign_country_codes"] == ["EP"]
 
 
-def test_foreign_global_business_keeps_same_country_article_when_other_market_signal_exists():
+def test_global_business_uses_patent_family_size():
     from agents.valuation_axes.market import build_global_business_metrics
 
-    metrics = build_global_business_metrics(
-        [
-            {
-                "evidence_id": "us_1",
-                "source": "gnews",
-                "title": "US company launches AI service across Europe and Japan",
-                "content": "American provider expands deployment across Europe with international customer demand",
-                "metadata": {"publisher": "US News"},
-            },
-            {
-                "evidence_id": "eu_1",
-                "source": "gnews",
-                "title": "European provider launches AI platform",
-                "content": "Healthcare service deployment expands across Europe",
-                "metadata": {"publisher": "Euronews"},
-            },
-            {
-                "evidence_id": "jp_1",
-                "source": "gnews",
-                "title": "Japanese partner launches AI service",
-                "content": "AI service launch expands in Japan with customer demand",
-                "metadata": {"publisher": "Nikkei Asia"},
-            },
-        ],
-        patent_country="US",
+    # 미/중/일 포함 다국가 출원 → 20
+    major = build_global_business_metrics(
+        [{"country_code": "KR"}, {"country_code": "US"}, {"country_code": "JP"}], patent_country="KR"
     )
+    assert major["global_business_score"] == 20
+    assert major["global_business_status"] == "multi_country_with_major_market"
+    assert major["family_size"] == 3
 
-    assert metrics["gnews_evidence_count"] == 3
-    assert metrics["gnews_quality_evidence_count"] == 3
-    assert metrics["gnews_evidence_ids"] == ["us_1", "eu_1", "jp_1"]
-    assert metrics["global_business_excluded_country"] == "US"
-    assert metrics["global_business_score"] == 20
+    # 국내 단독 → 0
+    domestic = build_global_business_metrics([{"country_code": "KR"}], patent_country="KR")
+    assert domestic["global_business_score"] == 0
+    assert domestic["global_business_status"] == "domestic_only"
 
 
-def test_foreign_global_business_excludes_same_country_only_signal():
+def test_global_business_excludes_self_country_for_foreign_patent():
     from agents.valuation_axes.market import build_global_business_metrics
 
+    # 자국(US) 제외 후 KR만 남으면 major 아님 → 10
     metrics = build_global_business_metrics(
-        [
-            {
-                "evidence_id": "us_only",
-                "source": "gnews",
-                "title": "US hospital deploys AI service",
-                "content": "American healthcare provider launches new AI service for local market adoption",
-                "metadata": {"publisher": "US News"},
-            },
-            {
-                "evidence_id": "eu_1",
-                "source": "gnews",
-                "title": "European provider launches AI platform",
-                "content": "Healthcare service deployment expands across Europe",
-                "metadata": {"publisher": "Euronews"},
-            },
-        ],
-        patent_country="US",
+        [{"country_code": "US"}, {"country_code": "KR"}], patent_country="US"
     )
-
-    assert metrics["gnews_evidence_count"] == 2
-    assert metrics["gnews_quality_evidence_count"] == 1
-    assert metrics["gnews_evidence_ids"] == ["eu_1"]
     assert metrics["global_business_score"] == 10
+    assert metrics["foreign_country_codes"] == ["KR"]
+
+    # 자국(US) 제외 후 CN 포함 → major → 20
+    major = build_global_business_metrics(
+        [{"country_code": "US"}, {"country_code": "CN"}], patent_country="US"
+    )
+    assert major["global_business_score"] == 20
+
+
+def test_global_business_family_unavailable_is_not_silent_zero():
+    from agents.valuation_axes.market import apply_marketability_scores, build_global_business_metrics
+
+    metrics = build_global_business_metrics([], patent_country="KR")
+    assert metrics["global_business_score"] is None
+    assert metrics["global_business_status"] == "family_info_unavailable"
+
+    # apply_marketability_scores가 None을 0점으로 조용히 처리하지 않고 표면화(confidence cap·missing).
+    result = apply_marketability_scores(
+        {"score": 70, "industry_marketability_score": 40, "grade": "B", "missing_information": [], "confidence": 0.8},
+        {"market_growth_score": 32, **metrics},
+    )
+    assert result["subscores"]["global_business"]["score"] is None
+    assert result["confidence"] <= 0.49
+    assert any("Patent Family" in message for message in result["missing_information"])
 
 
 def test_market_prompt_uses_18_month_lagged_three_window_activity():

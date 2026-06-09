@@ -61,7 +61,7 @@ def build_marketability_metrics(state: PatentWorkflowState, *, evidence: list[di
         use_ipc=foreign_patent,
         country_code=extract_patent_country(state) if foreign_patent else None,
     )
-    global_business = build_global_business_metrics(evidence or [], patent_country=extract_patent_country(state))
+    global_business = build_global_business_metrics(state.kipris_family_patents, patent_country=extract_patent_country(state))
     return {
         "representative_cpc": representative_cpc,
         "representative_ipc": representative_ipc,
@@ -386,29 +386,42 @@ FOREIGN_COUNTRY_HINTS = {
 }
 
 
-def build_global_business_metrics(evidence: list[dict[str, Any]], *, patent_country: str | None = None) -> dict[str, Any]:
-    gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "gnews"]
-    if patent_country and patent_country != "KR":
-        quality_items = [item for item in gnews_items if has_foreign_global_business_signal(item, patent_country=patent_country)]
+def build_global_business_metrics(
+    family_patents: list[dict[str, Any]], *, patent_country: str | None = None
+) -> dict[str, Any]:
+    # VAL-03/10: 글로벌 사업성(20점)을 docs/marketability.md §3 공표 기준(Patent Family Size, 출원 국가 수)으로 산정한다.
+    # 미/중/일 포함 다국가 출원=20, 해외 출원 존재=10, 국내 단독=0. 패밀리 정보 미가용은 0이 아니라 표면화한다.
+    countries = {
+        normalize_text(patent.get("country_code")).upper()
+        for patent in (family_patents or [])
+        if normalize_text(patent.get("country_code"))
+    }
+    home_country = normalize_text(patent_country).upper() or "KR"
+    foreign_countries = countries - {home_country}
+    if not countries:
+        # 패밀리 데이터 미가용(조회 실패/무데이터)을 0점으로 조용히 처리하지 않고 None으로 표면화한다.
+        return {
+            "family_size": 0,
+            "family_country_codes": [],
+            "foreign_country_codes": [],
+            "global_business_status": "family_info_unavailable",
+            "global_business_score": None,
+            "global_business_excluded_country": home_country,
+            "global_business_missing": "Patent Family 정보를 확인할 수 없어 글로벌 사업성을 산정하지 못했습니다.",
+        }
+    if foreign_countries & {"US", "CN", "JP"}:
+        score, status = 20, "multi_country_with_major_market"
+    elif foreign_countries:
+        score, status = 10, "foreign_application_exists"
     else:
-        quality_items = [item for item in gnews_items if has_global_market_signal_content(item)]
-    quality_count = len(quality_items)
-    if quality_count >= 3:
-        score = 20
-        status = "strong_gnews_global_signal"
-    elif quality_count >= 1:
-        score = 10
-        status = "limited_gnews_global_signal"
-    else:
-        score = 0
-        status = "no_gnews_global_signal"
+        score, status = 0, "domestic_only"
     return {
-        "gnews_evidence_count": len(gnews_items),
-        "gnews_quality_evidence_count": quality_count,
-        "gnews_evidence_ids": [item.get("evidence_id") for item in quality_items if item.get("evidence_id")],
+        "family_size": len(countries),
+        "family_country_codes": sorted(countries),
+        "foreign_country_codes": sorted(foreign_countries),
         "global_business_status": status,
         "global_business_score": score,
-        "global_business_excluded_country": patent_country if patent_country and patent_country != "KR" else None,
+        "global_business_excluded_country": home_country,
     }
 
 
@@ -526,8 +539,11 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
             or ((result.get("subscores") or {}).get("industry_marketability") or {}).get("score")
         )
     market_growth_score = metrics.get("market_growth_score")
-    global_business_score = int(metrics.get("global_business_score") or 0)
-    score = industry_score + global_business_score
+    raw_global_business_score = metrics.get("global_business_score")
+    global_business_score = int(raw_global_business_score) if raw_global_business_score is not None else None
+    score = industry_score
+    if global_business_score is not None:
+        score += global_business_score
     if market_growth_score is not None:
         score += int(market_growth_score)
     metrics = dict(metrics)
@@ -535,8 +551,12 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
     missing_message = market_growth_missing_message(metrics)
     if market_growth_score is None and missing_message not in missing_information:
         missing_information.append(missing_message)
+    if global_business_score is None:
+        gb_missing = normalize_text(metrics.get("global_business_missing")) or "Patent Family 정보를 확인할 수 없습니다."
+        if gb_missing not in missing_information:
+            missing_information.append(gb_missing)
     confidence = float(result.get("confidence") or 0)
-    if market_growth_score is None:
+    if market_growth_score is None or global_business_score is None:
         confidence = min(confidence, 0.49)
     sanitized_result = {
         key: value
@@ -570,7 +590,7 @@ def build_market_subscores(
     metrics: dict[str, Any],
     industry_score: int,
     market_growth_score: int | None,
-    global_business_score: int,
+    global_business_score: int | None,
 ) -> dict[str, dict[str, Any]]:
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     industry = subscores.get("industry_marketability") if isinstance(subscores.get("industry_marketability"), dict) else {}
@@ -600,12 +620,12 @@ def build_market_subscores(
             "score": global_business_score,
             "max_score": 20,
             "details": {
-                "gnews_evidence_count": clamp_int(metrics.get("gnews_evidence_count"), default=0, max_value=9999),
-                "gnews_quality_evidence_count": clamp_int(metrics.get("gnews_quality_evidence_count"), default=0, max_value=9999),
+                "family_size": clamp_int(metrics.get("family_size"), default=0, max_value=9999),
+                "foreign_country_codes": metrics.get("foreign_country_codes") or [],
                 "global_business_status": normalize_text(metrics.get("global_business_status")),
             },
             "rationale": normalize_text(global_business.get("rationale"))
-            or "GNews 해외 뉴스 근거로 산정된 코드 계산값입니다.",
+            or "Patent Family(출원 국가 수) 기준으로 산정된 코드 계산값입니다.",
         },
     }
 
