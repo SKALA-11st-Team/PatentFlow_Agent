@@ -52,6 +52,40 @@ def test_legal_prompt_does_not_treat_missing_foreign_claims_as_weakness():
     assert "해외 패밀리 또는 해외 등록 정보는 확인된 경우에만 보조 긍정 근거로 사용한다." in text
 
 
+def test_foreign_legal_result_removes_unavailable_citing_and_family_claim_gaps():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "JP"},
+        kipris_api_data={
+            "citing_stats": {
+                "available": False,
+                "missing_reason": "foreign_citing_api_not_connected",
+            }
+        },
+    )
+    result = reconcile_legal_scores(
+        {
+            "score": 0,
+            "grade": "D",
+            "risk_factors": [
+                "피인용/후속 권리화 신호 조회 불가",
+                "독립항의 특정 조건으로 보호범위 해석에 영향 가능",
+            ],
+            "missing_information": [
+                "피인용/후속 참조 통계",
+                "포트폴리오상 해외 관련 특허군의 청구항 전문",
+                "선행문헌의 대표 청구항",
+            ],
+            "subscores": {},
+        },
+        state=state,
+    )
+
+    assert result["risk_factors"] == ["독립항의 특정 조건으로 보호범위 해석에 영향 가능"]
+    assert result["missing_information"] == ["선행문헌의 대표 청구항"]
+
+
 def test_final_report_prompt_does_not_require_benchmark_data():
     final_report = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
