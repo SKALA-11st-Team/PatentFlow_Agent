@@ -3015,3 +3015,67 @@ def test_legal_prompt_grounds_and_surfaces_prior_art_references():
     assert '"prior_art_references": []' in text
     assert "입력에 없는 문헌 번호를 새로 만들지 않는다" in text
     assert "prior_art_references에 모두 나열한다" in text
+
+
+def _technology_result(confidence=0.8):
+    return {
+        "score": 0,
+        "grade": "LLM_GRADE",
+        "rationale": "r",
+        "evidence_ids": [],
+        "risk_factors": [],
+        "missing_information": [],
+        "confidence": confidence,
+        "subscores": {
+            "technical_differentiation": {
+                "label": "기술 차별성",
+                "score": 47,
+                "max_score": 60,
+                "details": {
+                    "configuration_differentiation": 16,
+                    "operation_differentiation": 20,
+                    "effect_differentiation": 12,
+                },
+                "rationale": "차별 요소가 확인됨",
+            },
+            "implementation_specificity": {
+                "label": "구현 구체성",
+                "score": 30,
+                "max_score": 40,
+                "details": {
+                    "component_specificity": 15,
+                    "procedure_specificity": 15,
+                    "implementation_specificity_detail": 0,
+                },
+                "rationale": "r",
+            },
+        },
+    }
+
+
+def test_technology_empty_comparison_group_downgrades_confidence():
+    # VAL-06: 비교군 0건이면 confidence를 강등하고 표면화한다(점수는 불변).
+    from agents.valuation_axes.technology import apply_technology_scores
+
+    result = apply_technology_scores(_technology_result(0.8), {"target_count": 5, "similar_patents": []})
+    assert result["confidence"] == 0.49
+    assert any("비교군 미수집" in message for message in result["missing_information"])
+    assert result["score"] == 78
+
+
+def test_technology_partial_comparison_group_downgrades_confidence():
+    from agents.valuation_axes.technology import apply_technology_scores
+
+    result = apply_technology_scores(_technology_result(0.8), {"target_count": 5, "similar_patents": [{}, {}]})
+    assert result["confidence"] <= 0.69
+    assert any("비교군 부족" in message for message in result["missing_information"])
+
+
+def test_technology_full_comparison_group_keeps_confidence():
+    from agents.valuation_axes.technology import apply_technology_scores
+
+    result = apply_technology_scores(
+        _technology_result(0.8), {"target_count": 5, "similar_patents": [{} for _ in range(5)]}
+    )
+    assert result["confidence"] == 0.8
+    assert not any("비교군" in message for message in result["missing_information"])

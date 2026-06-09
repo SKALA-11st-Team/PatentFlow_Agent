@@ -240,12 +240,29 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
     technical_differentiation_score = int(subscores["technical_differentiation"]["score"])
     implementation_specificity_score = int(subscores["implementation_specificity"]["score"])
     score = technical_differentiation_score + implementation_specificity_score
+    # VAL-06: 비교군(유사특허) 충족도에 따라 confidence를 강등하고 부족을 표면화한다(시장성 축과 대칭).
+    comparison_count = len(metrics.get("similar_patents") or [])
+    target_count = int(metrics.get("target_count") or TECHNOLOGY_COMPARISON_TARGET_COUNT)
+    confidence = float(result.get("confidence") or 0)
+    missing_information = list(result.get("missing_information") or [])
+    if comparison_count == 0:
+        confidence = min(confidence, 0.49)
+        message = "비교군 미수집: 기술 차별성 비교 근거 없음(KIPRIS 선행기술/유사특허 검색 0건)"
+        if message not in missing_information:
+            missing_information.append(message)
+    elif comparison_count < target_count:
+        confidence = min(confidence, 0.69)
+        message = f"비교군 부족: 확보 {comparison_count}/{target_count}건"
+        if message not in missing_information:
+            missing_information.append(message)
     return {
         **result,
         "score": max(0, min(100, score)),
         "grade": grade_for_score(score),
         "subscores": subscores,
         "technology_metrics": metrics,
+        "confidence": max(0.0, min(1.0, confidence)),
+        "missing_information": missing_information,
     }
 
 
