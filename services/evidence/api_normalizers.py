@@ -102,7 +102,7 @@ def normalize_dart_disclosures(
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "content": " - ".join(part for part in (corp_name, report_name) if part),
-                "related_axis": ["market", "strategy"],
+                "related_axis": ["market"],
                 "confidence": None,
                 "metadata": {
                     "query": query,

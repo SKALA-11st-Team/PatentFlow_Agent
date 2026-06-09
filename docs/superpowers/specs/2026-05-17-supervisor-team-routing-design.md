@@ -35,7 +35,7 @@ The current team decision is that PatentFlow scoring uses these four axes:
 - 시장성
 - 사업 연계성
 
-`라이프사이클 경제성` is no longer a current scoring axis. Code, prompts, schemas, tests, and shared docs should align to `business_fit` / `사업 연계성`.
+Code, prompts, schemas, tests, and shared docs should align to `business_fit` / `사업 연계성`.
 
 ## Supervisor Responsibilities
 

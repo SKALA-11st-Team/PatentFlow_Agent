@@ -13,7 +13,6 @@ JSON object 하나만 출력하세요. Markdown, 설명 문구, 코드블록은 
 - technology
 - market
 - business_fit
-- strategy
 
 source_type이 "news"인 경우, 다음 형식으로 반환하세요:
 {
