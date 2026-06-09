@@ -1154,8 +1154,8 @@ def test_market_prompt_uses_18_month_lagged_three_window_activity():
 
     assert "18개월 전을 마지막 시점으로 하는 3개 1년 구간" in prompt
     assert "최근 3개년 공개 활동성" not in prompt
-    assert "`source`가 `gnews`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다." in prompt
-    assert "해당 국가를 제외한 해외 시장의 진출, 도입, 활용, 확산 흐름" in prompt
+    assert "`source`가 `gnews`인 해외 뉴스는 산업 시장성 점수의 직접 근거로 쓰지 않는다(글로벌 사업성은 Patent Family 기준 코드 계산값을 사용한다)." in prompt
+    assert "Patent Family Size(출원 국가 수)를 기준으로" in prompt
     assert "시장성 점수(100) = 산업 시장성(40) + 시장 성장성(40) + 글로벌 사업성(20)" in prompt
     assert "시장성 총점은 원칙적으로 55점을 넘기지 않는다" not in prompt
 
@@ -1168,12 +1168,12 @@ def test_technology_prompt_supports_foreign_ipc_country_comparison_group():
     assert "해외특허의 추가 유사 특허는 대표 IPC 기반 해당 국가 문헌으로 수집된 것으로 간주한다." in prompt
 
 
-def test_final_report_prompt_uses_gnews_for_global_business():
+def test_final_report_prompt_uses_patent_family_for_global_business():
     prompt = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
-    assert "글로벌 적용성은 GNews 등 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 중심으로 설명하세요." in prompt
-    assert "GNews 기반 글로벌 시장 근거가 없다는 사실만으로 시장성이 낮다고 단정하지 마세요." in prompt
-    assert "해외 Patent Family가 확인되지 않아 글로벌 사업성은 국내 단독 출원 기준으로 낮게 반영되었습니다." not in prompt
+    assert "글로벌 적용성은 특허 패밀리(출원 국가 수)에서 확인되는 해외 출원 범위를 중심으로 설명하세요." in prompt
+    assert "해외 출원이 없다는 사실만으로 시장성이 낮다고 단정하지 마세요." in prompt
+    assert "글로벌 적용성은 GNews 등 해외 뉴스 근거에서" not in prompt
 
 
 def test_market_growth_missing_is_not_replaced_with_default_score():
