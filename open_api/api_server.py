@@ -1,4 +1,4 @@
-"""KIPRIS, DART, NAVER, GNews를 한 서버에서 제공하는 통합 FastAPI.
+"""KIPRIS, NAVER, GNews를 한 서버에서 제공하는 통합 FastAPI.
 
 실행:
   python -m uvicorn open_api.api_server:app --reload
@@ -27,13 +27,12 @@ load_dotenv()
 ROOT = Path(__file__).resolve().parent
 OPENAPI_FILES = (
     ROOT / "kipris_all_open_api.yaml",
-    ROOT / "dart_open_api.yaml",
     ROOT / "naver_open_api.yaml",
     ROOT / "gnews_open_api.yaml",
 )
 
 app = FastAPI(
-    title="Unified API Server (KIPRIS + DART + NAVER + GNews)",
+    title="Unified API Server (KIPRIS + NAVER + GNews)",
     version="1.0.0",
     description="4개 API를 하나의 api_server.py에서 실행하고 문서도 하나로 합칩니다.",
 )
@@ -134,8 +133,6 @@ def _merge_schema_dict(target: dict[str, Any], src: dict[str, Any]) -> None:
 
 
 def _infer_missing_tag(path_key: str) -> str:
-    if path_key.startswith("/dart/"):
-        return "DART"
     if path_key.startswith("/api/news/naver") or path_key.startswith("/api/news/search"):
         return "NAVER News"
     if path_key.startswith("/api/news/gnews") or path_key.startswith("/api/v4/"):
@@ -220,106 +217,8 @@ def root() -> dict[str, Any]:
         "status": "ok",
         "docs": "/docs",
         "openapi": "/openapi.json",
-        "services": ["kipris", "dart", "naver", "gnews"],
+        "services": ["kipris", "naver", "gnews"],
     }
-
-
-# -------------------------
-# DART
-# -------------------------
-def _get_dart_key() -> str:
-    dart_key = os.getenv("DART_KEY")
-    if not dart_key:
-        raise HTTPException(status_code=500, detail="DART_KEY 환경변수가 없습니다.")
-    return dart_key
-
-
-def _dart_get_json(url: str, params: dict[str, Any]) -> Any:
-    try:
-        res = requests.get(url, params=params, timeout=20)
-        res.raise_for_status()
-        data = res.json()
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"DART 요청 실패: {exc}") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="DART 응답 JSON 파싱 실패") from exc
-
-    # OpenDART는 HTTP 200이어도 status 코드로 오류를 반환할 수 있음
-    if data.get("status") not in (None, "000"):
-        raise HTTPException(
-            status_code=400,
-            detail={"dart_status": data.get("status"), "dart_message": data.get("message")},
-        )
-    return data
-
-
-@app.get("/dart/company", tags=["DART"])
-def dart_company(
-    corp_code: str = Query(..., min_length=8, max_length=8, description="DART 고유번호 8자리"),
-) -> Any:
-    return _dart_get_json(
-        "https://opendart.fss.or.kr/api/company.json",
-        {"corp_code": corp_code, "crtfc_key": _get_dart_key()},
-    )
-
-
-@app.get("/dart/financial-account", tags=["DART"])
-def dart_financial_account(
-    corp_code: str = Query(..., description="DART 고유번호 8자리"),
-    bsns_year: str = Query(..., description="사업연도 4자리"),
-    reprt_code: str = Query("11011", description="보고서 코드"),
-) -> Any:
-    return _dart_get_json(
-        "https://opendart.fss.or.kr/api/fnlttSinglAcnt.json",
-        {
-            "corp_code": corp_code,
-            "bsns_year": bsns_year,
-            "reprt_code": reprt_code,
-            "crtfc_key": _get_dart_key(),
-        },
-    )
-
-
-@app.get("/dart/disclosure", tags=["DART"])
-def dart_disclosure(
-    corp_code: str = Query(..., min_length=8, max_length=8, description="DART 고유번호 8자리"),
-    bgn_de: str = Query(..., min_length=8, max_length=8, description="시작일 YYYYMMDD"),
-    end_de: str = Query(..., min_length=8, max_length=8, description="종료일 YYYYMMDD"),
-) -> Any:
-    return _dart_get_json(
-        "https://opendart.fss.or.kr/api/list.json",
-        {
-            "corp_code": corp_code,
-            "bgn_de": bgn_de,
-            "end_de": end_de,
-            "pblntf_ty": "A",
-            "page_count": "100",
-            "crtfc_key": _get_dart_key(),
-        },
-    )
-
-
-@app.get("/dart/document", tags=["DART"])
-def dart_document(
-    rcept_no: str = Query(..., min_length=14, max_length=14, description="접수번호 14자리"),
-) -> Response:
-    try:
-        res = requests.get(
-            "https://opendart.fss.or.kr/api/document.xml",
-            params={"rcept_no": rcept_no, "crtfc_key": _get_dart_key()},
-            timeout=30,
-        )
-        res.raise_for_status()
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"DART 원문 요청 실패: {exc}") from exc
-
-    content_type = res.headers.get("Content-Type", "application/zip")
-    content_disposition = res.headers.get("Content-Disposition", f'attachment; filename="{rcept_no}.zip"')
-    return Response(
-        content=res.content,
-        media_type=content_type,
-        headers={"Content-Disposition": content_disposition},
-    )
 
 
 # -------------------------
@@ -416,7 +315,6 @@ def gnews_search_alias(
 def _sanitize_external_error(exc: Exception) -> str:
     text = str(exc)
     text = text.replace(os.getenv("GNEWS_API_KEY") or "", "***")
-    text = text.replace(os.getenv("DART_KEY") or "", "***")
     return text
 
 

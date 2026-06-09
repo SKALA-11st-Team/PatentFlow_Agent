@@ -47,6 +47,11 @@
 - 관련제품 또는 핵심 기능을 확인할 수 있는 evidence가 없습니다.
 - evidence_id가 실제 evidence_bundle에 존재하지 않습니다.
 
+## query_rewriting은 "채울 수 있는 부족"에만
+- query_rewriting은 재검색으로 **채워질 수 있는** 근거(SK AX 공식 `site:skax.co.kr`·SK 계열 매체, 제품·기능 확인 근거)가 빈약할 때만 선택합니다.
+- 단, 대상 기술에 해당하는 SK AX 공식 페이지가 애초에 존재하지 않으면 재검색해도 채워지지 않습니다. 이런 구조적 부재는 query_rewriting 사유가 아니라 missing_information/confidence로 처리하세요.
+- 재수집 **횟수 제한은 시스템(코드)이 관리**합니다. 같은 부족이 반복되어 보이더라도 retry 횟수는 신경 쓰지 말고, 지금 주어진 근거의 품질만 보고 판정하세요. 한도를 넘으면 시스템이 알아서 진행시킵니다.
+
 ## 근거 존재·내용 판단 주의
 - evidence.samples에는 이 평가가 인용한 근거(evidence_ids)가 우선 포함되며, 전체 근거의 일부 미리보기입니다.
 - 근거의 존재 여부는 evidence.samples가 아니라 known_evidence_ids로 판단하세요. known_evidence_ids에 있으면 그 근거는 존재합니다.

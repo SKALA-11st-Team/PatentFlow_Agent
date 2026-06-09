@@ -12,6 +12,7 @@ from workflow.nodes import (
     final_merge_node,
     patent_fetch_node,
     portfolio_sibling_node,
+    prior_art_fulltext_node,
     query_rewriting_node,
     report_validation_node,
     summary_node,
@@ -38,6 +39,7 @@ class WorkflowGraphState(TypedDict, total=False):
     citation_evidence: dict[str, Any]
     pdf_paths: list[str]
     parsed_pdf: dict[str, Any] | None
+    prior_art_context: dict[str, Any] | None
     preprocessed_patent: dict[str, Any] | None
     summary_result: dict[str, Any] | None
     portfolio_evidence: list[dict[str, Any]]
@@ -50,6 +52,7 @@ class WorkflowGraphState(TypedDict, total=False):
     validation_result: dict[str, Any] | None
     summary_validation_result: dict[str, Any] | None
     report_validation_result: dict[str, Any] | None
+    writing_quality_checks: dict[str, Any]
     supervisor_decision: dict[str, Any] | None
     missing_evidence: list[str]
     valuation_axis_legal: dict[str, Any]
@@ -192,6 +195,7 @@ def _build_graph() -> Any:
     graph.add_node("evidence_search", lambda payload: _run_node(payload, evidence_search_node))
     graph.add_node("evidence_compression", lambda payload: _run_node(payload, evidence_compression_node))
     graph.add_node("valuation_axes_analyze", _start_valuation_axes_analysis)
+    graph.add_node("prior_art_fulltext", lambda payload: _run_node(payload, prior_art_fulltext_node))
     graph.add_node("valuation_legal", lambda payload: _run_valuation_axis_result_node(payload, "legal"))
     graph.add_node("valuation_technology", lambda payload: _run_valuation_axis_result_node(payload, "technology"))
     graph.add_node("valuation_market", lambda payload: _run_valuation_axis_result_node(payload, "market"))
@@ -222,10 +226,11 @@ def _build_graph() -> Any:
     graph.add_edge("evidence_compression", "research_supervisor")
 
     # Valuation flow
-    graph.add_edge("valuation_axes_analyze", "valuation_legal")
-    graph.add_edge("valuation_axes_analyze", "valuation_technology")
-    graph.add_edge("valuation_axes_analyze", "valuation_market")
-    graph.add_edge("valuation_axes_analyze", "valuation_business_fit")
+    graph.add_edge("valuation_axes_analyze", "prior_art_fulltext")
+    graph.add_edge("prior_art_fulltext", "valuation_legal")
+    graph.add_edge("prior_art_fulltext", "valuation_technology")
+    graph.add_edge("prior_art_fulltext", "valuation_market")
+    graph.add_edge("prior_art_fulltext", "valuation_business_fit")
     graph.add_edge(
         ["valuation_legal", "valuation_technology", "valuation_market", "valuation_business_fit"],
         "valuation_axes_merge",

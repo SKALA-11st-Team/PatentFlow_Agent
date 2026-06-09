@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 import json
+import os
 import re
 import time
 
@@ -13,10 +14,9 @@ from app.config import settings
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.evidence.api_normalizers import (
-    normalize_dart_disclosures,
-    normalize_gnews_response,
     normalize_kipris_patent_results,
     normalize_naver_news_response,
+    normalize_tavily_news_response,
 )
 from services.evidence.news_article_extraction_service import enrich_news_items_with_full_text
 from services.evidence.store_service import (
@@ -28,8 +28,38 @@ from services.evidence.store_service import (
 DEFAULT_UNIFIED_API_BASE_URL = settings.unified_api_base_url
 MAX_SEARCH_QUERIES = settings.search_query_count
 MAX_INDUSTRY_RAG_QUERIES = settings.industry_rag_query_count
+# skax_site 검색어는 3개로 고정한다: 1번은 관련제품명 그대로, 2~3번은 기술/서비스 변형.
+SKAX_QUERY_COUNT = 3
 API_REQUEST_MAX_ATTEMPTS = 3
 API_REQUEST_RETRY_STATUS_CODES = {502, 503, 504}
+DEFAULT_NEWS_SEARCH_WORKERS = 4
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
+
+def search_global_news_via_tavily(query: str, *, max_results: int) -> dict[str, Any]:
+    """GNews 대체: Tavily(topic=news, 도메인 제한 없음)로 글로벌 영어 뉴스를 검색한다.
+
+    국가 제한 없이 영어 검색어로 전세계 뉴스를 가져오고, 최근 기간은 뉴스 필터(5년)와
+    정렬된 days 범위로 제한한다. 본문은 raw_content로 함께 수집한다.
+    """
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise requests.RequestException("TAVILY_API_KEY is not set")
+    response = requests.post(
+        TAVILY_SEARCH_URL,
+        json={
+            "api_key": api_key,
+            "query": query,
+            "topic": "news",
+            "search_depth": "basic",
+            "max_results": max(1, int(max_results)),
+            "include_raw_content": True,
+            "days": settings.tavily_news_max_age_days,
+        },
+        timeout=settings.skax_search_timeout_seconds,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def rewrite_search_queries(
@@ -74,11 +104,11 @@ def rewrite_search_queries(
         for query in compact_queries(llm_result.get("industry_rag", []))[:MAX_INDUSTRY_RAG_QUERIES]
         if query not in previous
     ]
-    rewritten_skax_site = [
-        query
-        for query in normalize_skax_site_queries(llm_result.get("skax_site", []))[:MAX_SEARCH_QUERIES]
-        if query not in previous
-    ]
+    rewritten_skax_site = ensure_skax_product_first(
+        llm_result.get("skax_site", []),
+        preprocessed_patent,
+        previous,
+    )
 
     return {
         "ko": rewritten_ko,
@@ -104,9 +134,6 @@ def collect_external_evidence(
     include_naver: bool = True,
     include_gnews: bool = True,
     include_kipris: bool = False,
-    dart_corp_code: str | None = None,
-    dart_bgn_de: str | None = None,
-    dart_end_de: str | None = None,
     missing_evidence: list[str] | None = None,
     previous_queries: list[str] | None = None,
     use_llm_rewrite: bool = True,
@@ -146,56 +173,52 @@ def collect_external_evidence(
     warnings: list[str] = []
 
     if include_naver:
-        for query in selected_queries:
-            try:
-                raw = request_json(
-                    api_base_url,
-                    "/api/news/search",
-                    {"query": query, "display": news_results_per_query, "start": 1, "sort": "sim"},
+        for search_result in collect_news_queries_concurrently(
+            api_base_url=api_base_url,
+            queries=selected_queries,
+            provider="naver",
+            results_per_query=news_results_per_query,
+            fetch_news_full_text=fetch_news_full_text,
+        ):
+            if search_result["warning"]:
+                warnings.append(search_result["warning"])
+                continue
+            items = search_result["items"]
+            sources.append(items)
+            if save:
+                path = save_evidence_collection(
+                    source_type="news",
+                    source="naver_news",
+                    items=items,
+                    query=search_result["query"],
+                    patent_id=patent_id,
+                    output_dir=output_dir or settings.output_dir / "api_evidence",
                 )
-                items = enrich_news_items_with_full_text(
-                    normalize_naver_news_response(raw, query=query),
-                    enabled=fetch_news_full_text,
-                )
-                sources.append(items)
-                if save:
-                    path = save_evidence_collection(
-                        source_type="news",
-                        source="naver_news",
-                        items=items,
-                        query=query,
-                        patent_id=patent_id,
-                        output_dir=output_dir or settings.output_dir / "api_evidence",
-                    )
-                    saved_paths.append(str(path))
-            except requests.RequestException as exc:
-                warnings.append(f"naver_news call failed for query '{query}': {exc}")
+                saved_paths.append(str(path))
 
     if include_gnews:
-        for gnews_query in selected_gnews_queries:
-            try:
-                raw = request_json(
-                    api_base_url,
-                    "/api/v4/search",
-                    {"q": gnews_query, "lang": "en", "max": news_results_per_query, "page": 1},
+        for search_result in collect_news_queries_concurrently(
+            api_base_url=api_base_url,
+            queries=selected_gnews_queries,
+            provider="global_news",
+            results_per_query=news_results_per_query,
+            fetch_news_full_text=fetch_news_full_text,
+        ):
+            if search_result["warning"]:
+                warnings.append(search_result["warning"])
+                continue
+            items = search_result["items"]
+            sources.append(items)
+            if save:
+                path = save_evidence_collection(
+                    source_type="news",
+                    source="global_news",
+                    items=items,
+                    query=search_result["query"],
+                    patent_id=patent_id,
+                    output_dir=output_dir or settings.output_dir / "api_evidence",
                 )
-                items = enrich_news_items_with_full_text(
-                    normalize_gnews_response(raw, query=gnews_query),
-                    enabled=fetch_news_full_text,
-                )
-                sources.append(items)
-                if save:
-                    path = save_evidence_collection(
-                        source_type="news",
-                        source="gnews",
-                        items=items,
-                        query=gnews_query,
-                        patent_id=patent_id,
-                        output_dir=output_dir or settings.output_dir / "api_evidence",
-                    )
-                    saved_paths.append(str(path))
-            except requests.RequestException as exc:
-                warnings.append(f"gnews call failed for query '{gnews_query}': {exc}")
+                saved_paths.append(str(path))
 
     if include_kipris and application_number:
         try:
@@ -220,30 +243,6 @@ def collect_external_evidence(
         except requests.RequestException as exc:
             warnings.append(f"kipris call failed for application_number '{application_number}': {exc}")
 
-    if dart_corp_code:
-        try:
-            bgn_de, end_de = resolve_dart_date_range(dart_bgn_de, dart_end_de)
-            raw = request_json(
-                api_base_url,
-                "/dart/disclosure",
-                {"corp_code": dart_corp_code, "bgn_de": bgn_de, "end_de": end_de},
-            )
-            query = f"corp_code:{dart_corp_code}"
-            items = normalize_dart_disclosures(raw, query=query)
-            sources.append(items)
-            if save:
-                path = save_evidence_collection(
-                    source_type="company_disclosure",
-                    source="dart",
-                    items=items,
-                    query=query,
-                    patent_id=patent_id,
-                    output_dir=output_dir or settings.output_dir / "api_evidence",
-                )
-                saved_paths.append(str(path))
-        except requests.RequestException as exc:
-            warnings.append(f"dart call failed for corp_code '{dart_corp_code}': {exc}")
-
     merged = merge_evidence_sources(sources, prefix="api")
 
     return {
@@ -258,6 +257,55 @@ def collect_external_evidence(
     }
 
 
+def collect_news_queries_concurrently(
+    *,
+    api_base_url: str,
+    queries: list[str],
+    provider: str,
+    results_per_query: int,
+    fetch_news_full_text: bool,
+) -> list[dict[str, Any]]:
+    if not queries:
+        return []
+
+    def collect_query(query: str) -> dict[str, Any]:
+        try:
+            if provider == "naver":
+                raw = request_json(
+                    api_base_url,
+                    "/api/news/search",
+                    {"query": query, "display": results_per_query, "start": 1, "sort": "sim"},
+                )
+                items = normalize_naver_news_response(raw, query=query)
+                source = "naver_news"
+            elif provider == "global_news":
+                raw = search_global_news_via_tavily(query, max_results=results_per_query)
+                items = normalize_tavily_news_response(raw, query=query)
+                source = "global_news"
+            else:
+                raise ValueError(f"Unknown news provider: {provider}")
+            return {
+                "query": query,
+                "source": source,
+                "items": enrich_news_items_with_full_text(items, enabled=fetch_news_full_text),
+                "warning": None,
+            }
+        except requests.RequestException as exc:
+            source = "naver_news" if provider == "naver" else "global_news"
+            return {
+                "query": query,
+                "source": source,
+                "items": [],
+                "warning": f"{source} call failed for query '{query}': {exc}",
+            }
+
+    max_workers = min(DEFAULT_NEWS_SEARCH_WORKERS, len(queries))
+    if max_workers <= 1:
+        return [collect_query(query) for query in queries]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(collect_query, queries))
+
+
 def compact_queries(queries: list[str]) -> list[str]:
     result = []
     seen = set()
@@ -268,6 +316,37 @@ def compact_queries(queries: list[str]) -> list[str]:
         seen.add(compacted)
         result.append(compacted)
     return result
+
+
+def ensure_skax_product_first(
+    llm_queries: list[str],
+    preprocessed_patent: dict[str, Any],
+    previous_queries: set[str],
+) -> list[str]:
+    """skax_site 검색어 3개를 구성한다.
+
+    1번: 관련제품명을 그대로(변형·접두사 없이) 검색한다. SK AX 공식 사이트에
+    제품 페이지가 있으면 가장 정확히 잡기 위함이다.
+    2~3번: LLM이 만든 기술/서비스 변형 검색어로 채운다(제품명 페이지가 없을 때를
+    대비한 일반 표현). 1번 제품 검색어는 재검색 라운드에서도 항상 유지하고,
+    previous_queries 필터는 변형 검색어(2~3번)에만 적용한다.
+    모든 항목은 normalize_skax_site_queries로 canonical 형태(site:skax.co.kr 접두)로
+    맞춰 두면, Tavily 단계에서 site: 연산자가 제거되어 키워드만 전송된다.
+    """
+    product = extract_related_product(preprocessed_patent)
+    head = normalize_skax_site_queries([product]) if product else []
+    product_norm = normalize_related_product(product)
+    tail_source = [
+        query
+        for query in llm_queries
+        if not product_norm or normalize_related_product(query) != product_norm
+    ]
+    tail = [
+        query
+        for query in normalize_skax_site_queries(tail_source)
+        if query not in previous_queries and query not in head
+    ]
+    return compact_queries([*head, *tail])[:SKAX_QUERY_COUNT]
 
 
 def ensure_related_product_query(
@@ -442,18 +521,6 @@ def with_response_detail(exc: requests.HTTPError) -> requests.HTTPError:
         return exc
     detail = exc.response.text[:300]
     return requests.HTTPError(f"{exc}; response={detail}", response=exc.response)
-
-
-def resolve_dart_date_range(
-    bgn_de: str | None,
-    end_de: str | None,
-) -> tuple[str, str]:
-    if bgn_de and end_de:
-        return bgn_de, end_de
-    today = datetime.now()
-    end_value = end_de or today.strftime("%Y%m%d")
-    bgn_value = bgn_de or (today - timedelta(days=365)).strftime("%Y%m%d")
-    return bgn_value, end_value
 
 
 def contains_hangul(value: str) -> bool:

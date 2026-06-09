@@ -7,19 +7,29 @@ from typing import Any, Mapping
 from open_api.kipris_client import KiprisClient
 from services.evidence.api_normalizers import extract_kipris_items
 from services.patent.kipris_patent_service import (
+    _download_pdf_url,
     _foreign_literature_number_candidates,
     download_and_parse_patent_pdf,
-    fetch_kipris_bibliography,
+    fetch_kipris_bibliography_basic,
+    google_patents_pdf_url,
+    google_patents_publication_id,
     parse_single_patent_pdf,
 )
-from services.patent.markdown_preprocess_service import extract_sections, preprocess_patent_markdown
+from services.patent.markdown_preprocess_service import (
+    build_preprocessed_patent,
+    extract_sections,
+    preprocess_patent_markdown,
+)
+
+
+DEFAULT_PRIOR_ART_TOP_K = 5
 
 
 def build_prior_art_patent_context(
     *,
     target_metadata: dict[str, Any],
     kipris_api_data: dict[str, Any] | None = None,
-    top_k: int | None = None,
+    top_k: int | None = DEFAULT_PRIOR_ART_TOP_K,
     collect_pdf: bool = False,
     output_dir: str | Path | None = None,
     pdf_text_limit: int | None = None,
@@ -85,13 +95,14 @@ def collect_prior_art_candidates(*, target_metadata: dict[str, Any], citation_do
         if not display_number or display_number in seen:
             continue
         seen.add(display_number)
+        parsed = parse_prior_art_display_number(display_number)
         items.append(
             {
                 "display_number": display_number,
                 "source": "preprocessed_prior_art",
-                "country_code": display_number[:2] if len(display_number) >= 2 else None,
-                "kind_code": extract_kind_code(display_number),
-                "standard_number": normalize_digits(display_number),
+                "country_code": parsed.get("country_code") or (display_number[:2] if len(display_number) >= 2 else None),
+                "kind_code": parsed.get("kind_code") or extract_kind_code(display_number),
+                "standard_number": parsed.get("standard_number") or normalize_digits(display_number),
                 "original_number": display_number,
                 "citation_type_names": [],
                 "publication_date": None,
@@ -175,7 +186,7 @@ def resolve_prior_art_candidate(
         )
     if application_number:
         try:
-            bibliography = fetch_kipris_bibliography(application_number)
+            bibliography = fetch_kipris_bibliography_basic(application_number)
             metadata = bibliography.get("metadata") or {}
             sections = bibliography.get("sections") or {}
             abstract = sections.get("abstract") if isinstance(sections, dict) else None
@@ -222,6 +233,7 @@ def resolve_prior_art_candidate(
                     "similarity_text": prior_art_similarity_text_from_markdown(markdown_text),
                 }
             )
+            item.update(prior_art_legal_content_from_markdown(markdown_text, country_code=item.get("country_code")))
         else:
             joined = " | ".join(error_messages)[:500]
             item["_warnings"].append(
@@ -265,6 +277,7 @@ def attach_foreign_prior_art_fulltext(
                 "similarity_text": prior_art_similarity_text_from_markdown(markdown_text),
             }
         )
+        item.update(prior_art_legal_content_from_markdown(markdown_text, country_code=item.get("country_code")))
         return
 
     joined = " | ".join(errors)[:500]
@@ -306,6 +319,30 @@ def download_foreign_prior_art_fulltext(
                 return parsed, literature_number, fulltext_type, str(pdf_path), errors
             except Exception as exc:
                 errors.append(f"{literature_number}:{fulltext_type}:{exc.__class__.__name__}:{str(exc)[:180]}")
+
+    patent = {
+        "country": country_code,
+        "registration_number": candidate.get("display_number") or candidate.get("original_number"),
+    }
+    publication_id = google_patents_publication_id(patent)
+    try:
+        pdf_url = google_patents_pdf_url(patent, session=client.session, timeout=client.timeout)
+        if pdf_url and publication_id:
+            pdf_path = _download_pdf_url(
+                pdf_url,
+                output_dir=output_dir,
+                filename=f"{publication_id}.pdf",
+                session=client.session,
+                timeout=client.timeout,
+            )
+            parsed = parse_single_patent_pdf(
+                pdf_path,
+                output_dir=output_dir / safe_filename(publication_id),
+            )
+            return parsed, publication_id, "google_patents", str(pdf_path), errors
+        errors.append("google_patents:pdf_not_found")
+    except Exception as exc:
+        errors.append(f"google_patents:{exc.__class__.__name__}:{str(exc)[:180]}")
     return None, None, None, None, errors
 
 
@@ -394,6 +431,10 @@ def candidate_search_matches(candidate: dict[str, Any]) -> list[dict[str, Any]]:
                 results.append(resolved)
         except Exception:
             continue
+        # 한 검색 방식에서 해당 선행문헌을 찾았으면 나머지 번호 방식은 시도하지 않는다
+        # (같은 특허를 4가지 번호로 중복 조회하는 KIPRIS 낭비 방지).
+        if results:
+            break
     if len(number) == 13 and number not in seen:
         results.append(
             {
@@ -502,6 +543,21 @@ def normalize_digits(value: Any) -> str | None:
     return text or None
 
 
+def parse_prior_art_display_number(value: Any) -> dict[str, str | None]:
+    text = str(value or "").strip().replace("*", "")
+    match = re.match(r"^\s*([A-Za-z]{2})\s*[- ]?\s*([0-9][0-9A-Za-z./-]*?)(?:\s+([A-Za-z][0-9]?))?\s*$", text)
+    if not match:
+        return {"country_code": None, "standard_number": None, "kind_code": None}
+    country_code = match.group(1).upper()
+    standard_number = normalize_digits(match.group(2))
+    kind_code = match.group(3).upper() if match.group(3) else None
+    return {
+        "country_code": country_code,
+        "standard_number": standard_number,
+        "kind_code": kind_code,
+    }
+
+
 def normalize_text(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
@@ -537,6 +593,76 @@ def prior_art_similarity_text_from_markdown(markdown_text: str) -> str:
         detailed_description=sections.get("detailed_description"),
         abstract=sections.get("abstract"),
     )
+
+
+def prior_art_legal_content_from_markdown(
+    markdown_text: str,
+    *,
+    country_code: str | None,
+    max_claims: int = 5,
+) -> dict[str, Any]:
+    preprocessed = build_preprocessed_patent(
+        markdown_text,
+        db_metadata={"country": country_code} if country_code else None,
+    )
+    claims = list(preprocessed.get("claims") or [])
+    ordered_claims = [
+        *[claim for claim in claims if claim.get("is_independent")],
+        *[claim for claim in claims if not claim.get("is_independent")],
+    ]
+    representative_claims = [
+        {
+            "claim_no": claim.get("claim_no"),
+            "is_independent": claim.get("is_independent"),
+            "dependency": claim.get("dependency"),
+            "text": normalize_text(claim.get("text")),
+        }
+        for claim in ordered_claims[:max_claims]
+        if normalize_text(claim.get("text"))
+    ]
+    abstract = normalize_text((preprocessed.get("sections") or {}).get("abstract"))
+    return {
+        "abstract": abstract,
+        "claim_stats": preprocessed.get("claim_stats") or {},
+        "representative_claims": representative_claims,
+        "lookup_status": "resolved",
+        "lookup_source": "prior_art_pdf_fulltext",
+        "comparison_status": (
+            "claim_comparison_ready" if representative_claims else "fulltext_claims_unparsed"
+        ),
+    }
+
+
+def prior_art_context_citation_documents(context: dict[str, Any] | None) -> list[dict[str, Any]]:
+    documents = []
+    for item in (context or {}).get("prior_art_patents") or (context or {}).get("similar_patents") or []:
+        if not isinstance(item, dict):
+            continue
+        if item.get("comparison_status") == "identifier_only":
+            continue
+        comparison_status = item.get("comparison_status")
+        if comparison_status == "comparison_ready":
+            comparison_status = "claim_comparison_ready"
+        documents.append(
+            {
+                "direction": "cited_by_target",
+                "country_code": item.get("country_code"),
+                "application_number": item.get("application_number"),
+                "registration_number": item.get("registration_number"),
+                "publication_number": item.get("opening_number"),
+                "document_number": item.get("document_number"),
+                "kind_code": item.get("kind_code"),
+                "display_number": item.get("display_number"),
+                "title": item.get("title"),
+                "abstract": item.get("abstract"),
+                "claim_stats": item.get("claim_stats") or {},
+                "representative_claims": item.get("representative_claims") or [],
+                "lookup_status": item.get("lookup_status"),
+                "lookup_source": item.get("lookup_source"),
+                "comparison_status": comparison_status,
+            }
+        )
+    return documents
 
 
 def build_claims_and_description_text(

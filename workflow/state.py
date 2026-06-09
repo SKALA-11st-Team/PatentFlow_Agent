@@ -17,6 +17,7 @@ class PatentWorkflowState(BaseModel):
     citation_evidence: dict[str, Any] = Field(default_factory=dict)
     pdf_paths: list[str] = Field(default_factory=list)
     parsed_pdf: dict[str, Any] | None = None
+    prior_art_context: dict[str, Any] | None = None
 
     # Patent markdown/preprocessed content
     preprocessed_patent: dict[str, Any] | None = None
@@ -38,5 +39,7 @@ class PatentWorkflowState(BaseModel):
     validation_result: dict[str, Any] | None = None
     summary_validation_result: dict[str, Any] | None = None
     report_validation_result: dict[str, Any] | None = None
+    # writing supervisor의 요약/보고서 LLM 품질검사 직전 결과(선택적 재검증용).
+    writing_quality_checks: dict[str, Any] = Field(default_factory=dict)
     supervisor_decision: dict[str, Any] | None = None
     missing_evidence: list[str] = Field(default_factory=list)

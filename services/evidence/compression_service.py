@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+from concurrent.futures import ThreadPoolExecutor
+import contextvars
 import json
 
 from app.config import settings
@@ -11,9 +13,10 @@ from services.llm.prompt_service import load_prompt
 
 
 DEFAULT_COMPRESSED_EVIDENCE_DIR = settings.output_dir / "compressed_evidence"
-DEFAULT_RAG_SCORE_THRESHOLD = 0.5
+DEFAULT_RAG_SCORE_THRESHOLD = settings.rag_score_threshold
 ALLOWED_AXES = {"legal", "technology", "market", "business_fit", "strategy"}
 DEFAULT_TEXT_LIMIT = 6000
+DEFAULT_COMPRESSION_WORKERS = settings.compression_workers
 
 
 def compress_evidence_items(
@@ -28,13 +31,14 @@ def compress_evidence_items(
     warnings: list[str] = []
     rejected_by_llm = 0
 
-    for item in candidates:
-        try:
-            compressed_item = compress_single_evidence(item, preprocessed_patent=preprocessed_patent, llm=llm)
-        except Exception as exc:
-            warnings.append(f"{item.get('evidence_id')}:compression_failed:{exc.__class__.__name__}:{str(exc)[:200]}")
+    for item, compressed_item, warning in compress_candidates_concurrently(
+        candidates,
+        preprocessed_patent=preprocessed_patent,
+        llm=llm,
+    ):
+        if warning:
+            warnings.append(warning)
             continue
-
         if compressed_item.get("is_relevant") is False:
             rejected_by_llm += 1
             continue
@@ -55,6 +59,38 @@ def compress_evidence_items(
     }
 
 
+def compress_candidates_concurrently(
+    candidates: list[dict[str, Any]],
+    *,
+    preprocessed_patent: dict[str, Any],
+    llm: Callable[[str], str],
+) -> list[tuple[dict[str, Any], dict[str, Any], str | None]]:
+    if not candidates:
+        return []
+
+    def compress_candidate(item: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], str | None]:
+        try:
+            compressed_item = compress_single_evidence(item, preprocessed_patent=preprocessed_patent, llm=llm)
+            return item, compressed_item, None
+        except Exception as exc:
+            warning = f"{item.get('evidence_id')}:compression_failed:{exc.__class__.__name__}:{str(exc)[:200]}"
+            return item, {}, warning
+
+    max_workers = min(DEFAULT_COMPRESSION_WORKERS, len(candidates))
+    if max_workers <= 1:
+        return [compress_candidate(item) for item in candidates]
+    # Propagate the current context (incl. the active LangSmith run tree, which is
+    # stored in contextvars) into each worker thread so the per-item compression
+    # LLM calls nest under the evidence_compression node instead of appearing as
+    # separate root traces. copy_context() is evaluated here on the calling thread.
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [
+            executor.submit(contextvars.copy_context().run, compress_candidate, item)
+            for item in candidates
+        ]
+        return [future.result() for future in futures]
+
+
 def select_compression_candidates(
     items: list[dict[str, Any]],
     *,
@@ -66,6 +102,11 @@ def select_compression_candidates(
     for item in items:
         source_type = item.get("source_type")
         if source_type == "news":
+            candidates.append(item)
+            continue
+        if source_type == "company_disclosure":
+            # SK AX 공식 사이트/계열 매체 근거. 검색 단계에서 키워드로 거르지 않고
+            # 전문을 그대로 올린 뒤, 여기서 요약 + 관련성(LLM)을 판단한다.
             candidates.append(item)
             continue
         if source_type == "industry_report":
@@ -93,6 +134,8 @@ def compress_single_evidence(
 
     if item.get("source_type") == "industry_report":
         return normalize_industry_compression(item, parsed)
+    if item.get("source_type") == "company_disclosure":
+        return normalize_company_disclosure_compression(item, parsed)
     return normalize_news_compression(item, parsed)
 
 
@@ -139,12 +182,28 @@ def normalize_news_compression(item: dict[str, Any], parsed: dict[str, Any]) -> 
         "published_at": item.get("published_at"),
         "collected_at": item.get("collected_at") or now_iso(),
         "is_relevant": bool(parsed.get("is_relevant", True)),
+        # SK AX(또는 SK C&C)의 사업/제품/서비스와 직접 관련된 뉴스인지 LLM이 판단한 값.
+        # True이면 시장성 외에 사업연계성 축에서도 보조 근거로 쓸 수 있다.
+        "sk_ax_relevant": bool(parsed.get("sk_ax_relevant", False)),
         "related_axes": normalize_axes(parsed.get("related_axes")),
         "relation_type": normalize_relation_type(parsed.get("relation_type")),
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
         "axis_context": normalize_axis_context(parsed.get("axis_context")),
     }
+
+
+def normalize_company_disclosure_compression(item: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:
+    # SK AX 공식 사이트/계열 매체 근거는 source/source_type/url/source_domain 등
+    # 식별 필드를 그대로 보존하고(사업연계성 축 선택이 source 기반이므로), 그 위에
+    # LLM 요약·관련성 판단 결과만 덧씌운다. 원문(content)도 유지해 근거 발췌에 쓴다.
+    compressed = dict(item)
+    compressed["is_relevant"] = bool(parsed.get("is_relevant", True))
+    compressed["sk_ax_relevant"] = bool(parsed.get("sk_ax_relevant", True))
+    compressed["compressed_summary"] = normalize_text(parsed.get("compressed_summary"))
+    compressed["key_facts"] = normalize_text_list(parsed.get("key_facts"))
+    compressed["collected_at"] = item.get("collected_at") or now_iso()
+    return compressed
 
 
 def normalize_industry_compression(item: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:

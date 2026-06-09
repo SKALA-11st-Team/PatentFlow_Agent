@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agents.valuation_axes.common import grade_for_score, select_by_types_or_axes
+from agents.valuation_axes.common import grade_for_score, select_by_source_types
 from agents.valuation_axes.market import clamp_int, extract_patent_country, extract_representative_cpc, extract_representative_ipc
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
@@ -39,10 +39,9 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     del state
-    return select_by_types_or_axes(
+    return select_by_source_types(
         items,
         source_types={"portfolio_context", "industry_report", "patent_api"},
-        axes={AXIS},
     )
 
 
@@ -87,6 +86,7 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
         country_code=country_code if foreign_patent else None,
         similar_dir=similar_dir,
         prior_art_dir=prior_art_dir,
+        prior_art_context=state.prior_art_context,
     )
 
 
@@ -158,9 +158,14 @@ def build_hybrid_context(
     country_code: str | None,
     similar_dir: Path | None,
     prior_art_dir: Path | None,
+    prior_art_context: dict[str, Any] | None = None,
     target_top_k: int = TECHNOLOGY_COMPARISON_TARGET_COUNT,
 ) -> dict[str, Any]:
-    prior_art = build_prior_art_context(metadata=metadata, kipris_api_data=kipris_api_data, output_dir=prior_art_dir)
+    prior_art = prior_art_context or build_prior_art_context(
+        metadata=metadata,
+        kipris_api_data=kipris_api_data,
+        output_dir=prior_art_dir,
+    )
     prior_items = list(prior_art.get("similar_patents") or [])
 
     if len(prior_items) >= target_top_k:
@@ -232,7 +237,10 @@ def merge_hybrid_items(*, prior_items: list[dict[str, Any]], similar_items: list
 def compact_comparison_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     drop_keys = {"pdf_text_excerpt", "similarity_text", "resolved_search_matches"}
     return [
-        {key: value for key, value in item.items() if key not in drop_keys}
+        {
+            "document_role": "prior_art_or_similar_comparison",
+            **{key: value for key, value in item.items() if key not in drop_keys},
+        }
         for item in items
     ]
 def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:

@@ -422,13 +422,12 @@ def test_writing_supervisor_retries_only_failed_report():
 
 
 def test_writing_supervisor_uses_llm_judge_to_retry_document(monkeypatch):
-    monkeypatch.setattr(
-        "workflow.supervisor.call_llm",
-        lambda prompt, **kwargs: (
-            '{"passed": false, "next_action": "final_report", '
-            '"issues": ["AI 평가와 최종 판단 구분이 불명확함"], "reason": "문서 분리 필요"}'
-        ),
-    )
+    def fake_call_llm(prompt, **kwargs):
+        if "Supervisor Summary Check" in prompt:
+            return '{"passed": true, "issues": [], "reason": "요약 정상"}'
+        return '{"passed": false, "issues": ["보고서 내용 보완 필요"], "reason": "보고서 품질"}'
+
+    monkeypatch.setattr("workflow.supervisor.call_llm", fake_call_llm)
     state = PatentWorkflowState(
         user_input={"use_llm_supervisor": True},
         summary_result={"summary_markdown": "# 특허 요약\n\n본문"},
@@ -437,9 +436,37 @@ def test_writing_supervisor_uses_llm_judge_to_retry_document(monkeypatch):
 
     result = writing_supervisor_node(state)
 
+    # Summary passed its dedicated check, report failed -> retry only the report.
     assert result.supervisor_decision["passed"] is False
     assert result.supervisor_decision["next_team"] == "writing"
     assert result.supervisor_decision["next_action"] == "final_report"
+
+
+def test_writing_supervisor_retries_summary_when_its_content_check_fails(monkeypatch):
+    def fake_call_llm(prompt, **kwargs):
+        if "Supervisor Summary Check" in prompt:
+            return '{"passed": false, "issues": ["핵심 내용 설명 부족"], "reason": "요약 품질"}'
+        return '{"passed": true, "issues": [], "reason": "보고서 정상"}'
+
+    monkeypatch.setattr("workflow.supervisor.call_llm", fake_call_llm)
+    state = PatentWorkflowState(
+        user_input={"use_llm_supervisor": True},
+        summary_result={"summary_markdown": "# 특허 요약\n\n본문"},
+        valuation_result={"final_report_markdown": "# 특허 가치평가 리포트\n\n본문"},
+    )
+
+    result = writing_supervisor_node(state)
+
+    # Dedicated summary check failed -> retry only the summary.
+    assert result.supervisor_decision["next_action"] == "summary"
+
+
+def test_summary_check_prompt_evaluates_summary_content():
+    from pathlib import Path
+
+    text = Path("prompts/supervisor/supervisor_summary_check.md").read_text(encoding="utf-8")
+    assert "이 체크는 요약만 평가합니다" in text
+    assert "summary_markdown" in text
 
 
 def test_writing_supervisor_retry_limit_finishes_when_outputs_exist(monkeypatch):

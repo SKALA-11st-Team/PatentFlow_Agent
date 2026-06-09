@@ -1,4 +1,6 @@
 import json
+import threading
+import time
 
 from services.evidence.compression_service import compress_evidence_items, select_compression_candidates
 
@@ -8,14 +10,15 @@ def test_select_compression_candidates_keeps_news_and_high_score_rag():
         {"evidence_id": "news_1", "source_type": "news", "content": "뉴스"},
         {"evidence_id": "rag_high", "source_type": "industry_report", "score": 0.5, "context": "청크"},
         {"evidence_id": "rag_low", "source_type": "industry_report", "score": 0.49, "context": "청크"},
-        {"evidence_id": "dart_1", "source_type": "company_disclosure", "content": "공시"},
+        {"evidence_id": "disclosure_1", "source_type": "company_disclosure", "content": "공시"},
     ]
 
     candidates, skipped = select_compression_candidates(items, rag_score_threshold=0.5)
 
-    assert [item["evidence_id"] for item in candidates] == ["news_1", "rag_high"]
+    # company_disclosure(SK AX 공식 근거)도 이제 압축 후보에 포함된다.
+    assert [item["evidence_id"] for item in candidates] == ["news_1", "rag_high", "disclosure_1"]
     assert skipped["low_rag_score"] == 1
-    assert skipped["non_target"] == 1
+    assert skipped["non_target"] == 0
 
 
 def test_compress_evidence_items_normalizes_news_and_rag_shapes():
@@ -79,6 +82,55 @@ def test_compress_evidence_items_normalizes_news_and_rag_shapes():
     assert rag["compressed_summary"] == "자동차 내수 반등 요인이 제한적이다."
     assert "context" not in rag
     assert "content" not in rag
+
+
+def test_compress_evidence_items_runs_llm_calls_concurrently():
+    items = [
+        {
+            "evidence_id": "news_1",
+            "source_type": "news",
+            "source": "naver_news",
+            "title": "뉴스 1",
+            "content": "로보어드바이저 시장 확대",
+        },
+        {
+            "evidence_id": "news_2",
+            "source_type": "news",
+            "source": "naver_news",
+            "title": "뉴스 2",
+            "content": "AI 자산관리 시장 확대",
+        },
+    ]
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_llm(prompt):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return json.dumps(
+            {
+                "is_relevant": True,
+                "related_axes": ["market"],
+                "compressed_summary": "시장 확대 근거",
+                "key_facts": ["시장 확대"],
+            },
+            ensure_ascii=False,
+        )
+
+    result = compress_evidence_items(
+        items,
+        preprocessed_patent={"metadata": {"title": "테스트 특허"}, "sections": {"abstract": "초록"}},
+        llm=fake_llm,
+    )
+
+    assert max_active > 1
+    assert [item["evidence_id"] for item in result["items"]] == ["news_1", "news_2"]
 
 
 def test_compression_prompt_uses_minimal_patent_context():

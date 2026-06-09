@@ -1,10 +1,11 @@
 import json
+import threading
+import time
 
 import pytest
 
 from schemas.evidence import Evidence
 from services.evidence.api_normalizers import (
-    normalize_dart_disclosures,
     normalize_gnews_response,
     normalize_naver_news_response,
 )
@@ -21,7 +22,7 @@ from services.evidence.external_search_service import (
 )
 
 
-def test_normalize_news_and_dart_to_common_evidence_shape():
+def test_normalize_news_to_common_evidence_shape():
     naver = {
         "items": [
             {
@@ -44,28 +45,15 @@ def test_normalize_news_and_dart_to_common_evidence_shape():
             }
         ]
     }
-    dart = {
-        "list": [
-            {
-                "corp_code": "001",
-                "corp_name": "샘플회사",
-                "report_nm": "사업보고서",
-                "rcept_no": "202605050001",
-                "rcept_dt": "20260505",
-            }
-        ]
-    }
-
     merged = merge_evidence_sources(
         [
             normalize_naver_news_response(naver, query="AI 자산배분 시장"),
             normalize_gnews_response(gnews, query="AI 자산배분 시장"),
-            normalize_dart_disclosures(dart, query="AI 자산배분 시장"),
         ],
         prefix="api",
     )
 
-    assert len(merged) == 3
+    assert len(merged) == 2
     assert merged[0]["evidence_id"].startswith("api_")
     assert merged[0]["source_type"] == "news"
     assert merged[0]["title"] == "AI 자산배분 시장 성장"
@@ -74,8 +62,6 @@ def test_normalize_news_and_dart_to_common_evidence_shape():
     assert "summary" not in merged[0]
     assert "raw_text" not in merged[0]
     assert "published_at_precision" not in merged[0]
-    assert merged[2]["source_type"] == "company_disclosure"
-    assert merged[2]["published_at"] == "2026-05-05"
 
 
 def test_evidence_schema_content_alias_and_save(tmp_path):
@@ -210,7 +196,11 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
     assert len(rewritten["ko"]) <= MAX_SEARCH_QUERIES
     assert any("MarketCaster" in query for query in rewritten["ko"])
     assert rewritten["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
-    assert rewritten["skax_site"] == ["site:skax.co.kr 로보어드바이저 금융 자산관리"]
+    # skax_site 1번은 관련제품명을 그대로(변형 없이), 2번부터 LLM 변형 검색어.
+    assert rewritten["skax_site"] == [
+        "site:skax.co.kr MarketCaster",
+        "site:skax.co.kr 로보어드바이저 금융 자산관리",
+    ]
     assert rewritten["meta"]["product_query_enforced"] is True
 
 
@@ -343,20 +333,70 @@ def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
     assert saved_queries == result["gnews_queries"]
 
 
+def test_collect_external_evidence_searches_news_queries_concurrently(monkeypatch):
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_request_json(base_url, path, params, *, timeout=20):
+        nonlocal active, max_active
+        del base_url, timeout
+        assert path == "/api/news/search"
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        query = params["query"]
+        return {
+            "items": [
+                {
+                    "title": query,
+                    "originallink": f"https://example.com/{query}",
+                    "description": "뉴스 본문",
+                    "pubDate": "Tue, 05 May 2026 09:30:00 +0900",
+                }
+            ]
+        }
+
+    monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
+
+    result = collect_external_evidence(
+        preprocessed_patent={"metadata": {"title": "스마트팩토리"}, "sections": {"abstract": "공장 자동화"}},
+        patent_id=1,
+        include_naver=True,
+        include_gnews=False,
+        include_kipris=False,
+        ko_queries_override=["스마트팩토리 레이아웃", "제조 자동화"],
+        en_queries_override=[],
+        query_limit_per_axis=2,
+        fetch_news_full_text=False,
+        save=False,
+    )
+
+    assert max_active > 1
+    assert result["queries"] == ["스마트팩토리 레이아웃", "제조 자동화"]
+    assert [item["title"] for item in result["items"]] == ["스마트팩토리 레이아웃", "제조 자동화"]
+
+
 def test_collect_external_evidence_uses_configured_news_results_per_query(monkeypatch, tmp_path):
     observed = []
+    tavily_calls = []
 
     def fake_request_json(base_url, path, params, *, timeout=20):
         del base_url, timeout
         observed.append((path, dict(params)))
-        if path == "/api/news/search":
-            assert params["display"] == 3
-            return {"items": []}
-        assert path == "/api/v4/search"
-        assert params["max"] == 3
-        return {"articles": []}
+        assert path == "/api/news/search"
+        assert params["display"] == 3
+        return {"items": []}
+
+    def fake_tavily_news(query, *, max_results):
+        tavily_calls.append((query, max_results))
+        return {"results": []}
 
     monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
+    monkeypatch.setattr("services.evidence.external_search_service.search_global_news_via_tavily", fake_tavily_news)
     monkeypatch.setattr("services.evidence.external_search_service.save_evidence_collection", lambda **kwargs: tmp_path / "x.json")
     monkeypatch.setattr("services.evidence.external_search_service.settings.news_results_per_query", 3, raising=False)
 
@@ -371,4 +411,6 @@ def test_collect_external_evidence_uses_configured_news_results_per_query(monkey
         fetch_news_full_text=False,
     )
 
-    assert [path for path, _ in observed] == ["/api/news/search", "/api/v4/search"]
+    # 네이버는 통합 서버, 글로벌 뉴스(gnews 자리)는 Tavily로 호출된다.
+    assert [path for path, _ in observed] == ["/api/news/search"]
+    assert tavily_calls == [("conversational AI chatbot", 3)]

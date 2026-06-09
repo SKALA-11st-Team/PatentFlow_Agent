@@ -1,25 +1,32 @@
-from pathlib import Path
-
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
     download_and_parse_foreign_patent_pdf,
     fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
     extract_foreign_claims_from_text,
-    find_cached_foreign_patent_pdf,
+    foreign_fulltext_parse_is_usable,
+    foreign_patent_metadata_from_db,
     foreign_target_literature_candidates,
     google_patents_pdf_url,
     google_patents_publication_id,
-    has_meaningful_pdf_text,
+    google_patents_html_to_markdown,
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
-    parse_single_patent_pdf,
     normalize_foreign_reference_documents,
+    foreign_reference_candidate_from_text,
+    resolve_foreign_prior_art_evidence,
     resolve_citation_evidence,
+    _fetch_foreign_claims,
+    has_meaningful_pdf_text,
+    parse_single_patent_pdf,
+    should_exclude_pdf_page_text,
     should_run_ocr_fallback,
+    trim_foreign_front_matter,
     classify_foreign_pdf_failure,
     _fetch_foreign_claims_from_kipris,
     _foreign_literature_number_candidates,
+    _google_patents_figure_urls,
+    _google_patents_backward_references,
     _select_fulltext_pdf,
     fulltext_application_number_candidates,
 )
@@ -74,8 +81,32 @@ class Session:
 class ForeignClient:
     def __init__(self):
         self.claim_calls = []
+        self.bibliography_calls = []
         self.session = Session()
         self.timeout = 30.0
+
+    def overseas_bibliographic_info(self, literature_number, country_code):
+        self.bibliography_calls.append((literature_number, country_code))
+        if literature_number == "000012417849B2":
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "applicationNumber": "18/020,829",
+                            "registerNumber": "12,417,849",
+                            "inventionTitle": "Method for Identifying Association between Disease-related Factors",
+                            "applicationDate": "20210401",
+                            "registerDate": "20250610",
+                            "claimCount": "1",
+                            "astrtCont": "An association identification method using document data.",
+                            "ipcNumber": ["G16H 50/20", "G06F 16/2457"],
+                            "applicantName": "SK HOLDINGS CO., LTD.",
+                            "inventorName": "Hong Gil Dong",
+                        }
+                    }
+                }
+            }
+        return {"response": {"body": {"items": {}}}}
 
     def overseas_demand_paragraph(self, literature_number, country_code):
         self.claim_calls.append((literature_number, country_code))
@@ -164,6 +195,20 @@ def test_overseas_demand_paragraph_uses_foreign_bibliographic_access_key():
     assert call["params"]["countryCode"] == "JP"
 
 
+def test_overseas_bibliographic_info_uses_foreign_bibliographic_access_key():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.overseas_bibliographic_info("000004002589B2", "JP")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/ForeignPatentBibliographicService/bibliographicInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["literatureNumber"] == "000004002589B2"
+    assert call["params"]["countryCode"] == "JP"
+
+
 def test_overseas_open_fulltext_uses_foreign_image_fulltext_access_key():
     client = KiprisClient(service_key="test-key")
     client.session = Session()
@@ -207,6 +252,189 @@ def test_foreign_target_literature_candidates_defaults_us_registration_to_b2():
     assert candidates[0]["kind_code"] == "B2"
 
 
+def test_foreign_reference_candidate_from_pdf_prior_art():
+    assert foreign_reference_candidate_from_text("US 2010241261 A1") == {
+        "direction": "cited_by_target",
+        "country_code": "US",
+        "document_number": "2010241261",
+        "kind_code": "A1",
+        "original_number": "US 2010241261 A1",
+        "display_number": "US 2010241261 A1",
+        "lookup_source": "foreign_target_pdf_prior_art",
+    }
+
+
+def test_resolve_foreign_prior_art_evidence_returns_claim_details(monkeypatch):
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._kipris_client",
+        lambda: ForeignClient(),
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims",
+        lambda client, candidates, **kwargs: [
+            {
+                "display_number": candidates[0]["display_number"],
+                "representative_claims": [{"claim_no": 1, "text": "Prior art claim"}],
+            }
+        ],
+    )
+
+    result = resolve_foreign_prior_art_evidence(["US 2010241261 A1"])
+
+    assert result["foreign_citation_documents"][0]["representative_claims"][0]["text"] == "Prior art claim"
+    assert result["prior_art_collection"]["comparison_ready_count"] == 1
+    assert result["warnings"] == []
+
+
+def test_fetch_foreign_claims_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
+    candidate = foreign_reference_candidate_from_text("US 2010241261 A1")
+    client = ForeignClient()
+    client.session = object()
+    client.timeout = 20
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_kipris",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_bigquery",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.google_patents_pdf_url",
+        lambda *args, **kwargs: "https://example.com/prior-art.pdf",
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._download_pdf_url",
+        lambda *args, **kwargs: tmp_path / "prior-art.pdf",
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.parse_single_patent_pdf",
+        lambda *args, **kwargs: {"markdown_text": "1. A method comprising a processor and a memory."},
+    )
+
+    documents = _fetch_foreign_claims(client, [candidate])
+
+    assert documents[0]["lookup_source"] == "google_patents_pdf"
+    assert documents[0]["comparison_status"] == "claim_comparison_ready"
+    assert documents[0]["representative_claims"][0]["text"].startswith("A method")
+
+
+def test_fetch_foreign_claims_uses_google_patents_html_when_pdf_has_no_claims(monkeypatch):
+    class Response:
+        text = """
+            <html>
+              <meta name="DC.title" content="Prior art title">
+              <meta name="DC.description" content="Prior art abstract">
+              <div class="claim-text">1. A method comprising a processor and a memory.</div>
+            </html>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    client = ForeignClient()
+    client.session = Session()
+    client.timeout = 20
+    candidate = foreign_reference_candidate_from_text("US 2010241261 A1")
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_kipris",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_bigquery",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.google_patents_pdf_url",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._kipris_client",
+        lambda: client,
+    )
+
+    documents = _fetch_foreign_claims(client, [candidate])
+
+    assert documents[0]["lookup_source"] == "google_patents_html"
+    assert documents[0]["title"] == "Prior art title"
+    assert documents[0]["abstract"] == "Prior art abstract"
+    assert documents[0]["representative_claims"][0]["text"].startswith("A method")
+
+
+def test_fetch_foreign_claims_marks_html_abstract_without_claims_as_auxiliary(monkeypatch):
+    class Response:
+        text = """
+            <html>
+              <meta name="DC.title" content="Prior art title">
+              <meta name="DC.description" content="Prior art abstract only">
+            </html>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    client = ForeignClient()
+    client.session = Session()
+    client.timeout = 20
+    candidate = foreign_reference_candidate_from_text("JP 2000029513 A")
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_kipris",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_bigquery",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.google_patents_pdf_url",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._kipris_client",
+        lambda: client,
+    )
+
+    documents = _fetch_foreign_claims(client, [candidate])
+
+    assert documents[0]["comparison_status"] == "abstract_only"
+    collection = resolve_foreign_prior_art_evidence(["JP 2000029513 A"])["prior_art_collection"]
+    assert collection["comparison_ready_count"] == 0
+    assert collection["abstract_only_count"] == 1
+
+
+def test_resolve_foreign_prior_art_evidence_marks_identifier_only_documents(monkeypatch):
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._kipris_client",
+        lambda: ForeignClient(),
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims",
+        lambda *args, **kwargs: [],
+    )
+
+    result = resolve_foreign_prior_art_evidence(["US 2010241261 A1"])
+
+    assert result["foreign_citation_documents"] == []
+    assert result["foreign_identifier_only_documents"][0]["display_number"] == "US 2010241261 A1"
+    assert result["prior_art_collection"] == {
+        "candidate_count": 1,
+        "comparison_ready_count": 0,
+        "claim_comparison_ready_count": 0,
+        "abstract_only_count": 0,
+        "fulltext_claims_unparsed_count": 0,
+        "identifier_only_count": 1,
+        "comparison_status": "unknown",
+    }
+
+
 def test_fetch_foreign_patent_rights_data_uses_overseas_claims_for_us(monkeypatch):
     client = ForeignClient()
     monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: client)
@@ -223,8 +451,12 @@ def test_fetch_foreign_patent_rights_data_uses_overseas_claims_for_us(monkeypatc
     )
 
     assert result["metadata"]["country"] == "US"
+    assert result["metadata"]["ipc"] == ["G16H 50/20", "G06F 16/2457"]
+    assert result["sections"]["abstract"] == "An association identification method using document data."
     assert result["claims"][0]["source"] == "kipris_foreign_bibliographic_claims"
     assert result["foreign_claim_literature_number"] == "000012417849B2"
+    assert result["foreign_bibliography_literature_number"] == "000012417849B2"
+    assert ("000012417849B2", "US") in client.bibliography_calls
     assert ("000012417849B2", "US") in client.claim_calls
 
 
@@ -372,6 +604,51 @@ This description explains embodiments in detail.
     assert all("FIG. 2" not in claim["text"] for claim in claims)
 
 
+def test_should_exclude_pdf_page_text_for_drawing_sheet_noise():
+    text = """
+U.S. Patent Jul. 9, 2024 Sheet 8 of 16 US 12,032,469 B2
+
+Workflow Modeling
+Simulation
+Registration/performance
+FIG. 8
+Real-time classification result
+Real-time distribution/performance
+"""
+
+    assert should_exclude_pdf_page_text(text) is True
+
+
+def test_should_exclude_pdf_page_text_keeps_body_text():
+    text = """
+The present disclosure relates to explainable artificial intelligence technology.
+Embodiments of the present disclosure provide a system and method for modelling workflows.
+The system conducts a simulation and compares performance across candidate models.
+"""
+
+    assert should_exclude_pdf_page_text(text) is False
+
+
+def test_trim_foreign_front_matter_starts_at_body_heading():
+    text = """
+United States Patent
+(57) ABSTRACT
+Provided is a system and method.
+
+TECHNICAL FIELD
+The present disclosure relates to explainable artificial intelligence technology.
+
+BACKGROUND ART
+Conventional approaches have limitations.
+"""
+
+    trimmed = trim_foreign_front_matter(text)
+
+    assert trimmed.startswith("TECHNICAL FIELD")
+    assert "United States Patent" not in trimmed
+    assert "ABSTRACT" not in trimmed
+
+
 def test_download_and_parse_foreign_patent_pdf_prefers_cached_local_pdf(monkeypatch, tmp_path):
     cached = tmp_path / "US12032469B2.pdf"
     cached.write_bytes(b"%PDF-1.4 cached")
@@ -401,13 +678,165 @@ def test_download_and_parse_foreign_patent_pdf_prefers_cached_local_pdf(monkeypa
     assert result["selected_type"] == "CACHED_LOCAL_PDF"
     assert result["pdf_path"] == str(cached)
     assert result["source_path"] == str(cached)
-
-
 def test_google_patents_publication_id_normalizes_cn_registration_number():
     assert (
         google_patents_publication_id({"country": "CN", "registration_number": "CN 110770661 B"})
         == "CN110770661B"
     )
+
+
+def test_google_patents_publication_id_restores_us_publication_serial_padding():
+    assert (
+        google_patents_publication_id({"country": "US", "registration_number": "US 2010241261 A1"})
+        == "US20100241261A1"
+    )
+
+
+def test_foreign_fulltext_parse_rejects_image_only_markdown():
+    assert not foreign_fulltext_parse_is_usable(
+        "\n".join(f"![image {index}](<images/image{index}.png>)" for index in range(1, 12))
+    )
+    assert foreign_fulltext_parse_is_usable(
+        "What is claimed is:\n"
+        "1. A method comprising calculating an equipment reliability index and controlling measurement."
+    )
+
+
+def test_foreign_pdf_parse_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
+    class Client:
+        session = object()
+        timeout = 20
+
+    parse_calls = []
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.select_foreign_fulltext_pdf_with_fallback",
+        lambda *args, **kwargs: {
+            "literature_number": "000011782432B2",
+            "selected_type": "FOREIGN_REGISTRATION_FULLTEXT",
+            "doc_name": "kipris.pdf",
+            "path": "https://example.com/kipris.pdf",
+        },
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.google_patents_fulltext_selection",
+        lambda *args, **kwargs: {
+            "literature_number": "US11782432B2",
+            "selected_type": "GOOGLE_PATENTS_FULLTEXT",
+            "doc_name": "US11782432B2.pdf",
+            "path": "https://example.com/google.pdf",
+        },
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._download_pdf_url",
+        lambda url, **kwargs: tmp_path / kwargs["filename"],
+    )
+
+    def fake_parse(pdf_path, *, output_dir):
+        parse_calls.append(str(pdf_path))
+        if len(parse_calls) == 1:
+            return {
+                "markdown_paths": [str(output_dir / "kipris.md")],
+                "markdown_text": "![image 1](<images/image1.png>)",
+            }
+        return {
+            "markdown_paths": [str(output_dir / "google.md")],
+            "markdown_text": (
+                "## ABSTRACT\n\nA dynamic lot measurement control system.\n\n"
+                "## CLAIMS\n\n1. A method comprising calculating an equipment reliability index."
+            ),
+        }
+
+    monkeypatch.setattr("services.patent.kipris_patent_service.parse_single_patent_pdf", fake_parse)
+
+    result = download_and_parse_foreign_patent_pdf(
+        Client(),
+        {"country": "US", "registration_number": "11,782,432"},
+        candidates=[],
+        output_dir=tmp_path / "parsed",
+    )
+
+    assert result["selected_type"] == "GOOGLE_PATENTS_FULLTEXT"
+    assert result["fallback_reason"] == "kipris_pdf_parse_unusable"
+    assert "equipment reliability index" in result["markdown_text"]
+
+
+def test_foreign_patent_metadata_uses_final_us_title_as_english_title():
+    metadata = foreign_patent_metadata_from_db(
+        {
+            "country": "US",
+            "title_final": "Correct English Patent Title",
+            "title_draft": "Unrelated draft title",
+        }
+    )
+
+    assert metadata["title"] == "Correct English Patent Title"
+    assert metadata["title_eng"] == "Correct English Patent Title"
+
+
+def test_google_patents_html_to_markdown_extracts_fulltext_sections():
+    markdown = google_patents_html_to_markdown(
+        """
+        <meta name="DC.title" content="Dynamic measurement patent">
+        <meta name="DC.description" content="Controls measurement using equipment reliability.">
+        <section itemprop="description">
+          <div>A controller calculates a lot risk score and determines whether to measure the lot.</div>
+        </section>
+        <div class="claim-text">1. A method comprising calculating an equipment reliability index.</div>
+        """
+    )
+
+    assert "## ABSTRACT" in markdown
+    assert "## DETAILED DESCRIPTION" in markdown
+    assert "## CLAIMS" in markdown
+    assert "equipment reliability index" in markdown
+
+
+def test_google_patents_html_to_markdown_keeps_full_description_section():
+    markdown = google_patents_html_to_markdown(
+        """
+        <meta name="DC.title" content="Dynamic measurement patent">
+        <section itemprop="description">
+          <div>First paragraph describes the technical field.</div>
+          <div>Second paragraph explains background problems.</div>
+          <div>Third paragraph describes the detailed embodiment.</div>
+        </section>
+        <div class="claim-text">1. A method comprising calculating an equipment reliability index.</div>
+        """
+    )
+
+    assert "First paragraph describes the technical field." in markdown
+    assert "Second paragraph explains background problems." in markdown
+    assert "Third paragraph describes the detailed embodiment." in markdown
+
+
+def test_google_patents_figure_urls_extracts_thumbnail_images():
+    urls = _google_patents_figure_urls(
+        """
+        <img itemprop="thumbnail" src="https://example.com/D00000.png">
+        <img itemprop="thumbnail" src="https://example.com/D00001.png">
+        <img src="https://example.com/unrelated.png">
+        """
+    )
+
+    assert urls == [
+        "https://example.com/D00000.png",
+        "https://example.com/D00001.png",
+    ]
+
+
+def test_google_patents_backward_references_extracts_supported_patent_numbers():
+    references = _google_patents_backward_references(
+        """
+        <tr itemprop="backwardReferencesOrig">
+          <td><span itemprop="publicationNumber">US20090306803A1</span></td>
+        </tr>
+        <tr itemprop="backwardReferences">
+          <td><span itemprop="publicationNumber">JP2010118562A</span></td>
+        </tr>
+        """
+    )
+
+    assert references == ["US 20090306803 A1", "JP 2010118562 A"]
 
 
 def test_google_patents_pdf_url_reads_citation_pdf_meta():
@@ -434,6 +863,61 @@ def test_extract_foreign_claims_from_text_supports_chinese_numbered_claims():
     assert claims[0]["claim_no"] == 1
     assert claims[0]["is_independent"] is True
     assert claims[1]["dependency"] == 1
+
+
+def test_extract_foreign_claims_from_text_detects_japanese_dependency_variants():
+    claims = extract_foreign_claims_from_text(
+        """
+CLAIMS
+Claim 1: 基準データと比較データを用いて計測値の微細な変動を検知する方法。
+Claim 2: 請求項１記載の方法であって、追加の検定を行う方法。
+Claim 3: 請求項１又は２に記載の方法であって、結果を表示する方法。
+Claim 4: 請求項１ないし３のいずれか１項に記載の方法であって、警告を出力する方法。
+"""
+    )
+
+    assert claims[0]["is_independent"] is True
+    assert [claim["dependency"] for claim in claims[1:]] == [1, 1, 1]
+
+
+def test_extract_foreign_claims_from_text_ignores_numbered_description_before_claims():
+    claims = extract_foreign_claims_from_text(
+        "1. FIELD OF THE INVENTION numbered description that is not a claim.\n"
+        "2. BACKGROUND OF THE INVENTION numbered description that is not a claim.\n"
+        "What is claimed is:\n"
+        "1. A method comprising calculating an equipment reliability index and controlling measurement.\n"
+        "2. The method according to claim 1, further comprising calculating a lot risk score."
+    )
+
+    assert len(claims) == 2
+    assert claims[0]["text"].startswith("A method comprising")
+    assert "FIELD OF THE INVENTION" not in claims[0]["text"]
+    assert claims[1]["dependency"] == 1
+
+
+def test_extract_foreign_claims_from_text_supports_we_claim_marker():
+    claims = extract_foreign_claims_from_text(
+        "1. Numbered background paragraph that is not a claim.\n"
+        "We claim:\n"
+        "- 1. A system comprising a processor configured to calculate a risk score.\n"
+        "- 2. The system of claim 1, further comprising a measurement controller."
+    )
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2]
+    assert claims[0]["text"].startswith("A system comprising")
+    assert claims[1]["dependency"] == 1
+
+
+def test_extract_foreign_claims_from_text_sorts_claims_and_handles_joined_dependency():
+    claims = extract_foreign_claims_from_text(
+        "We claim:\n"
+        "12. A method ofclaim 10, further comprising an alarm analysis.\n"
+        "1. A method comprising collecting process data.\n"
+        "2. The method of claim 1, further comprising calculating risk."
+    )
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2, 12]
+    assert claims[2]["dependency"] == 10
 
 
 def test_normalize_foreign_reference_documents_extracts_patent_documents():

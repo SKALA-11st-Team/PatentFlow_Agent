@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,13 @@ def run_final_report_llm_required(
     if state.user_input.get("use_llm_final_report", True) is False:
         raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
     markdown = sanitize_final_report_markdown(
-        call_llm(build_final_report_prompt(state=state, valuation_result=valuation_result)).strip()
+        call_llm(
+            build_final_report_prompt(state=state, valuation_result=valuation_result),
+            model=settings.openai_writing_model,
+            reasoning_effort=settings.openai_writing_reasoning_effort,
+            verbosity=settings.openai_writing_verbosity,
+            timeout=settings.openai_writing_timeout_seconds,
+        ).strip()
     )
     if not markdown:
         raise RuntimeError("LLM final report response was empty.")
@@ -261,6 +268,7 @@ def build_patent_basic_info_markdown(metadata: dict[str, Any]) -> str:
         ("출원일", metadata.get("application_date")),
         ("등록일", metadata.get("registration_date")),
         ("예상 소멸일", metadata.get("expected_expiration_date")),
+        ("보고서 생성일", datetime.now().strftime("%Y-%m-%d")),
     ]
     lines = [
         "# 특허 가치판단 종합 보고서",

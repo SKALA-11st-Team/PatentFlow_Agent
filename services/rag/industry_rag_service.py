@@ -70,8 +70,23 @@ def build_patent_industry_query(preprocessed_patent: dict[str, Any]) -> str:
     metadata = preprocessed_patent.get("metadata") or {}
     sections = preprocessed_patent.get("sections") or {}
     title = str(metadata.get("title") or "").strip()
-    abstract = str(sections.get("abstract") or "").strip()
-    return "\n\n".join(part for part in (title, abstract) if part)
+    section_parts = [
+        sections.get("abstract"),
+        sections.get("technical_field"),
+        sections.get("problem"),
+        sections.get("solution"),
+    ]
+    claims = preprocessed_patent.get("claims") or []
+    representative_claim = next(
+        (claim.get("text") for claim in claims if claim.get("is_independent") and claim.get("text")),
+        claims[0].get("text") if claims and isinstance(claims[0], dict) else None,
+    )
+    parts = [title, *section_parts, representative_claim]
+    return "\n\n".join(
+        compact[:1500]
+        for value in parts
+        if (compact := " ".join(str(value or "").split()))
+    )[:6000]
 
 
 def compact_rag_queries(queries: list[str]) -> list[str]:

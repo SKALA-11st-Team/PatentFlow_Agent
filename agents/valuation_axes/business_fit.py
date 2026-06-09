@@ -88,10 +88,13 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
     patent_description = build_business_fit_patent_description(state)
     skax_evidence = build_skax_official_evidence_summary(evidence, state=state)
     sk_owned_media_evidence = build_sk_owned_media_evidence_summary(evidence, state=state)
+    sk_ax_relevant_news_evidence = build_sk_ax_relevant_news_evidence_summary(evidence, state=state)
     payload["business_fit_context"] = {
         "patent_description": patent_description,
+        "target_source_status": build_target_source_status(state),
         "skax_official_evidence": skax_evidence,
         "sk_owned_media_evidence": sk_owned_media_evidence,
+        "sk_ax_relevant_news_evidence": sk_ax_relevant_news_evidence,
         "quantitative_metrics": build_business_fit_quantitative_metrics(
             state=state,
             evidence=evidence,
@@ -99,6 +102,31 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
         ),
     }
     return payload
+
+
+def build_target_source_status(state: PatentWorkflowState) -> dict[str, Any]:
+    preprocessed = state.preprocessed_patent or {}
+    claims = preprocessed.get("claims") if isinstance(preprocessed.get("claims"), list) else []
+    sections = preprocessed.get("sections") if isinstance(preprocessed.get("sections"), dict) else {}
+    claim_stats = preprocessed.get("claim_stats") if isinstance(preprocessed.get("claim_stats"), dict) else {}
+    active_claim_count = coerce_int(claim_stats.get("active_claim_count"))
+    if active_claim_count is None:
+        active_claim_count = len([claim for claim in claims if normalize_text(claim.get("text"))])
+    description_fields = (
+        sections.get("technical_field"),
+        sections.get("background"),
+        sections.get("problem"),
+        sections.get("solution"),
+        sections.get("effect"),
+        sections.get("detailed_description"),
+    )
+    return {
+        "claims_available": active_claim_count > 0,
+        "active_claim_count": active_claim_count,
+        "abstract_available": bool(normalize_text(sections.get("abstract"))),
+        "description_available": any(normalize_text(value) for value in description_fields),
+        "authority": "preprocessed_patent",
+    }
 
 
 def build_business_fit_patent_description(state: PatentWorkflowState) -> dict[str, Any]:
@@ -233,6 +261,36 @@ def build_sk_owned_media_evidence_summary(
                     metadata.get("business_context_hint"),
                     metadata.get("business_area"),
                 ),
+            }
+        )
+    return summaries
+
+
+def build_sk_ax_relevant_news_evidence_summary(
+    evidence_items: list[dict[str, Any]],
+    state: PatentWorkflowState | None = None,
+    *,
+    max_items: int = 3,
+    max_content_chars: int = EVIDENCE_EXCERPT_LIMIT,
+) -> list[dict[str, Any]]:
+    # 압축 단계에서 sk_ax_relevant=True로 판단된 뉴스 등 보조 근거.
+    # 공식 사이트 근거보다 낮은 tier이며, 공식 근거 존재성(30점) 산정에는 쓰지 않는다.
+    del state
+    items = [item for item in evidence_items if is_sk_ax_relevant_supporting_evidence(item)]
+    summaries = []
+    for item in items[: max(1, int(max_items))]:
+        summaries.append(
+            {
+                "evidence_id": item.get("evidence_id"),
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "source": item.get("source"),
+                "source_type": item.get("source_type"),
+                "published_at": item.get("published_at"),
+                "content_excerpt": limit_text(
+                    item.get("compressed_summary") or item.get("content"), max_content_chars
+                ),
+                "key_facts": item.get("key_facts") or [],
             }
         )
     return summaries
@@ -466,11 +524,14 @@ def normalize_core_term(value: Any) -> str:
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
+    # 사업연계성 근거 tier:
+    #  1) SK AX 공식 사이트 콘텐츠, 2) SK 계열 매체, 3) 압축 단계에서 SK AX 사업/
+    #     제품과 직접 관련 있다고 판단된(sk_ax_relevant=True) 뉴스 등 보조 근거.
+    # sk_ax_relevant 뉴스는 시장성 축에도 그대로 쓰이며, 여기서는 보조 tier로만 더한다.
     keywords = business_fit_keywords(state)
     official_matches = []
     owned_media_matches = []
-    sk_mentioned_matches = []
-    secondary_matches = []
+    sk_ax_relevant_matches = []
     for item in items:
         if is_sk_ax_official_evidence(item):
             official_matches.append(item)
@@ -478,18 +539,21 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
         if is_sk_owned_media_evidence(item):
             owned_media_matches.append(item)
             continue
-        source_type = item.get("source_type")
-        if source_type in {"company_disclosure", "news"} and has_sk_ax_or_cnc_mention(item):
-            sk_mentioned_matches.append(item)
-            continue
-        if source_type in {"company_disclosure", "portfolio_context"}:
-            secondary_matches.append(item)
+        if item.get("sk_ax_relevant") is True:
+            sk_ax_relevant_matches.append(item)
     return [
         *sort_official_evidence(official_matches, keywords),
         *sort_official_evidence(owned_media_matches, keywords),
-        *sort_official_evidence(sk_mentioned_matches, keywords),
-        *sort_official_evidence(secondary_matches, keywords),
+        *sort_official_evidence(sk_ax_relevant_matches, keywords),
     ][:5]
+
+
+def is_sk_ax_relevant_supporting_evidence(item: dict[str, Any]) -> bool:
+    return (
+        item.get("sk_ax_relevant") is True
+        and not is_sk_ax_official_evidence(item)
+        and not is_sk_owned_media_evidence(item)
+    )
 
 
 def business_fit_keywords(state: PatentWorkflowState) -> list[str]:
@@ -548,23 +612,6 @@ def is_sk_owned_media_evidence(item: dict[str, Any]) -> bool:
     return any(normalize_text(value) == "sk_group_owned_media" for value in values) or any(
         normalize_text(value) in {"skcareersjournal.com", "openapi.sk.com", "sk_related_owned_media"}
         for value in values
-    )
-
-
-def has_sk_ax_or_cnc_mention(item: dict[str, Any]) -> bool:
-    text = evidence_text(item).lower()
-    return any(
-        marker in text
-        for marker in (
-            "sk ax",
-            "sk c&c",
-            "sk㈜ ax",
-            "sk㈜ c&c",
-            "sk(주) ax",
-            "sk(주) c&c",
-            "sk주식회사 ax",
-            "sk주식회사 c&c",
-        )
     )
 
 

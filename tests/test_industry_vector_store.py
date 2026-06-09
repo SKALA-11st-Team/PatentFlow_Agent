@@ -6,6 +6,7 @@ from rag.industry_vector_store import (
     to_pgvector_literal,
     validate_embeddings,
 )
+from services.rag.industry_rag_service import build_patent_industry_query
 from rag.chunkers.ai_index_chunker import is_noise_section, strip_embedded_chart_ocr_tail
 from rag.industry_report_chunker import Section, infer_published_year
 from services.rag import industry_rag_service
@@ -72,6 +73,31 @@ def test_prepare_chunks_and_pgvector_embedding_payload():
     assert validate_embeddings([embedding]) == 16
     assert to_pgvector_literal(embedding).startswith("[")
     assert build_search_params(embedding, limit=3, industry="조선")[-2:] == ["조선", 3]
+
+
+def test_build_patent_industry_query_uses_foreign_sections_and_claim():
+    query = build_patent_industry_query(
+        {
+            "metadata": {"title": "测量控制方法和系统"},
+            "sections": {
+                "abstract": "提供了一种测量控制方法。",
+                "technical_field": "涉及半导体测量技术。",
+                "problem": "固定周期测量效率低。",
+                "solution": "根据设备可靠性指数动态决定测量。",
+            },
+            "claims": [
+                {
+                    "text": "一种基于风险分数的测量控制方法。",
+                    "is_independent": True,
+                }
+            ],
+        }
+    )
+
+    assert "测量控制方法和系统" in query
+    assert "半导体测量技术" in query
+    assert "设备可靠性指数" in query
+    assert "基于风险分数" in query
 
 
 def test_industry_rag_evidence_keeps_single_context_field(monkeypatch):

@@ -17,6 +17,10 @@ from workflow.state import PatentWorkflowState
 VALUATION_SUPERVISOR_RETRY_LIMIT = 1
 AXIS_SUPERVISOR_RETRY_LIMIT = 1
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
+# Hard code-level bound on how many times the per-axis checks may trigger an
+# external-evidence re-collection (query_rewriting). The axis prompts only judge
+# evidence *quality*; this counter — not the prompt — stops the loop.
+AXIS_EVIDENCE_RECOLLECT_LIMIT = 1
 REQUIRED_VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
 MAX_SUPERVISOR_EVIDENCE_SAMPLES = 5
 AXIS_SUPERVISOR_PROMPTS = {
@@ -182,6 +186,14 @@ def increment_axis_retry_count(state: PatentWorkflowState, axis: str) -> int:
     return counts[axis]
 
 
+def increment_evidence_recollect_count(state: PatentWorkflowState) -> int:
+    team_status = dict(state.team_status or {})
+    count = int(team_status.get("evidence_recollect_count") or 0) + 1
+    team_status["evidence_recollect_count"] = count
+    state.team_status = team_status
+    return count
+
+
 def reset_axis_retry_counts(state: PatentWorkflowState) -> None:
     if not state.team_status or "axis_retry_counts" not in state.team_status:
         return
@@ -222,9 +234,36 @@ def apply_axis_routing_targets(
       collection and are unchanged, so their prior results are reused.
     """
     if decision.next_action == "query_rewriting":
+        # The loop bound lives here, not in the prompt: honour the re-collection
+        # request only while the budget remains. Once exhausted, accept the
+        # structurally-valid result and continue instead of looping again.
+        if increment_evidence_recollect_count(state) <= AXIS_EVIDENCE_RECOLLECT_LIMIT:
+            reset_axis_retry_counts(state)
+            state.valuation_retry_axes = sorted(EXTERNAL_EVIDENCE_AXES)
+            merge_axis_evidence_gaps(state, axis_checks)
+            return decision
         reset_axis_retry_counts(state)
-        state.valuation_retry_axes = sorted(EXTERNAL_EVIDENCE_AXES)
-        merge_axis_evidence_gaps(state, axis_checks)
+        state.valuation_retry_axes = []
+        metadata = dict(decision.metadata)
+        metadata["evidence_recollect_budget"] = {
+            "limit": AXIS_EVIDENCE_RECOLLECT_LIMIT,
+            "exhausted": True,
+        }
+        decision.metadata = metadata
+        if check_valuation_result(state).passed:
+            decision.passed = True
+            decision.next_team = "writing"
+            decision.next_action = "writing_team"
+            decision.reason = (
+                "축 근거 재수집 한도에 도달해 더 재수집하지 않고, 현재 근거로 평가를 "
+                "확정하고 작성 단계로 진행합니다."
+            )
+        else:
+            decision.next_team = "valuation"
+            decision.next_action = "valuation_team"
+            decision.reason = (
+                "축 근거 재수집 한도에 도달했고 평가 구조가 불완전해 valuation을 재실행합니다."
+            )
         return decision
     if decision.next_action != "valuation_team":
         reset_axis_retry_counts(state)
@@ -325,6 +364,8 @@ def run_single_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         raw = call_llm(
             build_axis_supervisor_check_prompt(state, axis=axis),
             model=settings.openai_supervisor_model,
+            temperature=0,
+            reasoning_effort=settings.openai_supervisor_reasoning_effort,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -356,6 +397,7 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
     payload = {
         "current_stage": state.current_stage,
         "axis": axis,
+        "retry_count": state.retry_count,
         "patent": patent_metadata_payload(state),
         "evidence": evidence_summary_payload(state, include_samples=True, priority_evidence_ids=cited_ids),
         "valuation_axis": valuation_axis_payload(axis, axis_result, known_ids),
@@ -602,21 +644,129 @@ def check_writing_result(state: PatentWorkflowState) -> SupervisorDecision:
     )
 
 
+def summary_quality_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    summary = state.summary_result or {}
+    return {
+        "patent": patent_metadata_payload(state),
+        "summary": {
+            "available": bool(summary),
+            "title": summary.get("title"),
+            "plain_summary": preview_text(summary.get("plain_summary"), 1500),
+            "key_points": limit_list(summary.get("key_points"), 10),
+            "summary_markdown": preview_text(summary.get("summary_markdown"), 4000),
+        },
+        "preprocess_validation": preprocess_validation_payload(state.preprocessed_patent or {}),
+    }
+
+
+WRITING_QUALITY_PROMPTS = {
+    "summary": "supervisor/supervisor_summary_check.md",
+    "report": "supervisor/supervisor_final_check.md",
+}
+
+
+def run_writing_quality_check(state: PatentWorkflowState, key: str) -> dict[str, Any]:
+    """Dedicated LLM content-quality check for one writing artifact (summary or
+    report). Returns {"passed": bool, "issues": [...]}. Without the LLM judge it
+    trusts the deterministic validation and returns passed."""
+    if not state.user_input.get("use_llm_supervisor", False):
+        return {"passed": True, "issues": []}
+    prompt_name = WRITING_QUALITY_PROMPTS[key]
+    try:
+        template = load_prompt(prompt_name).strip()
+        payload = summary_quality_payload(state) if key == "summary" else final_supervisor_payload(state)
+        raw = call_llm(
+            f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}",
+            model=settings.openai_supervisor_model,
+            temperature=0,
+            reasoning_effort=settings.openai_supervisor_reasoning_effort,
+        )
+        parsed = parse_json_object(raw)
+        if not parsed:
+            return {"passed": True, "issues": []}
+        return {
+            "passed": normalize_bool(parsed.get("passed"), True),
+            "issues": normalize_text_list(parsed.get("issues"), []),
+        }
+    except Exception as exc:
+        return {"passed": True, "issues": [f"{key}_quality_check_warning:{exc.__class__.__name__}"]}
+
+
 @trace(name="writing_supervisor_agent", run_type="chain")
 def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "writing"
-    decision = check_writing_result(state)
-    decision = run_llm_supervisor_check(
-        state,
-        decision,
-        prompt_name="supervisor/supervisor_final_check.md",
-        allowed_next_actions={"final_merge", "summary", "final_report", "writing_team"},
-        team_action_map={
-            "final_merge": ("final", "final_merge"),
-            "summary": ("writing", "summary"),
-            "final_report": ("writing", "final_report"),
-            "writing_team": ("writing", "writing_team"),
-        },
+    summary_markdown = (state.summary_result or {}).get("summary_markdown")
+    report_markdown = (state.valuation_result or {}).get("final_report_markdown")
+    summary_validation = state.summary_validation_result or {}
+    report_validation = state.report_validation_result or {}
+
+    summary_issues: list[str] = []
+    report_issues: list[str] = []
+    summary_failed = False
+    report_failed = False
+
+    # Rule: existence + deterministic validation
+    if not summary_markdown:
+        summary_issues.append("Missing summary_markdown")
+        summary_failed = True
+    elif state.summary_validation_result and not summary_validation.get("passed"):
+        summary_issues.extend(summary_validation.get("issues") or ["Summary validation has not passed"])
+        summary_failed = True
+    if not report_markdown:
+        report_issues.append("Missing final_report_markdown")
+        report_failed = True
+    elif state.report_validation_result and not report_validation.get("passed"):
+        report_issues.extend(report_validation.get("issues") or ["Report validation has not passed"])
+        report_failed = True
+
+    # Dedicated LLM content checks: summary and report each get their own judge.
+    # 선택적 재검증: 직전에 한쪽만 다시 생성됐다면(요약만/보고서만), 바뀌지 않은 쪽은
+    # 이전 LLM 검사 결과를 그대로 재사용해 불필요한 재검사를 막는다.
+    prior_action = (state.supervisor_decision or {}).get("next_action")
+    prior_checks = dict(state.writing_quality_checks or {})
+    reuse_summary = prior_action == "final_report" and "summary" in prior_checks
+    reuse_report = prior_action == "summary" and "report" in prior_checks
+    new_checks = dict(prior_checks)
+
+    if summary_markdown and not summary_failed:
+        if reuse_summary:
+            verdict = prior_checks["summary"]
+        else:
+            verdict = run_writing_quality_check(state, "summary")
+            new_checks["summary"] = verdict
+        if not verdict["passed"]:
+            summary_issues.extend(verdict["issues"] or ["요약 내용 품질 보완 필요"])
+            summary_failed = True
+    if report_markdown and not report_failed:
+        if reuse_report:
+            verdict = prior_checks["report"]
+        else:
+            verdict = run_writing_quality_check(state, "report")
+            new_checks["report"] = verdict
+        if not verdict["passed"]:
+            report_issues.extend(verdict["issues"] or ["보고서 내용 품질 보완 필요"])
+            report_failed = True
+
+    state.writing_quality_checks = new_checks
+
+    if summary_failed and report_failed:
+        next_action = "writing_team"
+    elif summary_failed:
+        next_action = "summary"
+    elif report_failed:
+        next_action = "final_report"
+    else:
+        next_action = "final_merge"
+
+    passed = not (summary_failed or report_failed)
+    decision = SupervisorDecision(
+        passed=passed,
+        current_team="writing",
+        next_team="final" if passed else "writing",
+        stage="writing_check",
+        next_action=next_action,
+        issues=summary_issues + report_issues,
+        reason="요약과 가치평가 보고서를 각각 평가했습니다.",
     )
     decision = apply_supervisor_retry_limit(
         state,
@@ -626,8 +776,8 @@ def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
         retry_limit=WRITING_SUPERVISOR_RETRY_LIMIT,
         fallback_team="final",
         fallback_action="final_merge",
-        fallback_reason="Writing supervisor retry limit reached; final report markdown is structurally present.",
-        allow_fallback=check_writing_result(state).passed,
+        fallback_reason="Writing supervisor retry limit reached; outputs are structurally present.",
+        allow_fallback=bool(summary_markdown and report_markdown),
     )
     state.validation_result = {
         "passed": decision.passed,
@@ -714,6 +864,8 @@ def run_llm_supervisor_check(
         raw = call_llm(
             build_supervisor_judge_prompt(state, prompt_name=prompt_name),
             model=settings.openai_supervisor_model,
+            temperature=0,
+            reasoning_effort=settings.openai_supervisor_reasoning_effort,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -842,7 +994,6 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "summary_issues": limit_list((state.summary_validation_result or {}).get("issues"), 10),
             "report_passed": (state.report_validation_result or {}).get("passed"),
             "report_issues": limit_list((state.report_validation_result or {}).get("issues"), 10),
-            "report_warnings": limit_list((state.report_validation_result or {}).get("warnings"), 10),
             "missing_evidence": limit_list((state.validation_result or {}).get("missing_evidence"), 10),
         },
         "evidence": evidence_summary_payload(state, include_samples=False),
@@ -922,6 +1073,7 @@ def evidence_summary_payload(
     payload = {
         "total_count": len(evidence_bundle),
         "source_type_counts": source_type_counts(evidence_bundle),
+        "source_counts": source_counts(evidence_bundle),
         "known_evidence_ids": sorted(known_evidence_ids(evidence_bundle)),
     }
     if include_samples:
@@ -997,6 +1149,16 @@ def source_type_counts(evidence_bundle: list[dict[str, Any]]) -> dict[str, int]:
     for evidence in evidence_bundle:
         source_type = str(evidence.get("source_type") or "unknown")
         counts[source_type] = counts.get(source_type, 0) + 1
+    return counts
+
+
+def source_counts(evidence_bundle: list[dict[str, Any]]) -> dict[str, int]:
+    """source별(naver_news/gnews/...) 개수. supervisor가 국내(naver) vs 글로벌(gnews)
+    근거 유무를 source_type만으로는 구분할 수 없어 별도로 제공한다."""
+    counts: dict[str, int] = {}
+    for evidence in evidence_bundle:
+        source = str(evidence.get("source") or "unknown")
+        counts[source] = counts.get(source, 0) + 1
     return counts
 
 
