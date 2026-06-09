@@ -230,10 +230,15 @@ jobs:
         run: |
           kubectl apply -f /tmp/agent-k8s/deployment.yaml
           kubectl apply -f /tmp/agent-k8s/service.yaml
+          # INFRA-08: open_api 통합 게이트웨이(:8080)를 별도 파드로 배포.
+          kubectl apply -f /tmp/agent-k8s/gateway-deployment.yaml
+          kubectl apply -f /tmp/agent-k8s/gateway-service.yaml
 
       - name: Rollout status
         id: agent_rollout
-        run: kubectl rollout status deployment/team11-patentflow-agent-deployment --namespace="${KUBE_NAMESPACE}" --timeout=300s
+        run: |
+          kubectl rollout status deployment/team11-patentflow-agent-deployment --namespace="${KUBE_NAMESPACE}" --timeout=300s
+          kubectl rollout status deployment/team11-patentflow-unified-api-deployment --namespace="${KUBE_NAMESPACE}" --timeout=300s
 
       - name: Diagnose rollout failure
         if: ${{ failure() && steps.agent_rollout.outcome == 'failure' }}

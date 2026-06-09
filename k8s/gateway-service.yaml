@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: team11-patentflow-unified-api-svc
+  namespace: patentflow
+  labels:
+    app: team11-patentflow-unified-api
+# INFRA-08: 게이트웨이 ClusterIP. Agent 본 API가 UNIFIED_API_BASE_URL로 이 서비스를 가리킨다
+# (예: http://team11-patentflow-unified-api-svc:8080). 외부 노출이 필요하면 Ingress를 별도 구성.
+spec:
+  type: ClusterIP
+  selector:
+    app: team11-patentflow-unified-api
+  ports:
+    - port: 8080
+      targetPort: http
+      name: http

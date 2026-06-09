@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: team11-patentflow-unified-api-deployment
+  namespace: patentflow
+  labels:
+    app: team11-patentflow-unified-api
+# INFRA-08: open_api 통합 게이트웨이(외부 데이터 프록시, :8080)를 별도 파드로 배포한다. Agent 본 API
+# (app.api:8000)와 동일 이미지에서 command만 게이트웨이 서버로 교체해 독립 확장·격리한다.
+# 외부 노출 시 SEC-01(X-API-Key 인증·CORS 화이트리스트는 적용됨, 레이트리밋은 후속)을 함께 검토할 것.
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: team11-patentflow-unified-api
+  template:
+    metadata:
+      labels:
+        app: team11-patentflow-unified-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: harbor-regcred
+      containers:
+        - name: team11-patentflow-unified-api
+          image: harbor.example.com/patentflow/team11-patentflow-agent:placeholder
+          imagePullPolicy: Always
+          command: ["uvicorn", "open_api.api_server:app", "--host", "0.0.0.0", "--port", "8080"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 8080
+              name: http
+          envFrom:
+            - configMapRef:
+                name: team11-patentflow-agent-config
+            - secretRef:
+                name: team11-patentflow-agent-secret
+          # "/" 루트는 게이트웨이의 인증 면제 경로라 프로브로 사용 가능.
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
