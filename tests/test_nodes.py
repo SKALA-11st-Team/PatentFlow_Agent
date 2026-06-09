@@ -1,3 +1,5 @@
+import pytest
+
 from workflow.nodes import (
     common_preprocess_node,
     evidence_compression_node,
@@ -811,3 +813,21 @@ def test_report_validation_flags_recommendation_mismatch():
 
     assert result["passed"] is False
     assert any("recommendation" in issue for issue in result["issues"])
+
+
+@pytest.mark.parametrize("country", ["CN", "JP", "TW", "AE"])
+def test_report_validation_rejects_domestic_wording_and_drawing_block_for_foreign_patent(country):
+    from workflow.nodes import report_validation_node
+
+    md = (
+        "\n".join(f"## {i}. 섹션" for i in range(1, 7))
+        + "\n종합 점수 223/300점\n등록된 국내권\n**권리범위 참고도 및 이해**"
+    )
+    state = _report_state(md)
+    state.patent_structured = {"country": country}
+
+    result = report_validation_node(state).report_validation_result
+
+    assert result["passed"] is False
+    assert any("domestic-patent wording" in issue for issue in result["issues"])
+    assert any("representative-drawing" in issue for issue in result["issues"])
