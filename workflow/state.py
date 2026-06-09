@@ -9,6 +9,8 @@ class PatentWorkflowState(BaseModel):
     current_team: str | None = None
     team_status: dict[str, Any] = Field(default_factory=dict)
     retry_count: int = 0
+    # VAL-02: 시장 성장성 기준 시점(ISO date). 설정 시 datetime.now() 대신 사용해 평가 재현성을 확보한다.
+    evaluation_reference_date: str | None = None
 
     # Patent source data
     patent_structured: dict[str, Any] | None = None

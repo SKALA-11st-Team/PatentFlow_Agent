@@ -52,14 +52,28 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
     return build_base_input_payload(state=state, evidence=evidence)
 
 
-def build_marketability_metrics(state: PatentWorkflowState, *, evidence: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _parse_reference_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError:
+        return None
+
+
+def build_marketability_metrics(
+    state: PatentWorkflowState, *, evidence: list[dict[str, Any]] | None = None, reference_date: date | None = None
+) -> dict[str, Any]:
     foreign_patent = is_foreign_patent(state)
     representative_cpc = extract_representative_cpc(state)
     representative_ipc = extract_representative_ipc(state)
+    # VAL-02: 기준 시점을 인자 → state.evaluation_reference_date 순으로 고정(미설정 시 종전대로 현재시각 폴백).
+    reference = reference_date or _parse_reference_date(getattr(state, "evaluation_reference_date", None))
     growth = build_market_growth_metrics(
         representative_code=representative_ipc if foreign_patent else representative_cpc,
         use_ipc=foreign_patent,
         country_code=extract_patent_country(state) if foreign_patent else None,
+        reference_date=reference,
     )
     global_business = build_global_business_metrics(state.kipris_family_patents, patent_country=extract_patent_country(state))
     return {
@@ -146,11 +160,12 @@ def build_market_growth_metrics(
     *,
     use_ipc: bool = False,
     country_code: str | None = None,
+    reference_date: date | None = None,
 ) -> dict[str, Any]:
     if not representative_code:
         return missing_market_growth("representative_ipc_not_found" if use_ipc else "representative_cpc_not_found", [])
 
-    windows = market_growth_windows()
+    windows = market_growth_windows(reference_date)
     try:
         counts = collect_classification_window_application_counts(
             representative_code,

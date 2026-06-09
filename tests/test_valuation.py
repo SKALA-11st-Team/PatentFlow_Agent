@@ -3079,3 +3079,50 @@ def test_technology_full_comparison_group_keeps_confidence():
     )
     assert result["confidence"] == 0.8
     assert not any("비교군" in message for message in result["missing_information"])
+
+
+def test_market_growth_uses_injected_reference_date(monkeypatch):
+    # VAL-02: 주입한 기준일로 윈도우가 고정되고 datetime.now()를 거치지 않는다.
+    import agents.valuation_axes.market as market
+    from datetime import date
+
+    captured = {}
+
+    def fake_collect(code, *, windows, use_ipc, country_code):
+        captured["windows"] = windows
+        return [{"count": 10}, {"count": 12}, {"count": 15}]
+
+    monkeypatch.setattr(market, "collect_classification_window_application_counts", fake_collect)
+    market.build_market_growth_metrics("G06F", reference_date=date(2024, 11, 29))
+    assert captured["windows"] == market.market_growth_windows(date(2024, 11, 29))
+
+
+def test_market_growth_is_reproducible_with_fixed_inputs(monkeypatch):
+    import agents.valuation_axes.market as market
+    from datetime import date
+
+    monkeypatch.setattr(
+        market,
+        "collect_classification_window_application_counts",
+        lambda *a, **k: [{"count": 10}, {"count": 12}, {"count": 15}],
+    )
+    first = market.build_market_growth_metrics("G06F", reference_date=date(2024, 11, 29))
+    second = market.build_market_growth_metrics("G06F", reference_date=date(2024, 11, 29))
+    assert first == second
+    assert first.get("market_growth_score") == second.get("market_growth_score")
+
+
+def test_build_marketability_metrics_pins_reference_date_from_state(monkeypatch):
+    import agents.valuation_axes.market as market
+    from datetime import date
+
+    captured = {}
+
+    def fake_growth(**kwargs):
+        captured["reference_date"] = kwargs.get("reference_date")
+        return {"market_growth_score": 10}
+
+    monkeypatch.setattr(market, "build_market_growth_metrics", fake_growth)
+    state = PatentWorkflowState(evaluation_reference_date="2024-11-29", patent_structured={"country": "KR"})
+    market.build_marketability_metrics(state, evidence=[])
+    assert captured["reference_date"] == date(2024, 11, 29)
