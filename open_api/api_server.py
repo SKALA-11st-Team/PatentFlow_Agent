@@ -8,7 +8,10 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import time
+from collections import deque
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import requests
@@ -69,6 +72,37 @@ async def require_api_key(request: Request, call_next: Any) -> Any:
     # SEC-01: 타이밍 공격 방지를 위해 상수시간 비교(hmac.compare_digest). provided가 없으면 즉시 거부.
     if not provided or not hmac.compare_digest(provided, expected):
         return JSONResponse(status_code=401, content={"detail": "유효한 X-API-Key 헤더가 필요합니다."})
+    return await call_next(request)
+
+
+# SEC-01: 게이트웨이는 외부 유료키(KIPRIS/DART/NAVER)를 태우므로 IP 단위 인프로세스 슬라이딩 윈도우
+# 레이트리밋으로 남용을 막는다(게이트웨이는 단일 파드라 인메모리로 충분). per-minute<=0이면 비활성.
+_rate_limit_windows: dict[str, deque[float]] = {}
+_rate_limit_lock = Lock()
+_RATE_EXEMPT_PATHS = {"/", "/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next: Any) -> Any:
+    try:
+        per_minute = int(os.getenv("UNIFIED_API_RATELIMIT_PER_MINUTE", "120"))
+    except ValueError:
+        per_minute = 120
+    if per_minute <= 0 or request.method == "OPTIONS" or request.url.path in _RATE_EXEMPT_PATHS:
+        return await call_next(request)
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    cutoff = now - 60.0
+    with _rate_limit_lock:
+        window = _rate_limit_windows.setdefault(client_ip, deque())
+        while window and window[0] < cutoff:
+            window.popleft()
+        if len(window) >= per_minute:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "요청이 너무 많습니다. 잠시 후 다시 시도해주세요."},
+            )
+        window.append(now)
     return await call_next(request)
 
 

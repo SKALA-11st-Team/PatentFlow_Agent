@@ -9,6 +9,32 @@ from open_api import api_server
 from open_api.kipris_client import KiprisError, raise_for_kipris_body_error
 
 
+@pytest.fixture(autouse=True)
+def _clear_rate_limit_window():
+    # SEC-01: 인프로세스 레이트리밋 윈도우는 모듈 전역이므로 테스트 간 누적되지 않도록 초기화한다.
+    api_server._rate_limit_windows.clear()
+    yield
+    api_server._rate_limit_windows.clear()
+
+
+def test_rate_limit_blocks_after_threshold(monkeypatch):
+    monkeypatch.setenv("UNIFIED_API_RATELIMIT_PER_MINUTE", "2")
+    monkeypatch.delenv("UNIFIED_API_KEY", raising=False)
+    monkeypatch.setenv("NAVER_CLIENT_ID", "client")
+    monkeypatch.setenv("NAVER_CLIENT_SECRET", "secret")
+    monkeypatch.setattr(
+        api_server.requests,
+        "get",
+        Mock(return_value=Mock(json=lambda: {"items": []}, raise_for_status=lambda: None)),
+    )
+    client = TestClient(api_server.app)
+
+    assert client.get("/api/news/search", params={"query": "AI"}).status_code == 200
+    assert client.get("/api/news/search", params={"query": "AI"}).status_code == 200
+    # 윈도우(1분) 내 한도(2)를 넘긴 3번째 요청은 429.
+    assert client.get("/api/news/search", params={"query": "AI"}).status_code == 429
+
+
 def test_gnews_search_preserves_upstream_http_status(monkeypatch):
     monkeypatch.setenv("GNEWS_API_KEY", "test-key")
 
