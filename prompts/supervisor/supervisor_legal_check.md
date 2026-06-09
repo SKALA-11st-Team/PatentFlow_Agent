@@ -59,6 +59,15 @@
 - 선행문헌·인용문헌·청구항 텍스트는 evidence_bundle(뉴스·산업 RAG 근거)이 아니라 특허 수집 데이터(claim_context, citation_evidence)에서 옵니다. 평가가 이를 인용했다고 해서 evidence_ids/samples에 없는 것을 "근거 누락"이나 재평가 사유로 삼지 마세요.
 - 평가가 인용한 선행문헌은 prior_art_context.cited_in_evaluation에, 입력으로 제공된 선행문헌 식별값은 prior_art_context.available_in_input에 있습니다. cited_in_evaluation의 항목이 available_in_input에 있으면 그 선행문헌은 입력에 근거한 정상 인용입니다. available_in_input에도 없는 문헌을 인용한 경우(환각)에만 valuation_retry 사유로 삼으세요.
 
+## evidence_ids는 비어 있는 게 정상 (매우 중요)
+- 권리성의 근거(선행문헌·청구항·등록상태)는 evidence_bundle이 아니라 특허 수집 데이터에서 오며, prior_art_references / prior_art_context로 추적됩니다. 따라서 `evidence_ids`는 **비어 있는 것이 기본값이자 정상**입니다.
+- `evidence_ids`가 비어 있다는 사실 자체는 **절대 valuation_retry 사유가 아닙니다.** 다음과 같은 사유로 valuation_retry를 내지 마세요:
+  - "evidence_ids가 비어 있어 근거 식별자가 없다 / 포함되어야 한다"
+  - "평가와 근거의 명시적 매핑이 부재하다 / 근거 추적성이 확보되지 않는다"
+  - "인용한 선행문헌을 evidence_ids에 매핑해야 한다"
+- 만약 선행문헌 번호를 evidence_ids에 넣으면 오히려 known_evidence_ids(=evidence_bundle)에 없는 unknown_evidence_id가 되어 잘못된 출력입니다. 즉 evidence_ids에 선행문헌을 채우라고 요구하는 것은 틀린 지시입니다.
+- 권리성 평가 메타데이터(evidence_ids)의 형식·완성도·매핑 여부는 이 체크의 대상이 아닙니다. 오직 평가 논리·점수·표현의 타당성만 봅니다.
+
 ## 출력 형식
 Return ONLY one JSON object.
 `next_action`은 출력하지 마세요.
@@ -70,5 +79,6 @@ Return ONLY one JSON object.
 }
 
 status 선택 기준:
-- `passed`: 권리성 평가가 자기 기준에 맞고, 근거 연결이 확인됨
-- `valuation_retry`: 권리성 평가 논리, 점수, 표현을 다시 써야 함
+- `passed`: 권리성 평가가 자기 기준에 맞고 평가 논리가 타당함 (evidence_ids가 비어 있어도 passed로 둡니다)
+- `valuation_retry`: 권리성 평가 논리, 점수, 표현 자체에 오류가 있어 다시 써야 함
+  - evidence_ids가 비어 있다 / 근거 매핑·추적성이 부족하다 / 식별자를 포함해야 한다는 이유로는 valuation_retry를 선택하지 마세요.
