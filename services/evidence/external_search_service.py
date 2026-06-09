@@ -150,9 +150,14 @@ def collect_external_evidence(
     sources: list[list[dict[str, Any]]] = []
     saved_paths: list[str] = []
     warnings: list[str] = []
+    # EXT-03: 게이트웨이(:8080) 호출 시도/실패 횟수를 추적한다. 모든 시도가 실패하면 게이트웨이
+    # 미기동·미도달로 간주해 '증거 0건'을 조용히 통과시키지 않고 hard-surface(missing_reason)한다.
+    attempted_calls = 0
+    failed_calls = 0
 
     if include_naver:
         for query in selected_queries:
+            attempted_calls += 1
             try:
                 raw = request_json(
                     api_base_url,
@@ -175,10 +180,12 @@ def collect_external_evidence(
                     )
                     saved_paths.append(str(path))
             except requests.RequestException as exc:
+                failed_calls += 1
                 warnings.append(f"naver_news call failed for query '{query}': {exc}")
 
     if include_gnews:
         for gnews_query in selected_gnews_queries:
+            attempted_calls += 1
             try:
                 raw = request_json(
                     api_base_url,
@@ -201,9 +208,11 @@ def collect_external_evidence(
                     )
                     saved_paths.append(str(path))
             except requests.RequestException as exc:
+                failed_calls += 1
                 warnings.append(f"gnews call failed for query '{gnews_query}': {exc}")
 
     if include_kipris and application_number:
+        attempted_calls += 1
         try:
             raw = request_json(
                 api_base_url,
@@ -224,9 +233,11 @@ def collect_external_evidence(
                 )
                 saved_paths.append(str(path))
         except requests.RequestException as exc:
+            failed_calls += 1
             warnings.append(f"kipris call failed for application_number '{application_number}': {exc}")
 
     if dart_corp_code:
+        attempted_calls += 1
         try:
             bgn_de, end_de = resolve_dart_date_range(dart_bgn_de, dart_end_de)
             raw = request_json(
@@ -248,11 +259,24 @@ def collect_external_evidence(
                 )
                 saved_paths.append(str(path))
         except requests.RequestException as exc:
+            failed_calls += 1
             warnings.append(f"dart call failed for corp_code '{dart_corp_code}': {exc}")
 
     merged = merge_evidence_sources(sources, prefix="api")
     quality = annotate_evidence_quality(merged, preprocessed_patent=preprocessed_patent)
     warnings.extend(quality["warnings"])
+
+    # EXT-03: 시도한 모든 게이트웨이 호출이 실패했고 수집 증거가 0건이면, 정상적인 '근거 없음'이
+    # 아니라 게이트웨이 미도달로 본다. missing_reason으로 표면화해 하위 단계가 무근거 평가를
+    # 정상 점수로 오인하지 않게 한다.
+    gateway_unreachable = attempted_calls > 0 and failed_calls == attempted_calls
+    missing_reason = None
+    if gateway_unreachable and not merged:
+        missing_reason = f"external_gateway_failed:all_{attempted_calls}_calls_failed"
+        warnings.append(
+            f"external_evidence_unavailable: {failed_calls}/{attempted_calls} gateway calls failed; "
+            "외부 근거 0건이 게이트웨이 미도달일 수 있음"
+        )
 
     return {
         "ko_queries": ko_queries,
@@ -263,6 +287,10 @@ def collect_external_evidence(
         "items": merged,
         "saved_collections": saved_paths,
         "warnings": warnings,
+        "attempted_calls": attempted_calls,
+        "failed_calls": failed_calls,
+        "gateway_unreachable": gateway_unreachable,
+        "missing_reason": missing_reason,
     }
 
 

@@ -436,3 +436,68 @@ def test_annotate_evidence_quality_surfaces_low_relevance_warning():
     assert any("api_001:evidence_quality_low" in warning for warning in result["warnings"])
     assert items[0]["metadata"]["quality_warning"] == "no_patent_keyword_match"
     assert items[1]["metadata"]["matched_keyword_count"] > 0
+
+
+def test_collect_external_evidence_hard_surfaces_gateway_failure(monkeypatch, tmp_path):
+    import requests
+
+    def failing_request_json(base_url, path, params, *, timeout=20):
+        raise requests.RequestException("connection refused")
+
+    monkeypatch.setattr("services.evidence.external_search_service.request_json", failing_request_json)
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.save_evidence_collection",
+        lambda **kwargs: tmp_path / "x.json",
+    )
+
+    result = collect_external_evidence(
+        preprocessed_patent={"metadata": {"title": "AI 챗봇"}, "sections": {"abstract": "대화형 AI"}},
+        patent_id=1,
+        include_naver=True,
+        include_gnews=True,
+        include_kipris=False,
+        ko_queries_override=["대화형 AI 챗봇"],
+        en_queries_override=["conversational AI chatbot"],
+        query_limit_per_axis=1,
+        fetch_news_full_text=False,
+        save=False,
+    )
+
+    # EXT-03: 모든 게이트웨이 호출 실패 + 증거 0건 → 조용한 통과가 아니라 hard-surface.
+    assert result["items"] == []
+    assert result["attempted_calls"] > 0
+    assert result["failed_calls"] == result["attempted_calls"]
+    assert result["gateway_unreachable"] is True
+    assert result["missing_reason"].startswith("external_gateway_failed:")
+    assert any("external_evidence_unavailable" in warning for warning in result["warnings"])
+
+
+def test_collect_external_evidence_empty_results_not_flagged_as_gateway_failure(monkeypatch, tmp_path):
+    def empty_request_json(base_url, path, params, *, timeout=20):
+        # 예외 없이 빈 결과를 반환(정상적인 '근거 없음').
+        return {"items": []} if path == "/api/news/search" else {"articles": []}
+
+    monkeypatch.setattr("services.evidence.external_search_service.request_json", empty_request_json)
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.save_evidence_collection",
+        lambda **kwargs: tmp_path / "x.json",
+    )
+
+    result = collect_external_evidence(
+        preprocessed_patent={"metadata": {"title": "AI 챗봇"}, "sections": {"abstract": "대화형 AI"}},
+        patent_id=1,
+        include_naver=True,
+        include_gnews=True,
+        include_kipris=False,
+        ko_queries_override=["대화형 AI 챗봇"],
+        en_queries_override=["conversational AI chatbot"],
+        query_limit_per_axis=1,
+        fetch_news_full_text=False,
+        save=False,
+    )
+
+    # 정상 경로의 0건은 게이트웨이 실패로 오인하지 않는다(false-positive 방지).
+    assert result["items"] == []
+    assert result["gateway_unreachable"] is False
+    assert result["missing_reason"] is None
+    assert not any("external_evidence_unavailable" in warning for warning in result["warnings"])

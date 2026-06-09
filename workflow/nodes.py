@@ -365,6 +365,13 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             "failed_urls": skax_result.get("failed_urls", []),
             "warning": skax_result.get("warning"),
         },
+        # EXT-03: 외부 게이트웨이 호출이 전부 실패해 증거 0건이면 missing_reason으로 표면화한다.
+        "external_evidence": {
+            "attempted_calls": result.get("attempted_calls", 0),
+            "failed_calls": result.get("failed_calls", 0),
+            "gateway_unreachable": result.get("gateway_unreachable", False),
+            "missing_reason": result.get("missing_reason"),
+        },
         "filtered_evidence": {
             "output_path": filtered_evidence_path,
             "news_count": len(news_filter_result.get("kept", [])),
