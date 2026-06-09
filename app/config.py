@@ -45,6 +45,8 @@ class Settings(BaseModel):
     openai_writing_verbosity: str | None = getenv("OPENAI_WRITING_VERBOSITY")
     openai_supervisor_reasoning_effort: str | None = getenv("OPENAI_SUPERVISOR_REASONING_EFFORT")
     openai_request_timeout_seconds: float = float(getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "90"))
+    # 보고서/요약 작성(writing)은 출력이 길어 일반 호출보다 오래 걸리므로 별도 timeout.
+    openai_writing_timeout_seconds: float = float(getenv("OPENAI_WRITING_TIMEOUT_SECONDS", "240"))
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Spring Boot(BE) 통신용 기본 주소.
