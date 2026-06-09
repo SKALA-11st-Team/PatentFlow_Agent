@@ -172,8 +172,11 @@ def search_industry_evidence(
     top_k: int = 5,
     database_url: str | None = DEFAULT_DB_PATH,
     embedding_model: EmbeddingModel | None = None,
+    store: IndustryVectorStore | None = None,
 ) -> list[dict[str, Any]]:
-    store = IndustryVectorStore(database_url, embedding_model=embedding_model)
+    # EVID-09: 멀티쿼리 배치에서 상위가 store를 주입하면 임베딩 모델·쿼리 캐시·DB 연결을 재사용한다.
+    if store is None:
+        store = IndustryVectorStore(database_url, embedding_model=embedding_model)
     collected_at = now_iso()
     return [
         {
@@ -273,17 +276,27 @@ def search_and_save_patent_industry_evidence(
             "warning": "title and abstract are both empty",
         }
 
+    # EVID-09: 쿼리마다 store/연결을 새로 만들던 것을 배치 단위 단일 store로 통일 — 임베딩 모델·쿼리 캐시
+    # 재사용 + DB 연결 1회 재사용(쿼리당 connect 제거). open/close는 fake store(테스트) 호환 위해 guard.
+    shared_store = IndustryVectorStore(database_url, embedding_model=embedding_model)
+    opener = getattr(shared_store, "open", None)
+    if callable(opener):
+        opener()
     collected_items: list[dict[str, Any]] = []
-    for query in queries:
-        query_items = search_industry_evidence(
-            query,
-            industry=industry,
-            industries=industries,
-            top_k=top_k,
-            database_url=database_url,
-            embedding_model=embedding_model,
-        )
-        collected_items.extend({**item, "rag_query": query} for item in query_items)
+    try:
+        for query in queries:
+            query_items = search_industry_evidence(
+                query,
+                industry=industry,
+                industries=industries,
+                top_k=top_k,
+                store=shared_store,
+            )
+            collected_items.extend({**item, "rag_query": query} for item in query_items)
+    finally:
+        closer = getattr(shared_store, "close", None)
+        if callable(closer):
+            closer()
     items = dedupe_industry_items(collected_items)
     query = queries[0] if len(queries) == 1 else "\n".join(queries)
     output_path = None

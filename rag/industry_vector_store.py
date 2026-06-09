@@ -157,6 +157,20 @@ class IndustryVectorStore:
         self.database_url = database_url or settings.pgvector_database_url
         self.table_name = table_name
         self.embedding_model = embedding_model or OpenAIEmbeddingModel()
+        # EVID-09: 배치(멀티쿼리) 동안 단일 연결을 열어 재사용한다(open/close). None이면 검색마다 1회성 연결.
+        self._connection: Any = None
+
+    def open(self) -> "IndustryVectorStore":
+        if self._connection is None:
+            self._connection = connect_pgvector(self.database_url)
+        return self
+
+    def close(self) -> None:
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            finally:
+                self._connection = None
 
     def upsert_chunks(self, chunks: list[dict[str, Any]], *, reset: bool = False) -> int:
         prepared_chunks = prepare_chunks(chunks, self.embedding_model.model_name)
@@ -198,24 +212,25 @@ class IndustryVectorStore:
         limit = max(1, int(top_k))
         industries = list(industries) if industries else None
 
-        with connect_pgvector(self.database_url) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    build_search_sql(
-                        self.table_name,
-                        industry=industry is not None,
-                        industries=industries is not None,
-                        source_name=source_name is not None,
-                    ),
-                    build_search_params(
-                        query_embedding,
-                        limit=limit,
-                        industry=industry,
-                        industries=industries,
-                        source_name=source_name,
-                    ),
-                )
-                rows = cursor.fetchall()
+        search_sql = build_search_sql(
+            self.table_name,
+            industry=industry is not None,
+            industries=industries is not None,
+            source_name=source_name is not None,
+        )
+        search_params = build_search_params(
+            query_embedding,
+            limit=limit,
+            industry=industry,
+            industries=industries,
+            source_name=source_name,
+        )
+        # EVID-09: 영속 연결(open())이 있으면 재사용, 없으면 호출 단위 1회성 연결.
+        if self._connection is not None:
+            rows = self._execute_query(self._connection, search_sql, search_params)
+        else:
+            with connect_pgvector(self.database_url) as connection:
+                rows = self._execute_query(connection, search_sql, search_params)
 
         results: list[SearchResult] = []
         for chunk_id, text, metadata, score in rows:
@@ -229,7 +244,15 @@ class IndustryVectorStore:
             )
         return results
 
+    @staticmethod
+    def _execute_query(connection: Any, statement: Any, params: Any) -> list[Any]:
+        with connection.cursor() as cursor:
+            cursor.execute(statement, params)
+            return cursor.fetchall()
+
     def count(self) -> int:
+        if self._connection is not None:
+            return int(self._execute_query(self._connection, count_sql(self.table_name), None)[0][0])
         with connect_pgvector(self.database_url) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(count_sql(self.table_name))

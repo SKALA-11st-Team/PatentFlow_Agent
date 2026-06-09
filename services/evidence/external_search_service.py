@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -156,112 +157,94 @@ def collect_external_evidence(
     attempted_calls = 0
     failed_calls = 0
 
+    # EVID-04: naver/gnews/kipris/dart 소스 호출을 직렬 → 병렬화. 각 호출을 독립 태스크로 만들고
+    # ThreadPoolExecutor로 동시 실행한 뒤 결과를 집계한다. attempted/failed 카운트(EXT-03 hard-surface)는
+    # 태스크 수·실패 수로 동일하게 보존한다. sources/warnings/saved_paths는 순서 무관이라 병렬 안전.
+    fetch_tasks: list[dict[str, Any]] = []
     if include_naver:
         for query in selected_queries:
-            attempted_calls += 1
-            try:
-                raw = request_json(
-                    api_base_url,
-                    "/api/news/search",
-                    {"query": query, "display": news_results_per_query, "start": 1, "sort": "sim"},
-                )
-                items = enrich_news_items_with_full_text(
-                    normalize_naver_news_response(raw, query=query),
-                    enabled=fetch_news_full_text,
-                )
-                sources.append(items)
-                if save:
-                    path = save_evidence_collection(
-                        source_type="news",
-                        source="naver_news",
-                        items=items,
-                        query=query,
-                        patent_id=patent_id,
-                        output_dir=output_dir or settings.output_dir / "api_evidence",
-                    )
-                    saved_paths.append(str(path))
-            except requests.RequestException as exc:
-                failed_calls += 1
-                warnings.append(f"naver_news call failed for query '{query}': {exc}")
-
+            fetch_tasks.append({
+                "path": "/api/news/search",
+                "params": {"query": query, "display": news_results_per_query, "start": 1, "sort": "sim"},
+                "normalize": lambda raw, q=query: normalize_naver_news_response(raw, query=q),
+                "enrich": True,
+                "source_type": "news",
+                "source": "naver_news",
+                "query": query,
+                "warn_prefix": f"naver_news call failed for query '{query}'",
+            })
     if include_gnews:
         for gnews_query in selected_gnews_queries:
-            attempted_calls += 1
-            try:
-                raw = request_json(
-                    api_base_url,
-                    "/api/v4/search",
-                    {"q": gnews_query, "lang": "en", "max": news_results_per_query, "page": 1},
-                )
-                items = enrich_news_items_with_full_text(
-                    normalize_gnews_response(raw, query=gnews_query),
-                    enabled=fetch_news_full_text,
-                )
-                sources.append(items)
-                if save:
-                    path = save_evidence_collection(
-                        source_type="news",
-                        source="gnews",
-                        items=items,
-                        query=gnews_query,
-                        patent_id=patent_id,
-                        output_dir=output_dir or settings.output_dir / "api_evidence",
-                    )
-                    saved_paths.append(str(path))
-            except requests.RequestException as exc:
-                failed_calls += 1
-                warnings.append(f"gnews call failed for query '{gnews_query}': {exc}")
-
+            fetch_tasks.append({
+                "path": "/api/v4/search",
+                "params": {"q": gnews_query, "lang": "en", "max": news_results_per_query, "page": 1},
+                "normalize": lambda raw, q=gnews_query: normalize_gnews_response(raw, query=q),
+                "enrich": True,
+                "source_type": "news",
+                "source": "gnews",
+                "query": gnews_query,
+                "warn_prefix": f"gnews call failed for query '{gnews_query}'",
+            })
     if include_kipris and application_number:
-        attempted_calls += 1
-        try:
-            raw = request_json(
-                api_base_url,
-                "/kipris/patent-utility/search/application-number",
-                {"applicationNumber": application_number},
-            )
-            query = f"application_number:{application_number}"
-            items = normalize_kipris_patent_results(raw, query=query, source="kipris")
-            sources.append(items)
-            if save:
-                path = save_evidence_collection(
-                    source_type="competitor_patent",
-                    source="kipris",
-                    items=items,
-                    query=query,
-                    patent_id=patent_id,
-                    output_dir=output_dir or settings.output_dir / "api_evidence",
-                )
-                saved_paths.append(str(path))
-        except requests.RequestException as exc:
-            failed_calls += 1
-            warnings.append(f"kipris call failed for application_number '{application_number}': {exc}")
-
+        kipris_query = f"application_number:{application_number}"
+        fetch_tasks.append({
+            "path": "/kipris/patent-utility/search/application-number",
+            "params": {"applicationNumber": application_number},
+            "normalize": lambda raw, q=kipris_query: normalize_kipris_patent_results(raw, query=q, source="kipris"),
+            "enrich": False,
+            "source_type": "competitor_patent",
+            "source": "kipris",
+            "query": kipris_query,
+            "warn_prefix": f"kipris call failed for application_number '{application_number}'",
+        })
     if dart_corp_code:
-        attempted_calls += 1
+        bgn_de, end_de = resolve_dart_date_range(dart_bgn_de, dart_end_de)
+        dart_query = f"corp_code:{dart_corp_code}"
+        fetch_tasks.append({
+            "path": "/dart/disclosure",
+            "params": {"corp_code": dart_corp_code, "bgn_de": bgn_de, "end_de": end_de},
+            "normalize": lambda raw, q=dart_query: normalize_dart_disclosures(raw, query=q),
+            "enrich": False,
+            "source_type": "company_disclosure",
+            "source": "dart",
+            "query": dart_query,
+            "warn_prefix": f"dart call failed for corp_code '{dart_corp_code}'",
+        })
+
+    attempted_calls = len(fetch_tasks)
+
+    def _run_fetch_task(task: dict[str, Any]) -> dict[str, Any]:
         try:
-            bgn_de, end_de = resolve_dart_date_range(dart_bgn_de, dart_end_de)
-            raw = request_json(
-                api_base_url,
-                "/dart/disclosure",
-                {"corp_code": dart_corp_code, "bgn_de": bgn_de, "end_de": end_de},
-            )
-            query = f"corp_code:{dart_corp_code}"
-            items = normalize_dart_disclosures(raw, query=query)
-            sources.append(items)
+            raw = request_json(api_base_url, task["path"], task["params"])
+            items = task["normalize"](raw)
+            if task["enrich"]:
+                items = enrich_news_items_with_full_text(items, enabled=fetch_news_full_text)
+            saved = None
             if save:
-                path = save_evidence_collection(
-                    source_type="company_disclosure",
-                    source="dart",
+                saved = str(save_evidence_collection(
+                    source_type=task["source_type"],
+                    source=task["source"],
                     items=items,
-                    query=query,
+                    query=task["query"],
                     patent_id=patent_id,
                     output_dir=output_dir or settings.output_dir / "api_evidence",
-                )
-                saved_paths.append(str(path))
+                ))
+            return {"items": items, "saved": saved, "warning": None}
         except requests.RequestException as exc:
-            failed_calls += 1
-            warnings.append(f"dart call failed for corp_code '{dart_corp_code}': {exc}")
+            return {"items": None, "saved": None, "warning": f"{task['warn_prefix']}: {exc}"}
+
+    if fetch_tasks:
+        max_workers = max(1, min(len(fetch_tasks), settings.evidence_fetch_concurrency))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            task_results = list(executor.map(_run_fetch_task, fetch_tasks))
+        for outcome in task_results:
+            if outcome["warning"] is not None:
+                failed_calls += 1
+                warnings.append(outcome["warning"])
+            else:
+                sources.append(outcome["items"])
+                if outcome["saved"]:
+                    saved_paths.append(outcome["saved"])
 
     merged = merge_evidence_sources(sources, prefix="api")
     quality = annotate_evidence_quality(merged, preprocessed_patent=preprocessed_patent)
@@ -455,7 +438,7 @@ def request_json(
     url = f"{base_url.rstrip('/')}{path}"
     last_error: requests.RequestException | None = None
     for attempt in range(1, API_REQUEST_MAX_ATTEMPTS + 1):
-        time.sleep(0.5)
+        # EVID-04: 첫 시도 고정 0.5s 지연 제거 — 성공 호출이 매번 0.5s를 물던 문제. 백오프는 재시도 직전(아래)에만.
         try:
             response = requests.get(url, params=params, headers=unified_api_headers(), timeout=timeout)
             response.raise_for_status()

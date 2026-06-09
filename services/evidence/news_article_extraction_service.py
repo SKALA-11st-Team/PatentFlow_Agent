@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from typing import Any
 from urllib.parse import urlparse
@@ -8,6 +9,8 @@ import re
 import socket
 
 import requests
+
+from app.config import settings
 
 try:
     import trafilatura
@@ -144,7 +147,23 @@ def enrich_news_items_with_full_text(
             mark_content_source(item, "snippet")
         return items
 
-    for item in items:
+    # EVID-04: 항목별 기사 본문 fetch(최대 8s)를 직렬 → 병렬화. 항목마다 독립 URL이라 동시 fetch 후 결과만 적용.
+    indexed = [
+        (idx, str(item.get("url")))
+        for idx, item in enumerate(items)
+        if item.get("source_type") == "news" and item.get("url")
+    ]
+    results_by_index: dict[int, dict[str, str | None]] = {}
+    if indexed:
+        max_workers = max(1, min(len(indexed), settings.evidence_fetch_concurrency))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx, result in zip(
+                (i for i, _ in indexed),
+                executor.map(fetch_article_text, [url for _, url in indexed]),
+            ):
+                results_by_index[idx] = result
+
+    for idx, item in enumerate(items):
         if item.get("source_type") != "news":
             continue
         snippet = str(item.get("content") or "")
@@ -152,7 +171,11 @@ def enrich_news_items_with_full_text(
         if not url:
             mark_content_source(item, "snippet")
             continue
-        result = fetch_article_text(str(url))
+        result = results_by_index.get(idx)
+        if result is None:
+            item["content"] = snippet
+            mark_content_source(item, "snippet")
+            continue
         if result["title"]:
             metadata = item.setdefault("metadata", {})
             if result["title"] != item.get("title"):

@@ -40,6 +40,8 @@ class Settings(BaseModel):
     
     search_query_count: int = int(getenv("SEARCH_QUERY_COUNT", "3"))
     news_results_per_query: int = int(getenv("NEWS_RESULTS_PER_QUERY", "3"))
+    # EVID-04: 근거 수집(소스 호출·기사 본문 fetch) 병렬 동시성 상한.
+    evidence_fetch_concurrency: int = int(getenv("EVIDENCE_FETCH_CONCURRENCY", "6"))
     industry_rag_query_count: int = int(getenv("INDUSTRY_RAG_QUERY_COUNT", "1"))
     industry_rag_top_k: int = int(getenv("INDUSTRY_RAG_TOP_K", "3"))
     max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
