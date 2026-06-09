@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import time
 
 import requests
@@ -474,6 +475,22 @@ def request_json(
     raise requests.RequestException(f"API request failed: {url}")
 
 
+def _is_blocked_gateway_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    # 게이트웨이는 사설망/로컬(unified-api:8080, localhost:8080, 10.x 등)에 정상 배치되므로
+    # loopback·사설은 허용한다(기사 URL 가드와 달리 차단하지 않는다). 단 순서가 중요하다:
+    # 1) loopback(127.x, ::1) 허용.
+    if ip.is_loopback:
+        return False
+    # 2) 클라우드 메타데이터(link-local 169.254.0.0/16)는 Python에서 is_private이기도 하므로 사설 허용보다 먼저 차단.
+    if ip.is_link_local or ip.is_multicast or ip == BLOCKED_LINK_LOCAL_IP:
+        return True
+    # 3) 사설망(10/172.16/192.168, fd00::)은 게이트웨이 정상 배치라 허용.
+    if ip.is_private:
+        return False
+    # 4) 그 외 예약 대역만 차단(공인 IP 게이트웨이는 SSRF 대상이 아니므로 허용).
+    return bool(ip.is_reserved)
+
+
 def validate_unified_api_base_url(base_url: str) -> None:
     parsed = urlparse(base_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -483,12 +500,27 @@ def validate_unified_api_base_url(base_url: str) -> None:
     host = parsed.hostname.strip().lower()
     if host in BLOCKED_HOSTNAMES:
         raise requests.RequestException(f"blocked_unified_api_base_url: blocked host '{host}'")
+    # 호스트가 리터럴 IP면 그대로, 도메인명이면 DNS로 해석한 모든 IP를 검사한다.
+    # (A레코드가 메타데이터/link-local로 해석되는 도메인을 통한 DNS rebinding SSRF 차단.)
     try:
-        ip = ipaddress.ip_address(host)
+        candidate_ips = [ipaddress.ip_address(host)]
     except ValueError:
-        return
-    if ip == BLOCKED_LINK_LOCAL_IP:
-        raise requests.RequestException("blocked_unified_api_base_url: metadata service IP is not allowed")
+        try:
+            resolved = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            # 해석 실패는 호출 시점 ConnectionError로 자연 실패한다(게이트웨이는 운영자 설정값이라 fail-open 허용).
+            return
+        candidate_ips = []
+        for entry in resolved:
+            try:
+                candidate_ips.append(ipaddress.ip_address(entry[4][0]))
+            except ValueError:
+                continue
+    for ip in candidate_ips:
+        if _is_blocked_gateway_ip(ip):
+            raise requests.RequestException(
+                f"blocked_unified_api_base_url: metadata/link-local IP is not allowed ({ip})"
+            )
 
 
 def unified_api_headers() -> dict[str, str]:

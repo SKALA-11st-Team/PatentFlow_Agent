@@ -405,6 +405,50 @@ def test_request_json_blocks_metadata_service_base_url():
         request_json("http://169.254.169.254", "/latest/meta-data", {})
 
 
+def test_validate_unified_api_base_url_allows_private_and_loopback_gateways():
+    from services.evidence.external_search_service import validate_unified_api_base_url
+
+    # 게이트웨이는 사설망/로컬에 정상 배치되므로 사설·loopback IP·localhost는 허용한다.
+    validate_unified_api_base_url("http://10.0.0.5:8080")
+    validate_unified_api_base_url("http://192.168.1.10:8080")
+    validate_unified_api_base_url("http://127.0.0.1:8080")
+    validate_unified_api_base_url("http://localhost:8080")
+
+
+def test_validate_unified_api_base_url_blocks_link_local_literal_ip():
+    import requests
+    from services.evidence.external_search_service import validate_unified_api_base_url
+
+    with pytest.raises(requests.RequestException, match="metadata"):
+        validate_unified_api_base_url("http://169.254.169.254:8080")
+
+
+def test_validate_unified_api_base_url_blocks_domain_resolving_to_metadata_ip(monkeypatch):
+    import requests
+    from services.evidence import external_search_service
+
+    # DNS rebinding: 도메인이 메타데이터 IP로 해석되면 차단한다.
+    monkeypatch.setattr(
+        external_search_service.socket,
+        "getaddrinfo",
+        lambda host, port: [(2, 1, 6, "", ("169.254.169.254", 0))],
+    )
+    with pytest.raises(requests.RequestException, match="metadata"):
+        external_search_service.validate_unified_api_base_url("http://evil.example.com:8080")
+
+
+def test_validate_unified_api_base_url_allows_domain_resolving_to_private_ip(monkeypatch):
+    from services.evidence import external_search_service
+
+    # 도메인이 사설 IP로 해석되면(예: 쿠버네티스 서비스) 허용한다.
+    monkeypatch.setattr(
+        external_search_service.socket,
+        "getaddrinfo",
+        lambda host, port: [(2, 1, 6, "", ("10.1.2.3", 0))],
+    )
+    external_search_service.validate_unified_api_base_url("http://unified-api:8080")
+
+
 def test_annotate_evidence_quality_surfaces_low_relevance_warning():
     items = [
         {
