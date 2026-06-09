@@ -278,3 +278,74 @@ def test_build_search_sql_uses_any_for_multi_industry():
     single = str(build_search_sql("patent_chunks", industry=True))
     assert "ANY(%s)" in multi
     assert "= %s" in single and "ANY(%s)" not in single
+
+
+from rag.industry_vector_store import OpenAIEmbeddingModel
+
+
+class _FakeEmbItem:
+    def __init__(self, index, embedding):
+        self.index = index
+        self.embedding = embedding
+
+
+class _FakeEmbResponse:
+    def __init__(self, data):
+        self.data = data
+
+
+class _CountingEmbeddingClient:
+    """embeddings.create 호출 횟수를 세는 가짜 OpenAI 클라이언트(EVID-08)."""
+
+    def __init__(self):
+        self.calls = 0
+        self.embeddings = self
+
+    def create(self, model, input):
+        self.calls += 1
+        return _FakeEmbResponse([_FakeEmbItem(i, [float(len(t) + 1), 1.0, 0.0]) for i, t in enumerate(input)])
+
+
+def test_openai_embedding_query_cache_reuses_embeddings():
+    client = _CountingEmbeddingClient()
+    model = OpenAIEmbeddingModel(client=client, query_cache_size=8)
+
+    first = model.embed("동일 검색 쿼리")
+    second = model.embed("동일 검색 쿼리")
+
+    assert first == second
+    assert client.calls == 1  # 두 번째 호출은 캐시에서 재사용
+
+    model.embed("다른 검색 쿼리")
+    assert client.calls == 2
+
+
+def test_openai_embedding_query_cache_evicts_least_recently_used():
+    client = _CountingEmbeddingClient()
+    model = OpenAIEmbeddingModel(client=client, query_cache_size=1)
+
+    model.embed("a")
+    model.embed("b")  # 'a'를 밀어냄
+    assert client.calls == 2
+
+    model.embed("a")  # 재계산 필요
+    assert client.calls == 3
+
+
+def test_openai_embedding_cache_disabled_recomputes():
+    client = _CountingEmbeddingClient()
+    model = OpenAIEmbeddingModel(client=client, query_cache_size=0)
+
+    model.embed("x")
+    model.embed("x")
+
+    assert client.calls == 2
+
+
+def test_openai_embedding_uses_timeout_and_retry_settings():
+    from app.config import settings
+
+    model = OpenAIEmbeddingModel(client=_CountingEmbeddingClient())
+
+    assert model.timeout == settings.openai_embedding_timeout
+    assert model.max_retries == settings.openai_embedding_max_retries

@@ -60,6 +60,28 @@ class HashingEmbeddingModel:
         return [self.embed(text) for text in texts]
 
 
+class _QueryEmbeddingCache:
+    """프로세스 수명 동안 검색 쿼리 임베딩을 재사용하는 작은 LRU 캐시(EVID-08)."""
+
+    def __init__(self, max_size: int) -> None:
+        from collections import OrderedDict
+
+        self.max_size = max_size
+        self._store: "OrderedDict[str, list[float]]" = OrderedDict()
+
+    def get(self, key: str) -> list[float] | None:
+        if key not in self._store:
+            return None
+        self._store.move_to_end(key)
+        return self._store[key]
+
+    def set(self, key: str, value: list[float]) -> None:
+        self._store[key] = value
+        self._store.move_to_end(key)
+        while len(self._store) > self.max_size:
+            self._store.popitem(last=False)
+
+
 class OpenAIEmbeddingModel:
     def __init__(
         self,
@@ -67,7 +89,28 @@ class OpenAIEmbeddingModel:
         model: str | None = None,
         api_key: str | None = None,
         batch_size: int = 100,
+        client: Any | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+        query_cache_size: int | None = None,
     ) -> None:
+        self.model_name = model or settings.openai_embedding_model
+        self.batch_size = batch_size
+        # EVID-08: 일시 장애로 전체 인덱싱/검색이 중단되지 않도록 타임아웃·재시도를 설정한다.
+        self.timeout = timeout if timeout is not None else settings.openai_embedding_timeout
+        self.max_retries = (
+            max_retries if max_retries is not None else settings.openai_embedding_max_retries
+        )
+        cache_size = (
+            query_cache_size
+            if query_cache_size is not None
+            else settings.embedding_query_cache_size
+        )
+        self._query_cache = _QueryEmbeddingCache(cache_size) if cache_size and cache_size > 0 else None
+
+        if client is not None:
+            self.client = client
+            return
         try:
             from openai import OpenAI
         except ImportError as exc:
@@ -75,13 +118,23 @@ class OpenAIEmbeddingModel:
                 "The openai package is required for OpenAI embeddings. "
                 "Install dependencies with `pip install -r requirements.txt`."
             ) from exc
-
-        self.model_name = model or settings.openai_embedding_model
-        self.batch_size = batch_size
-        self.client = OpenAI(api_key=api_key or settings.openai_api_key)
+        # OpenAI SDK는 max_retries 만큼 지수 백오프로 일시 오류(429/5xx/네트워크)를 재시도한다.
+        self.client = OpenAI(
+            api_key=api_key or settings.openai_api_key,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+        )
 
     def embed(self, text: str) -> list[float]:
-        return self.embed_many([text])[0]
+        # EVID-08: 동일 검색 쿼리 임베딩을 매번 재계산하지 않고 캐시에서 재사용한다.
+        if self._query_cache is not None:
+            cached = self._query_cache.get(text)
+            if cached is not None:
+                return cached
+        vector = self.embed_many([text])[0]
+        if self._query_cache is not None:
+            self._query_cache.set(text, vector)
+        return vector
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
         embeddings: list[list[float]] = []

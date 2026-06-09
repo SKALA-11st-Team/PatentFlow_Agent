@@ -29,7 +29,11 @@ class Settings(BaseModel):
     openai_chat_model: str = getenv("OPENAI_CHAT_MODEL") or getenv("OPENAI_MODEL", "gpt-5-mini")
     openai_supervisor_model: str | None = getenv("OPENAI_SUPERVISOR_MODEL", "gpt-5-nano")
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-    
+    # EVID-08: 임베딩 호출 타임아웃·재시도·쿼리 캐시. 일시 장애로 인덱싱/검색이 통째로 중단되지 않게 한다.
+    openai_embedding_timeout: float = float(getenv("OPENAI_EMBEDDING_TIMEOUT", "30"))
+    openai_embedding_max_retries: int = int(getenv("OPENAI_EMBEDDING_MAX_RETRIES", "3"))
+    embedding_query_cache_size: int = int(getenv("EMBEDDING_QUERY_CACHE_SIZE", "256"))
+
     # Spring Boot(BE) 통신용 기본 주소.
     # 로컬 직접 실행은 localhost를 기본으로 두고, Docker Compose에서는 UNIFIED_API_BASE_URL로 서비스명을 주입합니다.
     unified_api_base_url: str = getenv("UNIFIED_API_BASE_URL", "http://localhost:8080")
