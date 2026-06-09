@@ -284,19 +284,17 @@ def test_english_queries_keep_only_gnews_compatible_queries():
 
 def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
     saved_queries = []
+    tavily_queries = []
 
-    def fake_request_json(base_url, path, params, *, timeout=20):
-        assert base_url == "http://unified.test"
-        assert path == "/api/v4/search"
-        query = params["q"]
+    def fake_tavily_news(query, *, max_results):
+        tavily_queries.append((query, max_results))
         return {
-            "articles": [
+            "results": [
                 {
                     "title": query,
-                    "description": f"{query} description",
                     "url": f"https://example.com/{query.replace(' ', '-')}",
-                    "publishedAt": "2026-05-05T00:00:00Z",
-                    "source": {"name": "Example"},
+                    "content": f"{query} description",
+                    "published_date": "2026-05-05T00:00:00Z",
                 }
             ]
         }
@@ -305,12 +303,8 @@ def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
         saved_queries.append(kwargs["query"])
         return tmp_path / f"{kwargs['query'].replace(' ', '_')}.json"
 
-    monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
+    monkeypatch.setattr("services.evidence.external_search_service.search_global_news_via_tavily", fake_tavily_news)
     monkeypatch.setattr("services.evidence.external_search_service.save_evidence_collection", fake_save_collection)
-    monkeypatch.setattr(
-        "services.evidence.external_search_service.settings.unified_api_base_url",
-        "http://unified.test",
-    )
     result = collect_external_evidence(
         preprocessed_patent={
             "metadata": {
@@ -330,7 +324,8 @@ def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
     )
 
     assert result["gnews_queries"] == ["reinforcement learning finance", "AI asset allocation"]
-    assert saved_queries == result["gnews_queries"]
+    assert sorted(query for query, _ in tavily_queries) == sorted(result["gnews_queries"])
+    assert sorted(saved_queries) == sorted(result["gnews_queries"])
 
 
 def test_collect_external_evidence_searches_news_queries_concurrently(monkeypatch):
