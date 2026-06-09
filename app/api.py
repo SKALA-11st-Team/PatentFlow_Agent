@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from agents.field_recommendation import recommend_fields
+from agents.writing.final_report import build_evidence_references
 from app.config import settings
 from app.main import save_outputs
 from services.patent.shared_db_service import get_patent_identifiers
@@ -35,11 +36,24 @@ class PatentEvaluationRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+# ORCH-06/AIREPORT-02: 축별 근거의 클릭형 출처. evidence_id로 연결되는 근거의 제목/URL을 노출한다.
+class SourceRef(BaseModel):
+    title: str | None = None
+    url: str | None = None
+
+
+class EvidenceDetail(BaseModel):
+    text: str
+    source: SourceRef | None = None
+
+
 class PatentEvaluationScore(BaseModel):
     category: str
     score: int | None = None
     grade: str | None = None
     evidence: str
+    # ORCH-06/AIREPORT-02: 축별 세부 근거(출처 URL 포함). 데이터 없으면 빈 리스트.
+    evidenceDetails: list[EvidenceDetail] = Field(default_factory=list)
 
 
 class PatentEvaluationResponse(BaseModel):
@@ -57,6 +71,12 @@ class PatentEvaluationResponse(BaseModel):
     failureReason: str | None = None
     warnings: list[str] = Field(default_factory=list)
     evidenceConfidence: str | None = None
+    # ORCH-06/AIREPORT-02: 리포트 레벨 리치 근거. BE record가 그동안 수용하지 못해 FE까지 유실되던 필드들.
+    missingInformation: list[str] = Field(default_factory=list)
+    keyEvidence: str | None = None
+    judgementGrounds: list[str] = Field(default_factory=list)
+    businessCheckRequests: list[str] = Field(default_factory=list)
+    externalSources: list[SourceRef] = Field(default_factory=list)
     generatedAt: datetime
 
 
@@ -127,9 +147,10 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
     valuation_markdown = (valuation_result.get("final_report_markdown") or "").strip()
     summary_markdown = (summary_result.get("summary_markdown") or "").strip()
 
+    evidence_bundle = final_state.evidence_bundle or []
     return PatentEvaluationResponse(
         patentId=patent_id,
-        scores=valuation_scores(valuation_result),
+        scores=valuation_scores(valuation_result, evidence_bundle),
         recommendation=valuation_result.get("recommendation") or "추가 정보 필요",
         summaryMarkdown=summary_markdown or None,
         valuationReportMarkdown=valuation_markdown or None,
@@ -142,6 +163,12 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         failureReason=failure_reason(final_state, valuation_result),
         warnings=workflow_warnings(final_state),
         evidenceConfidence=evidence_confidence(final_state),
+        # ORCH-06/AIREPORT-02: 워크플로가 이미 산출한 리치 근거를 API로 풀스루한다.
+        missingInformation=[str(item) for item in (valuation_result.get("missing_information") or []) if item],
+        keyEvidence=build_key_evidence(valuation_result),
+        judgementGrounds=[str(item) for item in (valuation_result.get("decision_rationale") or []) if item],
+        businessCheckRequests=[str(item) for item in (valuation_result.get("required_actions") or []) if item],
+        externalSources=build_external_sources(final_state, valuation_result),
         generatedAt=datetime.now(timezone.utc),
     )
 
@@ -221,8 +248,49 @@ def safe_identifier(value: str) -> str:
     return str(value).replace("/", "_").replace(" ", "_")
 
 
-def valuation_scores(valuation_result: dict[str, Any]) -> list[PatentEvaluationScore]:
+_MAX_AXIS_EVIDENCE_DETAILS = 5
+
+
+def build_evidence_index(evidence_bundle: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    index: dict[str, dict[str, Any]] = {}
+    for item in evidence_bundle or []:
+        evidence_id = item.get("evidence_id")
+        if evidence_id and evidence_id not in index:
+            index[str(evidence_id)] = item
+    return index
+
+
+def build_axis_evidence_details(
+    axis_result: dict[str, Any], evidence_index: dict[str, dict[str, Any]]
+) -> list[EvidenceDetail]:
+    # ORCH-06/AIREPORT-02: 축의 evidence_ids를 근거 번들과 매핑해 클릭형 출처(제목/URL)를 채운다.
+    details: list[EvidenceDetail] = []
+    for evidence_id in axis_result.get("evidence_ids") or []:
+        item = evidence_index.get(str(evidence_id))
+        if not item:
+            continue
+        text = (
+            item.get("title")
+            or item.get("summary")
+            or item.get("context")
+            or item.get("content")
+            or item.get("source")
+            or str(evidence_id)
+        )
+        source = None
+        if item.get("url") or item.get("source") or item.get("title"):
+            source = SourceRef(title=item.get("title") or item.get("source"), url=item.get("url"))
+        details.append(EvidenceDetail(text=str(text)[:500], source=source))
+        if len(details) >= _MAX_AXIS_EVIDENCE_DETAILS:
+            break
+    return details
+
+
+def valuation_scores(
+    valuation_result: dict[str, Any], evidence_bundle: list[dict[str, Any]] | None = None
+) -> list[PatentEvaluationScore]:
     axes = valuation_result.get("axes") or {}
+    evidence_index = build_evidence_index(evidence_bundle or [])
     scores = []
     for axis in ["legal", "technology", "market", "business_fit"]:
         axis_result = axes.get(axis) or {}
@@ -232,9 +300,41 @@ def valuation_scores(valuation_result: dict[str, Any]) -> list[PatentEvaluationS
                 score=axis_result.get("score"),
                 grade=axis_result.get("grade"),
                 evidence=axis_result.get("rationale") or "평가 근거가 생성되지 않았습니다.",
+                evidenceDetails=build_axis_evidence_details(axis_result, evidence_index),
             )
         )
     return scores
+
+
+def build_key_evidence(valuation_result: dict[str, Any]) -> str | None:
+    # ORCH-06/AIREPORT-02: 핵심 근거 = 가장 높은 점수 축의 근거 문장(가장 강한 지지 근거).
+    axes = valuation_result.get("axes") or {}
+    candidates = [
+        (int(axis.get("score") or 0), str(axis.get("rationale") or "").strip(), axis.get("label") or key)
+        for key, axis in axes.items()
+        if isinstance(axis, dict)
+    ]
+    candidates = [item for item in candidates if item[1]]
+    if not candidates:
+        return None
+    _, rationale, label = max(candidates, key=lambda item: item[0])
+    return f"{label}: {rationale}"
+
+
+def build_external_sources(
+    state: PatentWorkflowState, valuation_result: dict[str, Any]
+) -> list[SourceRef]:
+    # ORCH-06/AIREPORT-02: 실제 사용된 외부 근거(뉴스/산업/공시/포트폴리오)의 제목·URL을 노출한다.
+    references = build_evidence_references(state, valuation_result)
+    seen: set[tuple[str | None, str | None]] = set()
+    sources: list[SourceRef] = []
+    for ref in references:
+        key = (ref.get("title"), ref.get("url"))
+        if key in seen:
+            continue
+        seen.add(key)
+        sources.append(SourceRef(title=ref.get("title") or ref.get("source"), url=ref.get("url")))
+    return sources
 
 
 def valuation_average_score(valuation_result: dict[str, Any]) -> float | None:

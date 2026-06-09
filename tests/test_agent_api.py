@@ -245,3 +245,73 @@ def test_recommend_fields_endpoint_returns_business_and_technology_only(monkeypa
         "reason": "특허명과 기술 내용이 데이터 분석 분류와 가장 가깝습니다.",
     }
     assert "productName" not in body
+
+
+def test_evaluate_patent_passes_through_rich_evidence(monkeypatch):
+    # ORCH-06/AIREPORT-02: 워크플로가 산출한 축별 출처·리포트 레벨 리치 근거가 API로 풀스루되는지 검증.
+    def fake_run_workflow(state):
+        state.summary_result = {"summary_markdown": "# 요약"}
+        state.evidence_bundle = [
+            {
+                "evidence_id": "ev-news-1",
+                "source_type": "news",
+                "source": "한국경제",
+                "title": "AI 반도체 시장 급성장",
+                "url": "https://example.com/news/1",
+            },
+            {
+                "evidence_id": "ev-ind-1",
+                "source_type": "industry_report",
+                "source": "KIET",
+                "title": "반도체 산업 전망",
+                "url": None,
+            },
+        ]
+        state.valuation_result = {
+            "recommendation": "유지 권고",
+            "total_score": 300,
+            "average_score": 75.0,
+            "final_grade": "B",
+            "final_indicator": "유지 권고",
+            "axes": {
+                "legal": {"label": "권리성", "score": 72, "grade": "B", "rationale": "권리성 근거",
+                          "evidence_ids": []},
+                "technology": {"label": "기술성", "score": 80, "grade": "A", "rationale": "기술성 근거",
+                               "evidence_ids": ["ev-news-1"]},
+                "market": {"label": "시장성", "score": 70, "grade": "B", "rationale": "시장성 근거",
+                           "evidence_ids": ["ev-news-1", "ev-ind-1"]},
+                "business_fit": {"label": "사업 연계성", "score": 78, "grade": "B", "rationale": "사업 연계성 근거",
+                                 "evidence_ids": []},
+            },
+            "decision_rationale": ["합산 300/400, 평균 75/100, 등급 B.", "기술성이 가장 강하다."],
+            "required_actions": ["사업부 적용 계획 확인"],
+            "missing_information": ["상용화 매출 실적"],
+            "final_report_markdown": "# 보고서",
+        }
+        state.final_report = {"valuation": state.valuation_result, "evidence": []}
+        return state
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", lambda state: {})
+
+    response = client.post("/api/v1/ai/patents/PAT-RICH/evaluate", json={"noSave": True})
+    assert response.status_code == 200
+    body = response.json()
+
+    # 리포트 레벨 리치 근거
+    assert body["missingInformation"] == ["상용화 매출 실적"]
+    assert body["judgementGrounds"] == ["합산 300/400, 평균 75/100, 등급 B.", "기술성이 가장 강하다."]
+    assert body["businessCheckRequests"] == ["사업부 적용 계획 확인"]
+    # keyEvidence = 최고 점수 축(기술성 80)의 근거
+    assert body["keyEvidence"] == "기술성: 기술성 근거"
+    # externalSources = 사용된 근거의 제목/URL(중복 제거)
+    titles = {src["title"] for src in body["externalSources"]}
+    assert "AI 반도체 시장 급성장" in titles
+    assert "반도체 산업 전망" in titles
+    # 축별 evidenceDetails(클릭형 출처)
+    market_axis = next(s for s in body["scores"] if s["category"] == "시장성")
+    assert len(market_axis["evidenceDetails"]) == 2
+    news_detail = next(d for d in market_axis["evidenceDetails"] if d["text"] == "AI 반도체 시장 급성장")
+    assert news_detail["source"]["url"] == "https://example.com/news/1"
+    legal_axis = next(s for s in body["scores"] if s["category"] == "권리성")
+    assert legal_axis["evidenceDetails"] == []
