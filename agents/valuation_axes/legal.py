@@ -39,6 +39,21 @@ LEGAL_DETAIL_MAX = {
     "prior_art_overlap": 25,
     "claim_structure_stability": 10,
 }
+# 각 권리성 subscore가 가져야 할 세부지표 키 전체 목록(docs/valuation_legal 공표 기준).
+LEGAL_SUBSCORE_DETAIL_KEYS = {
+    "right_stability": ["prior_art_overlap", "claim_structure_stability"],
+    "claim_protection": [
+        "core_solution_coverage",
+        "independent_claim_scope",
+        "dependent_claim_support",
+        "claim_type_diversity",
+    ],
+    "portfolio_defensive_value": [
+        "portfolio_connection_coverage",
+        "overseas_right_coverage",
+        "follow_on_right_signal",
+    ],
+}
 
 
 def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState) -> dict[str, Any]:
@@ -57,14 +72,34 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
                 details=details,
                 excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS,
             )
-        detail_sum = sum_detail_scores(
+        excluded = FOREIGN_LEGAL_EXCLUDED_DETAILS if foreign_patent and key == "right_stability" else None
+        detail_sum, missing_keys = sum_detail_scores(
             details,
-            excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS if foreign_patent and key == "right_stability" else None,
+            expected_keys=LEGAL_SUBSCORE_DETAIL_KEYS.get(key, []),
+            excluded_detail_keys=excluded,
         )
         raw_score = coerce_int(item.get("score"))
-        score = detail_sum if detail_sum is not None else raw_score
+        score_status = None
+        if not missing_keys and detail_sum is not None:
+            score = detail_sum
+        elif detail_sum is None:
+            # 세부지표가 전무하면 부분합 대신 LLM 자기보고로 폴백하되 표면화한다.
+            score = raw_score if raw_score is not None else 0
+            score_status = "no_details_self_report"
+        elif raw_score is not None:
+            # 일부 세부지표 누락 시 부분합으로 조용히 저평가하지 않고 자기보고를 사용한다.
+            score = raw_score
+            score_status = "partial_details_fallback_to_self_report"
+        else:
+            score = detail_sum
+            score_status = "details_unavailable"
         score = max(0, min(effective_max_score, score or 0))
-        reconciled[key] = {**item, "score": score, "max_score": effective_max_score}
+        reconciled_item = {**item, "score": score, "max_score": effective_max_score}
+        if score_status:
+            reconciled_item["score_status"] = score_status
+            if missing_keys:
+                reconciled_item["missing_detail_keys"] = missing_keys
+        reconciled[key] = reconciled_item
         total += score
         total_max += effective_max_score
     total = normalize_score_to_100(total, total_max)
@@ -76,16 +111,26 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
     }
 
 
-def sum_detail_scores(details: dict[str, Any], excluded_detail_keys: set[str] | None = None) -> int | None:
+def sum_detail_scores(
+    details: dict[str, Any],
+    *,
+    expected_keys: list[str],
+    excluded_detail_keys: set[str] | None = None,
+) -> tuple[int | None, list[str]]:
+    excluded = excluded_detail_keys or set()
     values: list[int] = []
-    for key, detail in details.items():
-        if excluded_detail_keys and key in excluded_detail_keys:
+    missing_keys: list[str] = []
+    for key in expected_keys:
+        if key in excluded:
             continue
-        if isinstance(detail, dict) and "score" in detail:
-            value = coerce_int(detail.get("score"))
-            if value is not None:
-                values.append(value)
-    return sum(values) if values else None
+        detail = details.get(key)
+        value = coerce_int(detail.get("score")) if isinstance(detail, dict) else None
+        if value is None:
+            missing_keys.append(key)
+        else:
+            values.append(value)
+    detail_sum = sum(values) if values else None
+    return detail_sum, missing_keys
 
 
 def legal_subscore_max_without_details(

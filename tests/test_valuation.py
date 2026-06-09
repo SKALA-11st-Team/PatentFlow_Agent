@@ -2641,6 +2641,110 @@ def test_reconcile_legal_scores_excludes_prior_art_metric_for_foreign_patent():
     assert scored["score"] == 61
 
 
+def test_reconcile_legal_scores_partial_details_does_not_undervalue():
+    # VAL-07: 일부 세부지표 누락 시 부분합(30)으로 저평가하지 않고 자기보고(36)로 폴백하고 표면화한다.
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(patent_structured={"country": "KR"})
+    result = {
+        "subscores": {
+            "right_stability": {"score": 35, "details": {"prior_art_overlap": {"score": 25}, "claim_structure_stability": {"score": 10}}},
+            "claim_protection": {
+                "score": 36,
+                "details": {
+                    "core_solution_coverage": {"score": 12},
+                    "independent_claim_scope": {"score": 10},
+                    "dependent_claim_support": {"score": 8},
+                    # claim_type_diversity 누락 → 부분합 30
+                },
+            },
+            "portfolio_defensive_value": {
+                "score": 25,
+                "details": {
+                    "portfolio_connection_coverage": {"score": 10},
+                    "overseas_right_coverage": {"score": 8},
+                    "follow_on_right_signal": {"score": 7},
+                },
+            },
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+    cp = scored["subscores"]["claim_protection"]
+    assert cp["score"] == 36
+    assert cp["score_status"] == "partial_details_fallback_to_self_report"
+    assert cp["missing_detail_keys"] == ["claim_type_diversity"]
+
+
+def test_reconcile_legal_scores_all_details_present_uses_detail_sum():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(patent_structured={"country": "KR"})
+    result = {
+        "subscores": {
+            "right_stability": {"score": 0, "details": {"prior_art_overlap": {"score": 25}, "claim_structure_stability": {"score": 10}}},
+            "claim_protection": {
+                "score": 0,
+                "details": {
+                    "core_solution_coverage": {"score": 12},
+                    "independent_claim_scope": {"score": 10},
+                    "dependent_claim_support": {"score": 8},
+                    "claim_type_diversity": {"score": 6},
+                },
+            },
+            "portfolio_defensive_value": {
+                "score": 0,
+                "details": {
+                    "portfolio_connection_coverage": {"score": 10},
+                    "overseas_right_coverage": {"score": 8},
+                    "follow_on_right_signal": {"score": 7},
+                },
+            },
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+    cp = scored["subscores"]["claim_protection"]
+    assert cp["score"] == 36
+    assert "score_status" not in cp
+
+
+def test_reconcile_legal_scores_empty_details_surfaces_self_report():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(patent_structured={"country": "KR"})
+    result = {
+        "subscores": {
+            "right_stability": {"score": 0, "details": {"prior_art_overlap": {"score": 25}, "claim_structure_stability": {"score": 10}}},
+            "claim_protection": {
+                "score": 30,
+                "details": {
+                    "core_solution_coverage": {"score": 12},
+                    "independent_claim_scope": {"score": 10},
+                    "dependent_claim_support": {"score": 8},
+                    "claim_type_diversity": {"score": 0},
+                },
+            },
+            "portfolio_defensive_value": {"score": 25},
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+    pdv = scored["subscores"]["portfolio_defensive_value"]
+    assert pdv["score"] == 25
+    assert pdv["score_status"] == "no_details_self_report"
+
+
+def test_sum_detail_scores_returns_missing_keys():
+    from agents.valuation_axes.legal import sum_detail_scores
+
+    detail_sum, missing = sum_detail_scores(
+        {"a": {"score": 5}, "b": {"score": 3}}, expected_keys=["a", "b", "c"]
+    )
+    assert detail_sum == 8
+    assert missing == ["c"]
+
+
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
