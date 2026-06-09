@@ -20,6 +20,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 전체 소스 복사
 COPY . .
 
+# SEC-09: 비특권 사용자로 실행한다(컨테이너 root 실행 방지). 런타임 산출물(/app/artifacts) 쓰기를 위해
+# 작업 디렉터리 소유권을 appuser에게 넘긴다.
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /app/artifacts \
+    && chown -R appuser:appuser /app
+USER appuser
+
 # FastAPI 포트 노출
 EXPOSE 8000
 

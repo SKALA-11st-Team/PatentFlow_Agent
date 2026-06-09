@@ -16,12 +16,24 @@ spec:
       labels:
         app: team11-patentflow-agent
     spec:
+      # SEC-09: 컨테이너를 비특권(non-root)으로 실행한다(Dockerfile USER appuser=uid 10001과 일치).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       imagePullSecrets:
         - name: harbor-regcred
       containers:
         - name: team11-patentflow-agent
           image: harbor.example.com/patentflow/team11-patentflow-agent:placeholder
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           ports:
             - containerPort: 8000
               name: http
