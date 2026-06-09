@@ -18,6 +18,8 @@ from typing import Any, Mapping
 import os
 import re
 import time
+
+from open_api.secret_scrub import scrub_secrets
 import xml.etree.ElementTree as ET
 
 import requests
@@ -263,8 +265,10 @@ class KiprisClient:
             raise_for_kipris_body_error(parsed)
             return parsed
 
+        # EXT-10: last_exc(requests 예외)의 str()에는 ServiceKey=... 평문 URL이 포함되므로 마스킹한다.
+        # 이 메시지는 워크플로 warnings→API 응답·아티팩트로 전파될 수 있다.
         raise KiprisError(
-            f"KIPRIS 호출 실패(키 {count}개 모두 실패): {last_exc}"
+            f"KIPRIS 호출 실패(키 {count}개 모두 실패): {scrub_secrets(str(last_exc))}"
         ) from last_exc
 
     # -------------------------

@@ -6,13 +6,14 @@
 from __future__ import annotations
 
 import os
-import re
 from pathlib import Path
 from typing import Any
 
 import requests
 import yaml
 from dotenv import load_dotenv
+
+from open_api.secret_scrub import scrub_secrets
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
@@ -426,22 +427,8 @@ def gnews_search_alias(
 
 
 def _sanitize_external_error(exc: Exception) -> str:
-    text = str(exc)
-    # 빈 문자열을 replace에 넘기면 모든 문자 사이에 ***가 삽입되므로 truthy 키만 마스킹한다.
-    for env_name in (
-        "GNEWS_API_KEY",
-        "DART_KEY",
-        "KIPRIS_SERVICE_KEYS",
-        "KIPRIS_SERVICE_KEY",
-        "KIPRIS_API_KEY",
-        "SERVICE_KEY",
-    ):
-        secret = os.getenv(env_name)
-        if secret:
-            text = text.replace(secret, "***")
-    # 쿼리스트링으로 전달된 per-request 인증키(env에 없어 위 replace로 못 가림)도 마스킹한다.
-    text = re.sub(r"(?i)(ServiceKey|serviceKey|accessKey|crtfc_key)=[^&\s'\"]+", r"\1=***", text)
-    return text
+    # EXT-10: 시크릿 마스킹은 공용 모듈(secret_scrub)로 일원화한다(에이전트 KiprisError 경로와 동일 로직).
+    return scrub_secrets(str(exc))
 
 
 # -------------------------
