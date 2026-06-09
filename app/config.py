@@ -47,6 +47,8 @@ class Settings(BaseModel):
     openai_request_timeout_seconds: float = float(getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "90"))
     # 보고서/요약 작성(writing)은 출력이 길어 일반 호출보다 오래 걸리므로 별도 timeout.
     openai_writing_timeout_seconds: float = float(getenv("OPENAI_WRITING_TIMEOUT_SECONDS", "240"))
+    # 수집 후 뉴스 recency 필터의 최대 기간(일). naver·글로벌 뉴스 공통. 기본 5년.
+    news_max_age_days: int = int(getenv("NEWS_MAX_AGE_DAYS", str(365 * 5)))
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     
     # Spring Boot(BE) 통신용 기본 주소.
