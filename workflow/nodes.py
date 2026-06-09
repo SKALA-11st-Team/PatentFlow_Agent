@@ -19,7 +19,10 @@ from services.evidence.external_search_service import MAX_SEARCH_QUERIES, collec
 from services.evidence.news_filter_service import filter_news_evidence, save_filtered_news_result
 from services.evidence.skax_site_search_service import collect_skax_site_evidence
 from services.evidence.store_service import save_filtered_evidence_bundle
-from services.rag.industry_rag_service import search_and_save_patent_industry_evidence
+from services.rag.industry_rag_service import (
+    resolve_patent_industries,
+    search_and_save_patent_industry_evidence,
+)
 from services.observability.langsmith_service import trace
 from agents.summary import run_summary_agent
 from agents.writing.final_report import run_final_report_agent
@@ -314,6 +317,7 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         preprocessed_patent=preprocessed,
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
         rag_queries=query_plan.get("industry_rag_queries", []),
+        patent_context=patent,
         output_dir=artifact_subdir(state, "industry_rag"),
         save=not state.user_input.get("no_save", False),
     )
@@ -349,6 +353,7 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         "industry_rag": {
             "query": industry_result.get("query"),
             "queries": industry_result.get("queries", []),
+            "industries": industry_result.get("industries"),
             "output_path": industry_result.get("output_path"),
             "warning": industry_result.get("warning"),
             "item_count": len(industry_result.get("items", [])),
@@ -635,14 +640,19 @@ def search_industry_rag_safely(
     preprocessed_patent: dict,
     patent_id: str | int | None,
     rag_queries: list[str] | None = None,
+    patent_context: dict | None = None,
     output_dir: Path,
     save: bool,
 ) -> dict:
     try:
+        # EVID-03: 특허 분야를 코퍼스 산업 라벨로 매핑해 검색을 해당 산업(+공통)으로 한정한다.
+        # 매핑 실패 시 None → 산업 필터 없이 기존처럼 전체 검색으로 안전 폴백한다.
+        industries = resolve_patent_industries(patent_context, preprocessed_patent)
         return search_and_save_patent_industry_evidence(
             preprocessed_patent=preprocessed_patent,
             patent_id=patent_id,
             rag_queries=rag_queries,
+            industries=industries,
             top_k=settings.industry_rag_top_k,
             output_dir=output_dir,
             save=save,
@@ -652,6 +662,7 @@ def search_industry_rag_safely(
             "query": None,
             "queries": [],
             "items": [],
+            "industries": None,
             "output_path": None,
             "warning": f"industry_rag_failed:{exc.__class__.__name__}",
         }

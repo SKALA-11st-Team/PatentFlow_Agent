@@ -138,16 +138,29 @@ class IndustryVectorStore:
         *,
         top_k: int = 5,
         industry: str | None = None,
+        industries: list[str] | None = None,
         source_name: str | None = None,
     ) -> list[SearchResult]:
         query_embedding = self.embedding_model.embed(query)
         limit = max(1, int(top_k))
+        industries = list(industries) if industries else None
 
         with connect_pgvector(self.database_url) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    build_search_sql(self.table_name, industry=industry is not None, source_name=source_name is not None),
-                    build_search_params(query_embedding, limit=limit, industry=industry, source_name=source_name),
+                    build_search_sql(
+                        self.table_name,
+                        industry=industry is not None,
+                        industries=industries is not None,
+                        source_name=source_name is not None,
+                    ),
+                    build_search_params(
+                        query_embedding,
+                        limit=limit,
+                        industry=industry,
+                        industries=industries,
+                        source_name=source_name,
+                    ),
                 )
                 rows = cursor.fetchall()
 
@@ -245,10 +258,14 @@ def build_search_params(
     *,
     limit: int,
     industry: str | None = None,
+    industries: list[str] | None = None,
     source_name: str | None = None,
 ) -> list[Any]:
     params: list[Any] = [to_pgvector_literal(embedding)]
-    if industry is not None:
+    # EVID-03: 다중 산업 필터(industries)는 단일 industry보다 우선한다(= ANY(%s)).
+    if industries is not None:
+        params.append(list(industries))
+    elif industry is not None:
         params.append(industry)
     if source_name is not None:
         params.append(source_name)
@@ -260,10 +277,19 @@ def to_pgvector_literal(vector: list[float]) -> str:
     return "[" + ",".join(format(float(value), ".10g") for value in normalize_vector(vector)) + "]"
 
 
-def build_search_sql(table_name: str, *, industry: bool = False, source_name: bool = False) -> Any:
+def build_search_sql(
+    table_name: str,
+    *,
+    industry: bool = False,
+    industries: bool = False,
+    source_name: bool = False,
+) -> Any:
     sql, _ = import_psycopg()
     filters = []
-    if industry:
+    # EVID-03: 다중 산업 필터가 지정되면 ANY(%s)로, 아니면 단일 industry 등식으로 거른다.
+    if industries:
+        filters.append(sql.SQL("chunks.metadata->>'industry' = ANY(%s)"))
+    elif industry:
         filters.append(sql.SQL("chunks.metadata->>'industry' = %s"))
     if source_name:
         filters.append(sql.SQL("chunks.metadata->>'source_name' = %s"))

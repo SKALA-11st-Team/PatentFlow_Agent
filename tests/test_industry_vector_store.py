@@ -1,3 +1,5 @@
+import pytest
+
 from rag.industry_vector_store import (
     HashingEmbeddingModel,
     build_search_params,
@@ -6,7 +8,11 @@ from rag.industry_vector_store import (
     to_pgvector_literal,
     validate_embeddings,
 )
-from services.rag.industry_rag_service import build_patent_industry_query
+from services.rag.industry_rag_service import (
+    build_patent_industry_query,
+    match_industry,
+    resolve_patent_industries,
+)
 from rag.chunkers.ai_index_chunker import is_noise_section, strip_embedded_chart_ocr_tail
 from rag.industry_report_chunker import Section, infer_published_year
 from services.rag import industry_rag_service
@@ -31,7 +37,7 @@ class _Store:
         self.database_url = database_url
         self.embedding_model = embedding_model
 
-    def search(self, query, top_k=5, industry=None):
+    def search(self, query, top_k=5, industry=None, industries=None):
         return [_SearchResult()]
 
 
@@ -42,7 +48,7 @@ class _QueryCaptureStore:
         self.database_url = database_url
         self.embedding_model = embedding_model
 
-    def search(self, query, top_k=5, industry=None):
+    def search(self, query, top_k=5, industry=None, industries=None):
         self.__class__.queries.append(query)
         return [_SearchResult()]
 
@@ -207,3 +213,68 @@ def test_ai_index_filters_short_report_heading_only_section():
     )
 
     assert is_noise_section(section) is True
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("인공지능 기반 자연어 처리 시스템", "AI"),
+        ("리튬 이차전지 양극재 조성물", "이차전지"),
+        ("반도체 웨이퍼 식각 공정 장치", "반도체"),
+        ("LNG 운반선 조선 의장 자동화", "조선"),
+        ("자산배분 포트폴리오 로보어드바이저 핀테크", "핀테크"),
+        ("전기차 자율주행 ADAS 제어", "자동차"),
+        ("OLED 디스플레이 패널 화소 구동", "디스플레이"),
+        # 매칭 없음 → None(필터 미적용 폴백).
+        ("그냥 일반적인 장치와 방법", None),
+        # 'retail' 안의 'ai' 부분문자열을 AI로 오인하지 않는다(단어 경계).
+        ("retail point of sale terminal", None),
+        ("", None),
+    ],
+)
+def test_match_industry_maps_technology_area_to_corpus_label(text, expected):
+    assert match_industry(text) == expected
+
+
+def test_resolve_patent_industries_includes_common_label():
+    industries = resolve_patent_industries(
+        {"technology_area": "인공지능", "business_area": "AI 플랫폼"},
+        {"metadata": {"title": "자연어 처리 장치"}, "sections": {}},
+    )
+    assert industries == ["AI", "공통"]
+
+
+def test_resolve_patent_industries_reads_preprocessed_sections():
+    industries = resolve_patent_industries(
+        {},
+        {"metadata": {"title": "측정 장치"}, "sections": {"technical_field": "반도체 웨이퍼 검사"}},
+    )
+    assert industries == ["반도체", "공통"]
+
+
+def test_resolve_patent_industries_returns_none_when_unmatched():
+    assert resolve_patent_industries({"technology_area": "일반 장치"}, {}) is None
+    assert resolve_patent_industries(None, None) is None
+
+
+def test_build_search_params_multi_industry_passes_list_then_limit():
+    embedding = [0.1, 0.2, 0.3]
+    params = build_search_params(embedding, limit=3, industries=["AI", "공통"])
+    assert params[-2:] == [["AI", "공통"], 3]
+
+
+def test_build_search_params_prefers_industries_over_single_industry():
+    embedding = [0.1, 0.2, 0.3]
+    params = build_search_params(embedding, limit=5, industry="조선", industries=["AI", "공통"])
+    # 다중 산업 필터가 단일 industry보다 우선한다.
+    assert params[-2:] == [["AI", "공통"], 5]
+
+
+def test_build_search_sql_uses_any_for_multi_industry():
+    pytest.importorskip("psycopg")
+    from rag.industry_vector_store import build_search_sql
+
+    multi = str(build_search_sql("patent_chunks", industries=True))
+    single = str(build_search_sql("patent_chunks", industry=True))
+    assert "ANY(%s)" in multi
+    assert "= %s" in single and "ANY(%s)" not in single
