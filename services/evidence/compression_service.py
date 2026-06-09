@@ -104,6 +104,11 @@ def select_compression_candidates(
         if source_type == "news":
             candidates.append(item)
             continue
+        if source_type == "company_disclosure":
+            # SK AX 공식 사이트/계열 매체 근거. 검색 단계에서 키워드로 거르지 않고
+            # 전문을 그대로 올린 뒤, 여기서 요약 + 관련성(LLM)을 판단한다.
+            candidates.append(item)
+            continue
         if source_type == "industry_report":
             score = to_float(item.get("score"))
             if score is None or score >= rag_score_threshold:
@@ -129,6 +134,8 @@ def compress_single_evidence(
 
     if item.get("source_type") == "industry_report":
         return normalize_industry_compression(item, parsed)
+    if item.get("source_type") == "company_disclosure":
+        return normalize_company_disclosure_compression(item, parsed)
     return normalize_news_compression(item, parsed)
 
 
@@ -175,12 +182,28 @@ def normalize_news_compression(item: dict[str, Any], parsed: dict[str, Any]) -> 
         "published_at": item.get("published_at"),
         "collected_at": item.get("collected_at") or now_iso(),
         "is_relevant": bool(parsed.get("is_relevant", True)),
+        # SK AX(또는 SK C&C)의 사업/제품/서비스와 직접 관련된 뉴스인지 LLM이 판단한 값.
+        # True이면 시장성 외에 사업연계성 축에서도 보조 근거로 쓸 수 있다.
+        "sk_ax_relevant": bool(parsed.get("sk_ax_relevant", False)),
         "related_axes": normalize_axes(parsed.get("related_axes")),
         "relation_type": normalize_relation_type(parsed.get("relation_type")),
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
         "axis_context": normalize_axis_context(parsed.get("axis_context")),
     }
+
+
+def normalize_company_disclosure_compression(item: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:
+    # SK AX 공식 사이트/계열 매체 근거는 source/source_type/url/source_domain 등
+    # 식별 필드를 그대로 보존하고(사업연계성 축 선택이 source 기반이므로), 그 위에
+    # LLM 요약·관련성 판단 결과만 덧씌운다. 원문(content)도 유지해 근거 발췌에 쓴다.
+    compressed = dict(item)
+    compressed["is_relevant"] = bool(parsed.get("is_relevant", True))
+    compressed["sk_ax_relevant"] = bool(parsed.get("sk_ax_relevant", True))
+    compressed["compressed_summary"] = normalize_text(parsed.get("compressed_summary"))
+    compressed["key_facts"] = normalize_text_list(parsed.get("key_facts"))
+    compressed["collected_at"] = item.get("collected_at") or now_iso()
+    return compressed
 
 
 def normalize_industry_compression(item: dict[str, Any], parsed: dict[str, Any]) -> dict[str, Any]:

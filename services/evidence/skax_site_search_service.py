@@ -1151,9 +1151,11 @@ def filter_search_results(results: list[dict[str, Any]], patent_context: dict[st
         if not url or url in seen or not is_skax_url(url) or is_file_url(url):
             continue
         seen.add(url)
+        # 관련성 점수는 정렬(우선순위)용으로만 쓰고, 여기서 버리지 않는다.
+        # skax.co.kr 공식 도메인 페이지는 제품명 정확매칭이 없어도(예: 제품을
+        # AIOps Platform 같은 일반 표현으로 소개) 일단 근거 후보로 올린 뒤,
+        # 실제 관련성 판단·요약은 뒤의 압축 단계(LLM)에서 처리한다.
         score = score_search_result(result, patent_context)
-        if score["relevance_score"] <= 0 or not score["is_relevant"]:
-            continue
         filtered.append({**result, "url": url, **score})
     filtered.sort(key=lambda item: item["relevance_score"], reverse=True)
     return filtered

@@ -71,6 +71,10 @@
   - SK Careers Journal, SK OpenAPI News 등 SK 계열 운영 매체에서 수집된 보조 evidence
   - 수집 시 본문에 SK AX 또는 SK C&C 언급이 확인된 항목만 포함된다.
   - 이 evidence는 `skax.co.kr` 공식 사이트 근거보다 낮은 신뢰도 tier로 취급한다.
+- `business_fit_context.sk_ax_relevant_news_evidence`
+  - 압축 단계에서 SK AX(또는 SK C&C)의 사업/제품/서비스와 직접 관련 있다고 판단된 뉴스 등 보조 근거
+  - `sk_ax_official`/`sk_group_owned_media` 공식 근거보다 낮은 tier의 참고 자료다.
+  - 사업 문맥·제품 매칭 판단의 보조 근거로만 활용하고, **공식 근거 존재성(30점) 산정에는 포함하지 않는다**(이 항목만으로 공식 근거가 있다고 보지 않는다).
 - `business_fit_context.quantitative_metrics`
   - official_evidence_count
   - official_site_evidence_count
@@ -79,8 +83,7 @@
   - best_relevance_score
   - official_business_evidence
   - product_function_direct_match
-- evidence 목록 중 `sk_ax_official`, `sk_group_owned_media` (모두 SK AX 공식 사이트/계열 매체 콘텐츠)
-  - 뉴스 기사는 사업 연계성 근거로 제공되지 않는다(시장성 축에서만 사용). 입력에 뉴스가 보여도 사업 연계성 판단 근거로 쓰지 않는다.
+- evidence 목록 중 `sk_ax_official`, `sk_group_owned_media` (SK AX 공식 사이트/계열 매체 콘텐츠), 그리고 sk_ax_relevant 판단된 뉴스 보조 근거
 
 
 사용 금지 정보:

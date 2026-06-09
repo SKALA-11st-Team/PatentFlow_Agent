@@ -15,9 +15,10 @@ def test_select_compression_candidates_keeps_news_and_high_score_rag():
 
     candidates, skipped = select_compression_candidates(items, rag_score_threshold=0.5)
 
-    assert [item["evidence_id"] for item in candidates] == ["news_1", "rag_high"]
+    # company_disclosure(SK AX 공식 근거)도 이제 압축 후보에 포함된다.
+    assert [item["evidence_id"] for item in candidates] == ["news_1", "rag_high", "disclosure_1"]
     assert skipped["low_rag_score"] == 1
-    assert skipped["non_target"] == 1
+    assert skipped["non_target"] == 0
 
 
 def test_compress_evidence_items_normalizes_news_and_rag_shapes():
