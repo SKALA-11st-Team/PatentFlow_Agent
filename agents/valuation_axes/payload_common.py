@@ -95,7 +95,6 @@ def valuation_evidence_payload(item: dict[str, Any]) -> dict[str, Any]:
         "url": item.get("url"),
         "published_at": item.get("published_at"),
         "collected_at": item.get("collected_at"),
-        "related_axes": item.get("related_axes") or item.get("related_axis") or [],
         "compressed_summary": item.get("compressed_summary"),
         "key_facts": item.get("key_facts") or [],
         "sibling_patents": item.get("sibling_patents") or [],

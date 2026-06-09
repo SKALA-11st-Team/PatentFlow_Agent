@@ -32,7 +32,6 @@ def normalize_naver_news_response(
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "content": description or title or "",
-                "related_axis": [],
                 "confidence": None,
                 "metadata": {
                     "query": query,
@@ -66,7 +65,6 @@ def normalize_gnews_response(
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "content": article.get("description") or article.get("content") or article.get("title") or "",
-                "related_axis": [],
                 "confidence": None,
                 "metadata": {
                     "query": query,
@@ -110,7 +108,6 @@ def normalize_tavily_news_response(
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "content": content,
-                "related_axis": [],
                 "confidence": None,
                 "metadata": {
                     "query": query,
@@ -152,7 +149,6 @@ def normalize_kipris_patent_results(
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "content": first_present(item, "abstract", "astrtCont", "summary") or " - ".join(part for part in (title, applicant) if part),
-                "related_axis": ["legal", "technology"],
                 "confidence": None,
                 "metadata": {
                     "query": query,

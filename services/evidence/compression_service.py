@@ -185,7 +185,6 @@ def normalize_news_compression(item: dict[str, Any], parsed: dict[str, Any]) -> 
         # SK AX(또는 SK C&C)의 사업/제품/서비스와 직접 관련된 뉴스인지 LLM이 판단한 값.
         # True이면 시장성 외에 사업연계성 축에서도 보조 근거로 쓸 수 있다.
         "sk_ax_relevant": bool(parsed.get("sk_ax_relevant", False)),
-        "related_axes": normalize_axes(parsed.get("related_axes")),
         "relation_type": normalize_relation_type(parsed.get("relation_type")),
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
@@ -216,7 +215,6 @@ def normalize_industry_compression(item: dict[str, Any], parsed: dict[str, Any])
         "published_at": item.get("published_at"),
         "collected_at": item.get("collected_at") or now_iso(),
         "metadata": dict(item.get("metadata") or {}),
-        "related_axes": normalize_axes(parsed.get("related_axes")) or ["market"],
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
         "retrieval_score": to_float(item.get("score")),
@@ -260,21 +258,6 @@ def parse_json_object(raw: str) -> dict[str, Any] | None:
         except json.JSONDecodeError:
             return None
     return parsed if isinstance(parsed, dict) else None
-
-
-def normalize_axes(value: Any) -> list[str]:
-    if isinstance(value, str):
-        values = [value]
-    elif isinstance(value, list):
-        values = [str(item) for item in value]
-    else:
-        values = []
-    axes = []
-    for axis in values:
-        normalized = axis.strip()
-        if normalized in ALLOWED_AXES and normalized not in axes:
-            axes.append(normalized)
-    return axes
 
 
 def normalize_axis_context(value: Any) -> dict[str, str]:

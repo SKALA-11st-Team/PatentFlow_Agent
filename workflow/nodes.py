@@ -720,15 +720,12 @@ def compress_evidence_safely(
 
 
 def is_skax_official_evidence(item: dict) -> bool:
+    # SK AX 사이트 검색 근거는 source(sk_ax_official) 또는 evidence_id(skax_site_*)로
+    # 식별한다. 압축 후에도 두 필드는 보존되므로 related_axes 태그는 더 이상 쓰지 않는다.
     if first_non_empty_text(item.get("source")) == "sk_ax_official":
         return True
     evidence_id = first_non_empty_text(item.get("evidence_id"))
-    if evidence_id.startswith("skax_site_"):
-        return True
-    related_axes = item.get("related_axes") or []
-    if isinstance(related_axes, str):
-        related_axes = [related_axes]
-    return item.get("source_type") == "company_disclosure" and "business_fit" in related_axes
+    return evidence_id.startswith("skax_site_")
 
 
 def save_filtered_evidence_safely(

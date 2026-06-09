@@ -1253,7 +1253,6 @@ def evidence_sample(evidence: dict[str, Any]) -> dict[str, Any]:
             evidence.get("compressed_summary") or evidence.get("summary") or evidence.get("title"),
             250,
         ),
-        "related_axes": limit_list(evidence.get("related_axes"), 6),
     }
 
 

@@ -287,7 +287,6 @@ def build_portfolio_evidence(
         "technology_area": target_patent.get("technology_area"),
         "group_size": len(enriched_siblings) + 1,
         "sibling_patents": siblings,
-        "related_axes": ["legal", "technology", "market", "business_fit"],
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
         "collected_at": now_iso(),

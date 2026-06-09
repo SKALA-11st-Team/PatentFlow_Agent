@@ -1287,7 +1287,6 @@ def normalize_page_evidence(
         "published_at": None,
         "collected_at": now_iso(),
         "content": content,
-        "related_axes": ["business_fit"],
         "search_query": result.get("search_query"),
         "matched_keywords": result.get("matched_keywords", []),
         "relevance_score": result.get("relevance_score"),

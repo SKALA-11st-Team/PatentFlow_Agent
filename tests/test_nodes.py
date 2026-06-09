@@ -582,7 +582,6 @@ def test_evidence_compression_preserves_skax_official_evidence(monkeypatch):
     assert by_id["skax_site_001"]["url"] == "https://www.skax.co.kr/finance/service"
     assert by_id["skax_site_001"]["source"] == "sk_ax_official"
     assert by_id["skax_site_001"]["source_type"] == "company_disclosure"
-    assert by_id["skax_site_001"]["related_axes"] == ["business_fit"]
     assert result.query_plan["compressed_evidence"]["stats"]["skax_official_evidence_count"] == 1
 
 

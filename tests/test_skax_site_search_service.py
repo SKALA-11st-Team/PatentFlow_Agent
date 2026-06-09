@@ -261,7 +261,6 @@ def test_collect_skax_site_evidence_fetches_relevant_results_and_normalizes_evid
     assert "로보어드바이저" in evidence["content"]
     assert "메뉴 텍스트" not in evidence["content"]
     assert "푸터 텍스트" not in evidence["content"]
-    assert "business_fit" in evidence["related_axes"]
     assert evidence["management_number"] == "P202405001-KR0"
     assert evidence["related_product"] == "로보어드바이저"
     assert evidence["business_area"] == "Data"
