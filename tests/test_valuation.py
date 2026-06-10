@@ -1800,7 +1800,7 @@ def test_collect_similar_patent_candidates_filters_foreign_country_and_uses_ipc(
     assert calls[0][0] == "G06F 40/30"
 
 
-def test_technology_candidate_subscores_use_60_40_structure():
+def test_technology_candidate_subscores_use_60_40_structure_with_implementation_midpoints():
     from agents.valuation_axes.technology import apply_technology_scores
 
     result = apply_technology_scores(
@@ -1829,9 +1829,9 @@ def test_technology_candidate_subscores_use_60_40_structure():
                     "score": 30,
                     "max_score": 40,
                     "details": {
-                        "component_specificity": 15,
+                        "component_specificity": 10,
                         "procedure_specificity": 15,
-                        "implementation_specificity_detail": 0,
+                        "implementation_specificity_detail": 5,
                     },
                     "rationale": "구성 요소와 처리 절차는 구체적이나 구현 설명은 제한적임",
                 },
@@ -1851,9 +1851,9 @@ def test_technology_candidate_subscores_use_60_40_structure():
         "effect_differentiation": 12,
     }
     assert result["subscores"]["implementation_specificity"]["details"] == {
-        "component_specificity": 15,
+        "component_specificity": 10,
         "procedure_specificity": 15,
-        "implementation_specificity_detail": 0,
+        "implementation_specificity_detail": 5,
     }
 
 

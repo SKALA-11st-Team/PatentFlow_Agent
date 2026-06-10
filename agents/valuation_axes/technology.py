@@ -17,7 +17,7 @@ PROMPT_PATH = "valuation/valuation_technology.md"
 TECHNOLOGY_COMPARISON_TARGET_COUNT = 5
 TECHNOLOGY_SUBSCORE_CANDIDATES = {
     "technical_differentiation": (4, 8, 12, 16, 20, 5, 10, 15, 20, 25, 3, 6, 9, 12, 15),
-    "implementation_specificity": (0, 10, 15, 25, 30, 40),
+    "implementation_specificity": (0, 5, 10, 15, 20, 25, 30, 35, 40),
 }
 
 
@@ -287,9 +287,9 @@ def normalize_technology_differentiation_candidate_score(item: dict[str, Any]) -
 def normalize_implementation_specificity_candidate_score(item: dict[str, Any]) -> int:
     details = item.get("details")
     if isinstance(details, dict):
-        component = nearest_candidate_score(details.get("component_specificity"), (0, 15))
-        procedure = nearest_candidate_score(details.get("procedure_specificity"), (0, 15))
-        implementation = nearest_candidate_score(details.get("implementation_specificity_detail"), (0, 10))
+        component = nearest_candidate_score(details.get("component_specificity"), (0, 5, 10, 15))
+        procedure = nearest_candidate_score(details.get("procedure_specificity"), (0, 5, 10, 15))
+        implementation = nearest_candidate_score(details.get("implementation_specificity_detail"), (0, 5, 10))
         item["details"] = {
             "component_specificity": component,
             "procedure_specificity": procedure,
