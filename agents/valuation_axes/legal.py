@@ -4,6 +4,7 @@ from typing import Any
 
 from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_types_or_axes
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context, unique_texts
+from schemas.valuation import DEFAULT_SUBSCORE_WEIGHTS
 from workflow.state import PatentWorkflowState
 
 
@@ -27,11 +28,7 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     return attach_legal_context(result, payload=payload, state=state)
 
 
-LEGAL_SUBSCORE_MAX = {
-    "right_stability": 35,
-    "claim_protection": 40,
-    "portfolio_defensive_value": 25,
-}
+LEGAL_SUBSCORE_MAX = dict(DEFAULT_SUBSCORE_WEIGHTS["legal"])
 
 
 FOREIGN_LEGAL_EXCLUDED_DETAILS = {"prior_art_overlap"}
@@ -39,6 +36,33 @@ LEGAL_DETAIL_MAX = {
     "prior_art_overlap": 25,
     "claim_structure_stability": 10,
 }
+
+
+def legal_subscore_max_map(state: PatentWorkflowState) -> dict[str, int]:
+    """운영 설정(valuation_config.subscoreWeights.legal)이 있으면 그 배점을, 없으면 기본 배점을 쓴다."""
+    config = state.user_input.get("valuation_config") if isinstance(state.user_input, dict) else None
+    configured = ((config or {}).get("subscoreWeights") or {}).get("legal") or {}
+    return {
+        key: int(configured.get(key, default_value))
+        for key, default_value in LEGAL_SUBSCORE_MAX.items()
+    }
+
+
+def legal_detail_max_map(subscore_max: dict[str, int]) -> dict[str, int]:
+    """right_stability 만점이 조정되면 그 하위 세부지표(prior_art_overlap/claim_structure_stability)
+    배점도 같은 비율로 스케일한다(합계는 right_stability 만점과 정확히 일치)."""
+    right_stability_max = int(subscore_max.get("right_stability") or 0)
+    default_total = sum(LEGAL_DETAIL_MAX.values())  # 35
+    if right_stability_max == default_total:
+        return dict(LEGAL_DETAIL_MAX)
+    if right_stability_max <= 0 or default_total <= 0:
+        return {key: 0 for key in LEGAL_DETAIL_MAX}
+    prior_art = round(LEGAL_DETAIL_MAX["prior_art_overlap"] * right_stability_max / default_total)
+    prior_art = max(0, min(right_stability_max, prior_art))
+    return {
+        "prior_art_overlap": prior_art,
+        "claim_structure_stability": right_stability_max - prior_art,
+    }
 # 각 권리성 subscore가 가져야 할 세부지표 키 전체 목록(docs/valuation_legal 공표 기준).
 LEGAL_SUBSCORE_DETAIL_KEYS = {
     "right_stability": ["prior_art_overlap", "claim_structure_stability"],
@@ -62,7 +86,9 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
     total = 0
     total_max = 0
     foreign_patent = is_foreign_patent(state)
-    for key, max_score in LEGAL_SUBSCORE_MAX.items():
+    subscore_max_map = legal_subscore_max_map(state)
+    detail_max_map = legal_detail_max_map(subscore_max_map)
+    for key, max_score in subscore_max_map.items():
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
         effective_max_score = max_score
@@ -71,6 +97,7 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
                 max_score=max_score,
                 details=details,
                 excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS,
+                detail_max_map=detail_max_map,
             )
         excluded = FOREIGN_LEGAL_EXCLUDED_DETAILS if foreign_patent and key == "right_stability" else None
         detail_sum, missing_keys = sum_detail_scores(
@@ -138,11 +165,13 @@ def legal_subscore_max_without_details(
     max_score: int,
     details: dict[str, Any],
     excluded_detail_keys: set[str],
+    detail_max_map: dict[str, int] | None = None,
 ) -> int:
+    detail_max = detail_max_map if detail_max_map is not None else LEGAL_DETAIL_MAX
     excluded_total = 0
     for key in excluded_detail_keys:
         if key in details:
-            excluded_total += LEGAL_DETAIL_MAX.get(key, 0)
+            excluded_total += detail_max.get(key, 0)
     return max(0, max_score - excluded_total)
 
 

@@ -11,9 +11,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from agents.field_recommendation import recommend_fields
+from agents.valuation_axes.common import grade_for_score
 from agents.writing.final_report import build_evidence_references
 from app.config import settings
 from app.main import save_outputs
+from schemas.valuation import resolve_valuation_config
 from services.patent.shared_db_service import get_patent_identifiers
 from workflow.graph import run_workflow
 from workflow.state import PatentWorkflowState
@@ -53,6 +55,9 @@ class PatentEvaluationRequest(BaseModel):
     noSave: bool = False
     useLlmSupervisor: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # 계약 C1: BE가 전달하는 가치평가 기준(축 가중치/등급 컷오프/유지 임계/subscore 배점).
+    # 누락 시 기본값으로 평가한다(구 BE 호환). 잘못된 값은 resolve_valuation_config가 보정한다.
+    valuationConfig: dict[str, Any] | None = None
 
 
 # ORCH-06/AIREPORT-02: 축별 근거의 클릭형 출처. evidence_id로 연결되는 근거의 제목/URL을 노출한다.
@@ -96,6 +101,9 @@ class PatentEvaluationResponse(BaseModel):
     judgementGrounds: list[str] = Field(default_factory=list)
     businessCheckRequests: list[str] = Field(default_factory=list)
     externalSources: list[SourceRef] = Field(default_factory=list)
+    # 계약 C1: 실제 적용된 가치평가 기준 스냅샷(source=request|default). BE가 레포트와 함께 보관해
+    # "이 레포트는 어떤 기준으로 산정됐나"를 추적할 수 있게 한다.
+    appliedValuationConfig: dict[str, Any] | None = None
     generatedAt: datetime
 
 
@@ -167,6 +175,7 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
     summary_markdown = (summary_result.get("summary_markdown") or "").strip()
 
     evidence_bundle = final_state.evidence_bundle or []
+    applied_config = valuation_result.get("applied_config") or final_state.user_input.get("valuation_config")
     return PatentEvaluationResponse(
         patentId=patent_id,
         scores=valuation_scores(valuation_result, evidence_bundle),
@@ -176,7 +185,8 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         artifactDir=str(final_state.user_input.get("artifact_dir") or "") or None,
         totalScore=valuation_result.get("total_score"),
         averageScore=valuation_average_score(valuation_result),
-        finalGrade=valuation_result.get("final_grade") or final_grade_for_average(valuation_average_score(valuation_result)),
+        finalGrade=valuation_result.get("final_grade")
+        or final_grade_for_average(valuation_average_score(valuation_result), applied_config),
         finalIndicator=valuation_result.get("final_indicator"),
         degraded=is_degraded(final_state, valuation_result),
         failureReason=failure_reason(final_state, valuation_result),
@@ -188,6 +198,7 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         judgementGrounds=[str(item) for item in (valuation_result.get("decision_rationale") or []) if item],
         businessCheckRequests=[str(item) for item in (valuation_result.get("required_actions") or []) if item],
         externalSources=build_external_sources(final_state, valuation_result),
+        appliedValuationConfig=applied_config,
         generatedAt=datetime.now(timezone.utc),
     )
 
@@ -234,6 +245,8 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
         "use_llm_valuation": True,
         "use_llm_final_report": True,
         "use_llm_supervisor": request.useLlmSupervisor,
+        # 계약 C1: 요청의 가치평가 기준을 보정해 워크플로 전체(축 reconcile/최종 합산/프롬프트)에 전달.
+        "valuation_config": resolve_valuation_config(request.valuationConfig),
     }
     if management_number:
         user_input["management_number"] = management_number
@@ -366,16 +379,14 @@ def valuation_average_score(valuation_result: dict[str, Any]) -> float | None:
     return None
 
 
-def final_grade_for_average(average_score: float | None) -> str | None:
+def final_grade_for_average(
+    average_score: float | None, applied_config: dict[str, Any] | None = None
+) -> str | None:
+    # 등급 컷오프 산정은 agents.valuation_axes.common.grade_for_score 한 곳으로 통일한다(중복 제거).
     if average_score is None:
         return None
-    if average_score >= 80:
-        return "A"
-    if average_score >= 60:
-        return "B"
-    if average_score >= 40:
-        return "C"
-    return "D"
+    cutoffs = (applied_config or {}).get("gradeCutoffs")
+    return grade_for_score(average_score, cutoffs)
 
 
 def is_degraded(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> bool:

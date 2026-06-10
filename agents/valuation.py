@@ -12,7 +12,13 @@ from services.llm.prompt_service import load_prompt
 from services.observability.langsmith_service import trace
 from agents.valuation_axes import AXIS_MODULES
 from agents.valuation_axes.common import grade_for_score
-from schemas.valuation import validate_axis_result, validate_valuation_result
+from schemas.valuation import (
+    DEFAULT_SUBSCORE_WEIGHTS,
+    is_default_valuation_config,
+    resolve_valuation_config,
+    validate_axis_result,
+    validate_valuation_result,
+)
 from workflow.state import PatentWorkflowState
 
 
@@ -80,9 +86,18 @@ def finalize_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
         raise RuntimeError(f"Valuation axes are incomplete: {', '.join(missing_axes)}.")
 
     ordered_axes = {axis: axes[axis] for axis in VALUATION_AXES}
-    state.valuation_result = build_final_valuation_result(ordered_axes)
+    state.valuation_result = build_final_valuation_result(ordered_axes, config=valuation_config_from_state(state))
     state.current_stage = "valuation_check"
     return state
+
+
+def valuation_config_from_state(state: PatentWorkflowState) -> dict[str, Any]:
+    """state.user_input의 valuation_config(이미 resolve된 dict)를 돌려준다.
+    CLI 등 API 외 경로에서 주입되지 않았으면 기본값으로 resolve한다."""
+    config = state.user_input.get("valuation_config")
+    if isinstance(config, dict) and config.get("axisWeights"):
+        return config
+    return resolve_valuation_config(None)
 
 
 def valuation_seed() -> int | None:
@@ -145,10 +160,46 @@ def build_axis_prompt(
     template = load_prompt(prompt_name).strip()
     save_valuation_input_payload(state, artifact_name, payload)
     prompt = f"{common_template}\n\n{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    override = subscore_override_block(state, axis)
+    if override:
+        prompt = f"{prompt}\n\n{override}"
     feedback = axis_retry_feedback_block(state, axis)
     if feedback:
         prompt = f"{prompt}\n\n{feedback}"
     return prompt
+
+
+SUBSCORE_LABELS = {
+    "right_stability": "권리안정성",
+    "claim_protection": "권리보호력",
+    "portfolio_defensive_value": "포트폴리오·해외 권리",
+    "official_business_evidence": "공식 사업 근거",
+    "product_function_direct_match": "제품·기능 직접 일치",
+    "business_context_fit": "사업 맥락 적합성",
+}
+
+
+def subscore_override_block(state: PatentWorkflowState, axis: str) -> str:
+    """운영 설정이 기본 배점과 다를 때만, 프롬프트 본문(markdown)에 명시된 배점을 덮어쓰는
+    재정의 블록을 만든다. 프롬프트 파일 자체는 수정하지 않아 버전 추적이 단순해진다."""
+    config = valuation_config_from_state(state)
+    configured = (config.get("subscoreWeights") or {}).get(axis)
+    defaults = DEFAULT_SUBSCORE_WEIGHTS.get(axis)
+    if not configured or not defaults or configured == defaults:
+        return ""
+    lines = [
+        "## 배점 재정의 (운영 설정 — 아래 배점이 프롬프트 본문의 배점보다 우선합니다)",
+        "법무팀이 평가 기준 배점을 조정했습니다. subscores의 max_score와 점수 산정에 아래 배점을 사용하세요.",
+    ]
+    for key, max_score in configured.items():
+        label = SUBSCORE_LABELS.get(key, key)
+        default_value = defaults.get(key)
+        if default_value == max_score:
+            lines.append(f"- {label}({key}): {max_score}점")
+        else:
+            lines.append(f"- {label}({key}): {default_value}점 → {max_score}점")
+    lines.append(f"- 위 subscore 만점 합계: {sum(configured.values())}점")
+    return "\n".join(lines)
 
 
 def axis_retry_feedback_block(state: PatentWorkflowState, axis: str) -> str:
@@ -254,12 +305,25 @@ def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
     return normalized
 
 
-def build_final_valuation_result(axes: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def build_final_valuation_result(
+    axes: dict[str, dict[str, Any]],
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    applied_config = config or resolve_valuation_config(None)
+    cutoffs = applied_config.get("gradeCutoffs") or {}
+    axis_weights = applied_config.get("axisWeights") or {}
     validated_axes = {axis: validate_axis_result(axis, payload) for axis, payload in axes.items()}
+    # 운영 설정 컷오프로 축 등급을 재산정한다(앙상블/reconcile 단계는 기본 컷오프로 계산했을 수 있음).
+    for axis_result in validated_axes.values():
+        axis_result["grade"] = grade_for_score(int(axis_result.get("score") or 0), cutoffs)
     total_score = sum(int(axis.get("score") or 0) for axis in validated_axes.values())
-    average_score = round(total_score / len(validated_axes), 1) if validated_axes else 0
-    final_grade = grade_for_score(average_score)
-    final_indicator = score_to_final_recommendation(average_score)
+    # total_score는 기존 의미(축 점수 단순 합, 0~400)를 유지하고, 가중치는 average_score에만 반영한다.
+    average_score = weighted_average_score(validated_axes, axis_weights)
+    final_grade = grade_for_score(average_score, cutoffs)
+    final_indicator = score_to_final_recommendation(
+        average_score, threshold=float(applied_config.get("maintainThreshold") or 60)
+    )
     missing_information = unique_texts(
         item for axis in validated_axes.values() for item in axis.get("missing_information", [])
     )
@@ -285,14 +349,33 @@ def build_final_valuation_result(axes: dict[str, dict[str, Any]]) -> dict[str, A
             average_score,
             final_grade,
             final_indicator,
+            config=applied_config,
         ),
         "required_actions": unique_texts(required_actions),
         "missing_information": missing_information,
         "warnings": warnings,
+        "applied_config": applied_config,
     }
     if settings.valuation_schema_strict:
         return validate_valuation_result(result)
     return result
+
+
+def weighted_average_score(axes: dict[str, dict[str, Any]], axis_weights: dict[str, Any]) -> float:
+    if not axes:
+        return 0.0
+    weight_sum = 0.0
+    weighted = 0.0
+    for axis, axis_result in axes.items():
+        try:
+            weight = float(axis_weights.get(axis, 0) or 0)
+        except (TypeError, ValueError):
+            weight = 0.0
+        if weight <= 0:
+            weight = 25.0
+        weight_sum += weight
+        weighted += weight * int(axis_result.get("score") or 0)
+    return round(weighted / weight_sum, 1) if weight_sum > 0 else 0.0
 
 
 def save_valuation_input_payload(state: PatentWorkflowState, name: str, payload: dict[str, Any]) -> Path | None:
@@ -312,8 +395,8 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
-def score_to_final_recommendation(average_score: float) -> str:
-    if average_score >= 60:
+def score_to_final_recommendation(average_score: float, *, threshold: float = 60) -> str:
+    if average_score >= threshold:
         return "유지 권고"
     return "포기 검토"
 
@@ -324,11 +407,28 @@ def build_decision_rationale(
     average_score: float,
     final_grade: str,
     final_indicator: str,
+    *,
+    config: dict[str, Any] | None = None,
 ) -> list[str]:
     strongest = max(axes.values(), key=lambda axis: axis.get("score", 0))
     weakest = min(axes.values(), key=lambda axis: axis.get("score", 0))
+    if config and not is_default_valuation_config(config):
+        weights = config.get("axisWeights") or {}
+        weight_text = ", ".join(
+            f"{(axes.get(axis) or {}).get('label') or axis} {weights.get(axis, 0):g}"
+            for axis in ("legal", "technology", "market", "business_fit")
+        )
+        score_line = (
+            f"4개 평가축 합산 점수는 {total_score}/400점, "
+            f"가중 평균 점수는 {average_score:g}/100점(가중치 {weight_text}), 종합 등급은 {final_grade}이다."
+        )
+    else:
+        score_line = (
+            f"4개 평가축 합산 점수는 {total_score}/400점, 평균 점수는 {average_score:g}/100점, "
+            f"종합 등급은 {final_grade}이다."
+        )
     return [
-        f"4개 평가축 합산 점수는 {total_score}/400점, 평균 점수는 {average_score:g}/100점, 종합 등급은 {final_grade}이다.",
+        score_line,
         f"AI 권고 라벨은 {final_indicator}이다.",
         f"가장 강한 축은 {strongest.get('label')}({strongest.get('score')}점)이다.",
         f"보완이 필요한 축은 {weakest.get('label')}({weakest.get('score')}점)이다.",

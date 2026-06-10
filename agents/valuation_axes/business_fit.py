@@ -4,6 +4,7 @@ from typing import Any
 
 from agents.valuation_axes.common import grade_for_score, normalize_text
 from agents.valuation_axes.payload_common import build_base_input_payload
+from schemas.valuation import DEFAULT_SUBSCORE_WEIGHTS
 from workflow.state import PatentWorkflowState
 
 
@@ -51,11 +52,18 @@ def is_stopword(text: str) -> bool:
     """한국어·영문 불용어를 대소문자 무관하게 판정한다(VAL-08)."""
     lowered = text.lower()
     return lowered in STOPWORDS or lowered in ENGLISH_STOPWORDS
-BUSINESS_FIT_SUBSCORE_MAX = {
-    "official_business_evidence": 30,
-    "product_function_direct_match": 45,
-    "business_context_fit": 25,
-}
+BUSINESS_FIT_SUBSCORE_MAX = dict(DEFAULT_SUBSCORE_WEIGHTS["business_fit"])
+
+
+def business_fit_subscore_max_map(state: PatentWorkflowState | None) -> dict[str, int]:
+    """운영 설정(valuation_config.subscoreWeights.business_fit)이 있으면 그 배점을 쓴다."""
+    user_input = state.user_input if state is not None and isinstance(state.user_input, dict) else {}
+    config = user_input.get("valuation_config")
+    configured = ((config or {}).get("subscoreWeights") or {}).get("business_fit") or {}
+    return {
+        key: int(configured.get(key, default_value))
+        for key, default_value in BUSINESS_FIT_SUBSCORE_MAX.items()
+    }
 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
@@ -69,19 +77,25 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         axis=AXIS,
     )
     result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
-    return reconcile_business_fit_scores(result)
+    return reconcile_business_fit_scores(result, state=state)
 
 
-def reconcile_business_fit_scores(result: dict[str, Any]) -> dict[str, Any]:
+def reconcile_business_fit_scores(
+    result: dict[str, Any], *, state: PatentWorkflowState | None = None
+) -> dict[str, Any]:
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     reconciled: dict[str, Any] = {}
     total = 0
-    for key, max_score in BUSINESS_FIT_SUBSCORE_MAX.items():
+    total_max = 0
+    for key, max_score in business_fit_subscore_max_map(state).items():
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         score = coerce_int(item.get("score"))
         score = max(0, min(max_score, score or 0))
         reconciled[key] = {**item, "score": score, "max_score": max_score}
         total += score
+        total_max += max_score
+    # 배점 합이 100이 아니어도 축 점수는 0~100 스케일을 유지한다(설정 배점은 비율로 해석).
+    total = round(total * 100 / total_max) if total_max > 0 else 0
     total = max(0, min(100, total))
     return {
         **result,

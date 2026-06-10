@@ -24,11 +24,13 @@ def normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
-def grade_for_score(score: int | float) -> str:
-    if score >= 80:
+def grade_for_score(score: int | float, cutoffs: dict[str, float] | None = None) -> str:
+    # cutoffs는 운영 설정(valuationConfig.gradeCutoffs)으로 재정의 가능. 미지정 시 기존 80/60/40.
+    resolved = cutoffs or {"A": 80, "B": 60, "C": 40}
+    if score >= resolved.get("A", 80):
         return "A"
-    if score >= 60:
+    if score >= resolved.get("B", 60):
         return "B"
-    if score >= 40:
+    if score >= resolved.get("C", 40):
         return "C"
     return "D"
