@@ -188,8 +188,8 @@ def _merge_schema_dict(target: dict[str, Any], src: dict[str, Any]) -> None:
         elif isinstance(target[key], dict) and isinstance(value, dict):
             _merge_schema_dict(target[key], value)
         elif target[key] != value:
-            # 이름 충돌 시 기존(main 우선) 유지
-            continue
+            # EXT-11: 이름 충돌 시 기존(main 우선) 유지하되, 조용히 폐기하지 않고 경고를 남겨 누락을 표면화한다.
+            _gateway_logger.warning("OpenAPI 스키마 병합 충돌 — 키 '%s'의 보조 정의를 폐기하고 main 우선 유지", key)
 
 
 def _infer_missing_tag(path_key: str) -> str:

@@ -279,16 +279,9 @@ def test_llm_query_rewriting_includes_owner_and_joint_applicant_queries(monkeypa
 def test_english_queries_keep_only_gnews_compatible_queries():
     from services.evidence.external_search_service import enforce_english_queries
 
+    # EVID-14: preprocessed_patent·fill_to는 무시되던 데드 파라미터라 시그니처에서 제거됨.
     queries = enforce_english_queries(
         ["reinforcement learning finance", "강화학습 자산배분", "AI asset allocation", "robo-advisor market trends"],
-        {
-            "metadata": {
-                "title": "강화학습 자산배분",
-                "ipc": ["G06Q 40/06"],
-            },
-            "sections": {"abstract": "AI 기반 투자 포트폴리오"},
-        },
-        fill_to=MAX_SEARCH_QUERIES,
     )
 
     assert queries == ["reinforcement learning finance", "AI asset allocation", "robo advisor market trends"]

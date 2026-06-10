@@ -156,11 +156,13 @@ def _route_after_research_supervisor(payload: dict[str, Any]) -> str:
     state = _as_state(payload)
     action = (state.supervisor_decision or {}).get("next_action")
     if action == "query_rewriting":
-        if action == "query_rewriting" and state.retry_count >= settings.max_evidence_search_rounds:
+        # ORCH-09: 외부 if가 이미 보장하던 중복 조건 제거.
+        if state.retry_count >= settings.max_evidence_search_rounds:
             return "valuation_team"
         return action
+    # ORCH-09: valuation_team 결정 시 top_supervisor 우회(superstep 1회 낭비) 대신 직접 valuation으로 라우팅.
     if action == "valuation_team":
-        return "top_supervisor"
+        return "valuation_team"
     return "end"
 
 

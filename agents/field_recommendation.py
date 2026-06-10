@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from typing import Any
 
 from app.config import settings
@@ -10,7 +11,24 @@ from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 
 
+# VAL-12: load_taxonomy가 호출마다 patents 풀스캔하던 것을 짧은 TTL 캐시로 줄인다
+# (taxonomy는 관리자 관리라 변경 빈도가 낮아 수 분 캐시가 안전).
+_TAXONOMY_CACHE_TTL_SECONDS = 300.0
+_taxonomy_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
+
+
 def load_taxonomy() -> dict[str, list[str]]:
+    now = time.monotonic()
+    cached = _taxonomy_cache["value"]
+    if cached is not None and now < _taxonomy_cache["expires_at"]:
+        return cached
+    result = _load_taxonomy_uncached()
+    _taxonomy_cache["value"] = result
+    _taxonomy_cache["expires_at"] = now + _TAXONOMY_CACHE_TTL_SECONDS
+    return result
+
+
+def _load_taxonomy_uncached() -> dict[str, list[str]]:
     excluded = ("", "기타", "etc", "ETC", "기타/미정")
     placeholders = ",".join("?" * len(excluded))
     query = f"""

@@ -28,12 +28,16 @@ def compress_evidence_items(
     compressed: list[dict[str, Any]] = []
     warnings: list[str] = []
     rejected_by_llm = 0
+    compression_failed = 0
 
     for item in candidates:
         try:
             compressed_item = compress_single_evidence(item, preprocessed_patent=preprocessed_patent, llm=llm)
         except Exception as exc:
+            # EVID-10: 압축 실패(LLM 비-JSON 등) 시 근거를 조용히 누락하지 않고 원본을 미압축 패스스루로 보존한다.
             warnings.append(f"{item.get('evidence_id')}:compression_failed:{exc.__class__.__name__}:{str(exc)[:200]}")
+            compression_failed += 1
+            compressed.append({**item, "compression_skipped": True})
             continue
 
         if compressed_item.get("is_relevant") is False:
@@ -49,6 +53,7 @@ def compress_evidence_items(
             "candidate_count": len(candidates),
             "compressed_count": len(compressed),
             "rejected_by_llm_count": rejected_by_llm,
+            "compression_failed_count": compression_failed,
             "skipped_non_target_count": skipped["non_target"],
             "skipped_low_rag_score_count": skipped["low_rag_score"],
             "rag_score_threshold": rag_score_threshold,

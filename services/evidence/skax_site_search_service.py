@@ -5,10 +5,13 @@ from typing import Any, Callable
 from html import unescape as html_unescape
 from urllib.parse import parse_qs, quote_plus, unquote, urldefrag, urlparse
 import json
+import logging
 import os
 import re
 
 import requests
+
+_logger = logging.getLogger("patentflow.skax_search")
 
 from services.evidence.store_service import ensure_evidence_ids, now_iso
 
@@ -623,6 +626,11 @@ def default_search_client() -> SearchClient:
         return TavilySearchClient()
     if GoogleCustomSearchClient.has_config():
         return GoogleCustomSearchClient()
+    # EVID-12: Tavily·CSE 키가 모두 없으면 Google HTML 스크레이프 종단 폴백을 쓰지만 JS/CAPTCHA로 사실상 0건이다.
+    # 'SK AX 근거 없음'이 조용한 비기능이 아니라 키 미설정 때문임을 운영자가 인지하도록 경고를 남긴다.
+    _logger.warning(
+        "SK AX 사이트 검색 키(TAVILY/GOOGLE_CSE) 미설정 — Google HTML 폴백은 차단으로 근거 0건일 수 있습니다."
+    )
     return GoogleHtmlSearchClient()
 
 

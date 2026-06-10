@@ -72,11 +72,7 @@ def rewrite_search_queries(
         previous,
     )
 
-    rewritten_en = enforce_english_queries(
-        rewritten_en,
-        preprocessed_patent,
-        fill_to=MAX_SEARCH_QUERIES,
-    )
+    rewritten_en = enforce_english_queries(rewritten_en)
     rewritten_industry_rag = [
         query
         for query in compact_queries(llm_result.get("industry_rag", []))[:MAX_INDUSTRY_RAG_QUERIES]
@@ -127,11 +123,7 @@ def collect_external_evidence(
     rewrite_meta: dict[str, Any]
     if ko_queries_override is not None or en_queries_override is not None:
         ko_queries = compact_queries(ko_queries_override or [])[:MAX_SEARCH_QUERIES]
-        en_queries = enforce_english_queries(
-            en_queries_override or [],
-            preprocessed_patent,
-            fill_to=MAX_SEARCH_QUERIES,
-        )
+        en_queries = enforce_english_queries(en_queries_override or [])
         rewrite_meta = {"rewrite_source": "precomputed", "llm_error": None}
     else:
         rewritten = rewrite_search_queries(
@@ -672,13 +664,8 @@ def normalize_skax_site_queries(queries: list[str]) -> list[str]:
     return compact_queries(normalized_queries)[:MAX_SEARCH_QUERIES]
 
 
-def enforce_english_queries(
-    queries: list[str],
-    preprocessed_patent: dict[str, Any],
-    *,
-    fill_to: int | None = None,
-) -> list[str]:
-    del preprocessed_patent, fill_to
+def enforce_english_queries(queries: list[str]) -> list[str]:
+    # EVID-14: preprocessed_patent·fill_to는 호출부에서 전달됐으나 내부에서 즉시 del되던 데드 파라미터였다 — 제거.
     return compact_queries(
         [normalize_gnews_query(query) for query in queries if query and not contains_hangul(query)]
     )[:MAX_SEARCH_QUERIES]
