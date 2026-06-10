@@ -1,21 +1,25 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
-requests>=2.31.0
-python-dotenv>=1.0.0
+# INFRA-11: 중복 라인 제거(requests/python-dotenv가 2번씩 있었음) + 전 패키지 버전 하한 고정(재현성).
+# 완전한 빌드 재현은 pip-compile로 생성한 requirements.lock(전이 의존 포함 ==핀)을 권장한다.
+
+# ── 런타임 ──
+fastapi>=0.135.0
+uvicorn[standard]>=0.42.0
+requests>=2.33.0
+python-dotenv>=1.2.0
 PyYAML>=6.0.0
-pandas
-pydantic
-openpyxl
-requests
-xmltodict
-python-dotenv
-opendataloader-pdf
-langsmith
-openai
-langgraph
-google-cloud-bigquery
-psycopg[binary]
-pytest
-pypdf
-pdfplumber
-trafilatura
+pandas>=2.3.0
+pydantic>=2.12.0
+openpyxl>=3.1.0
+xmltodict>=0.13.0
+opendataloader-pdf>=2.3.0
+langsmith>=0.8.0
+openai>=2.30.0
+langgraph>=1.2.0
+google-cloud-bigquery>=3.0.0
+psycopg[binary]>=3.1.0
+pypdf>=6.11.0
+pdfplumber>=0.10.0
+trafilatura>=1.6.0
+
+# ── 개발/테스트 전용(배포 이미지에서 분리 권장) ──
+pytest>=9.0.0
