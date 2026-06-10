@@ -419,10 +419,17 @@ def parse_single_patent_pdf(
     }
 
 
-def _kipris_client() -> Any:
-    from open_api.kipris_client import KiprisClient
+_kipris_client_instance: Any = None
 
-    return KiprisClient()
+
+def _kipris_client() -> Any:
+    # EXT-08: 호출마다 KiprisClient(+requests 세션)를 새로 만들던 것을 모듈 단위로 1회 생성·재사용한다
+    # (세션·연결 풀 공유로 반복 핸드셰이크 제거). requests.Session은 동시 전송에 안전.
+    global _kipris_client_instance
+    if _kipris_client_instance is None:
+        from open_api.kipris_client import KiprisClient
+        _kipris_client_instance = KiprisClient()
+    return _kipris_client_instance
 
 
 def _normalize_kipris_claims(raw_claims: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -2043,6 +2050,12 @@ def _download_pdf_url(
     safe_name = _safe_filename(filename)
     if not safe_name.lower().endswith(".pdf"):
         safe_name = f"{safe_name}.pdf"
+
+    # EXT-07: 외부 PDF URL을 검증 없이 받지 않는다 — 스킴/사설·링크로컬 IP(메타데이터 169.254.169.254 등) SSRF 차단.
+    from services.evidence.news_article_extraction_service import validate_article_url
+    block_reason = validate_article_url(url)
+    if block_reason:
+        raise RuntimeError(f"pdf_url_blocked:{block_reason}")
 
     response = session.get(url, timeout=timeout)
     response.raise_for_status()

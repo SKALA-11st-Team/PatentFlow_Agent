@@ -384,6 +384,11 @@ def download_foreign_fulltext_pdf(
     output_dir: Path,
     filename: str,
 ) -> Path:
+    # EXT-07: 외부 문서 URL 다운로드 전 SSRF 가드(스킴/사설·링크로컬 IP 차단).
+    from services.evidence.news_article_extraction_service import validate_article_url
+    block_reason = validate_article_url(url)
+    if block_reason:
+        raise RuntimeError(f"document_url_blocked:{block_reason}")
     response = client.session.get(url, timeout=getattr(client, "timeout", None))
     response.raise_for_status()
     output_dir.mkdir(parents=True, exist_ok=True)
