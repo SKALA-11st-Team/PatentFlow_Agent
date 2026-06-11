@@ -7,6 +7,7 @@ key_flow/claims)로 구조화한다. 결과는 권리성·기술성 축이 eleme
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -48,7 +49,14 @@ def structure_target_and_comparisons(
     inputs = [("target", target_input), *[("comparison", item) for item in comparison_inputs]]
     workers = max(1, min(MAX_STRUCTURING_WORKERS, len(inputs)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        outcomes = list(executor.map(lambda pair: _structure_one_outcome(pair[0], pair[1]), inputs))
+        # copy_context로 현재 LangSmith run tree를 워커 스레드에 전파한다. 그래야 각
+        # 특허 구조화의 LLM 호출이 patent_structuring 노드 아래 계층형으로 묶이고,
+        # 따로 떨어진 root 트레이스로 흩어지지 않는다(compression_service와 동일 패턴).
+        futures = [
+            executor.submit(contextvars.copy_context().run, _structure_one_outcome, role, item)
+            for role, item in inputs
+        ]
+        outcomes = [future.result() for future in futures]
 
     target_structure = outcomes[0]["structure"]
     comparison_structures = [o["structure"] for o in outcomes[1:] if o["structure"] is not None]
