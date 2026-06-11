@@ -8,6 +8,14 @@ metadata:
 spec:
   replicas: 1
   revisionHistoryLimit: 3
+  # INFRA-12: 공유 클러스터에 서지 파드(추가 1개)를 띄울 CPU/메모리 여유가 없어 롤아웃이
+  # Pending으로 멈추는 문제 — 서지 없이 기존 파드를 먼저 내리고 그 자원으로 새 파드를 띄운다.
+  # 단일 레플리카라 교체 중 짧은 중단이 있지만 내부 비동기 평가 서비스라 허용 가능.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: team11-patentflow-agent
