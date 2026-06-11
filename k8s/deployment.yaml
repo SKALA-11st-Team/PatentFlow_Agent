@@ -67,9 +67,12 @@ spec:
             timeoutSeconds: 3
             failureThreshold: 3
           resources:
+            # INFRA-12: 공유 클러스터가 requests 기준으로 과약정되어 500m/1Gi 요청이 스케줄되지
+            # 못함(실사용은 노드당 CPU 3~11% 수준). 평시 부하가 낮은 비동기 평가 서비스라 요청량을
+            # 낮추고, 평가 피크는 limits(2 CPU/2Gi)로 흡수한다.
             requests:
-              cpu: 500m
-              memory: 1Gi
+              cpu: 200m
+              memory: 512Mi
             limits:
               cpu: "2"
               memory: 2Gi
