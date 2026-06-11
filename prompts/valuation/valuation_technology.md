@@ -37,7 +37,7 @@
 - 구현 구체성은 구성요소·처리절차·구현설명의 존재 여부뿐 아니라, 해당 설명이 실제 구현자가 재현할 수 있을 정도로 구체적인지 판단한다.
 - 기술성 설명에는 시장 성장성, 매출 가능성, SK AX 제품 적용 가능성, 침해 포착 가능성, 권리범위 강약을 섞지 않는다.
 - 세부점수는 반드시 지정된 점수 후보 중 하나만 선택한다.
-- `subscores.technical_differentiation.details`와 `subscores.implementation_specificity.details`에는 점수만 넣고 설명 문장은 넣지 않는다.
+- `subscores.*.details`의 각 세부항목에는 점수와 상세 근거 객체를 작성한다.
 - `score`는 반드시 두 하위 항목 점수 합계와 일치해야 한다.
 
 
@@ -198,7 +198,7 @@
 
 `subscores.technical_differentiation.score`는 위 3개 세부점수의 합계로 0~50점 범위에서 산정한다.
 
-`subscores.technical_differentiation.details`에는 아래 세부점수를 숫자 필드로 작성한다.
+`subscores.technical_differentiation.details`에는 아래 세부점수와 상세 근거 객체를 작성한다.
 - `configuration_operation_differentiation`: 0, 8, 17, 25 중 하나
 - `effect_differentiation`: 0, 5, 10, 15 중 하나
 - `imitation_avoidance_difficulty`: 0, 3, 7, 10 중 하나
@@ -266,7 +266,7 @@
 
 `subscores.implementation_specificity.score`는 위 3개 세부점수의 합계로 0~50점 범위에서 산정한다.
 
-`subscores.implementation_specificity.details`에는 아래 세부점수를 숫자 필드로 작성한다.
+`subscores.implementation_specificity.details`에는 아래 세부점수와 상세 근거 객체를 작성한다.
 - `component_specificity`: 0, 7, 14, 20 중 하나
 - `procedure_specificity`: 0, 7, 14, 20 중 하나
 - `implementation_utilization_specificity`: 0, 3, 7, 10 중 하나
@@ -304,6 +304,17 @@ confidence:
 - 구현 구체성 rationale에는 확인된 입력·출력·상호관계·조건·분기·실시예 중 구체적 근거와, 추가 설계가 필요한 부분을 함께 작성한다.
 - `rationale`에는 사업부서가 이해할 수 있도록 "구현 가능성", "비교군 대비 실질 차이", "유지 검토에 주는 기술적 의미"를 한 문단으로 연결한다.
 
+세부 근거 객체 공통 규칙:
+- `score`: 해당 항목의 고정 점수 후보 중 하나
+- `assessment_status`: 실제 평가를 수행했으면 `evaluated`, 자료 부족으로 판단하지 못했으면 `insufficient_evidence`
+- `target_basis`: 대상 특허에서 확인한 청구항 번호, 구성, 단계, 조건, 효과 또는 구현 설명
+- `comparison_basis`: 기술 차별성에서는 비교문헌 식별값과 확인 내용을 작성하고, 구현 구체성에서는 빈 배열을 사용한다.
+- `common_points`: 대상과 비교문헌의 공통점 또는 대상 문헌에서 확인된 구현 설명
+- `difference_points`: 대상에 남는 기술 차이 또는 누락·불명확한 구현 설명
+- `score_reason`: 위 근거가 해당 점수 구간에 해당하는 구체적인 이유
+- `missing_information`: 자료 부족 항목. 자료가 충분하면 빈 배열
+- `score_reason`에 "의미 있는 차이", "구체적임", "난이도가 높음"만 쓰지 말고 실제 구성·단계·입출력·조건과 점수 경계를 연결한다.
+
 Return ONLY JSON:
 {
   "axis": "technology",
@@ -315,9 +326,39 @@ Return ONLY JSON:
       "score": 0,
       "max_score": 50,
       "details": {
-        "configuration_operation_differentiation": 0,
-        "effect_differentiation": 0,
-        "imitation_avoidance_difficulty": 0
+        "configuration_operation_differentiation": {
+          "score": 0,
+          "assessment_status": "evaluated",
+          "closest_comparison": {"identifier": "...", "title": "..."},
+          "target_basis": ["대상 독립항의 핵심 구성 또는 처리 단계"],
+          "comparison_basis": ["비교문헌의 대응 구성 또는 처리 단계"],
+          "common_points": ["공통 구성 또는 처리"],
+          "difference_points": ["대상에 남는 구성·관계·처리 차이"],
+          "score_reason": "근거와 점수 구간을 연결한 이유",
+          "missing_information": []
+        },
+        "effect_differentiation": {
+          "score": 0,
+          "assessment_status": "evaluated",
+          "target_basis": ["대상 특허의 기술 차이와 효과"],
+          "comparison_basis": ["비교문헌의 효과와 발생 원리"],
+          "common_points": [],
+          "difference_points": [],
+          "causal_link": "구성·동작 차이와 효과의 인과관계",
+          "score_reason": "...",
+          "missing_information": []
+        },
+        "imitation_avoidance_difficulty": {
+          "score": 0,
+          "assessment_status": "evaluated",
+          "target_basis": ["핵심 구성의 의존관계와 제어 조건"],
+          "comparison_basis": ["비교문헌에서 확인되는 대체 구현"],
+          "replaceable_elements": [],
+          "hard_to_replace_elements": [],
+          "required_technical_work": ["동일 효과 재현에 필요한 기술 작업"],
+          "score_reason": "...",
+          "missing_information": []
+        }
       },
       "rationale": "..."
     },
@@ -326,9 +367,36 @@ Return ONLY JSON:
       "score": 0,
       "max_score": 50,
       "details": {
-        "component_specificity": 0,
-        "procedure_specificity": 0,
-        "implementation_utilization_specificity": 0
+        "component_specificity": {
+          "score": 0,
+          "assessment_status": "evaluated",
+          "target_basis": ["구성요소별 역할·입력·출력·상호관계"],
+          "comparison_basis": [],
+          "common_points": ["확인된 구성 설명"],
+          "difference_points": ["누락되거나 불명확한 구성 설명"],
+          "score_reason": "...",
+          "missing_information": []
+        },
+        "procedure_specificity": {
+          "score": 0,
+          "assessment_status": "evaluated",
+          "target_basis": ["단계별 입력·처리·판단·출력·제어 흐름"],
+          "comparison_basis": [],
+          "common_points": ["확인된 절차 설명"],
+          "difference_points": ["누락되거나 불명확한 절차 설명"],
+          "score_reason": "...",
+          "missing_information": []
+        },
+        "implementation_utilization_specificity": {
+          "score": 0,
+          "assessment_status": "evaluated",
+          "target_basis": ["실시예·도면·산식·파라미터·데이터 구조·적용 환경"],
+          "comparison_basis": [],
+          "common_points": ["확인된 구현 참고정보"],
+          "difference_points": ["추가 설계가 필요한 부분"],
+          "score_reason": "...",
+          "missing_information": []
+        }
       },
       "rationale": "..."
     }

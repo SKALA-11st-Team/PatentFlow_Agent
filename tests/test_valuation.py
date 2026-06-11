@@ -1939,6 +1939,50 @@ def test_technology_candidate_subscores_use_50_50_structure():
     }
 
 
+def test_technology_candidate_subscores_preserve_detailed_score_evidence():
+    from agents.valuation_axes.technology import apply_technology_scores
+
+    detail = {
+        "score": 16,
+        "assessment_status": "evaluated",
+        "target_basis": ["독립항 1의 A-B-C 처리"],
+        "comparison_basis": ["KR-A 청구항 1의 A-B 처리"],
+        "common_points": ["A-B 구성"],
+        "difference_points": ["C 판단 단계"],
+        "score_reason": "기반 구성은 같지만 C 판단 단계가 최종 출력을 변경하므로 17점",
+        "missing_information": [],
+    }
+    result = apply_technology_scores(
+        {
+            "subscores": {
+                "technical_differentiation": {
+                    "details": {
+                        "configuration_operation_differentiation": detail,
+                        "effect_differentiation": {"score": 10},
+                        "imitation_avoidance_difficulty": {"score": 7},
+                    }
+                },
+                "implementation_specificity": {
+                    "details": {
+                        "component_specificity": {"score": 14},
+                        "procedure_specificity": {"score": 14},
+                        "implementation_utilization_specificity": {"score": 7},
+                    }
+                },
+            }
+        },
+        {},
+    )
+
+    normalized = result["subscores"]["technical_differentiation"]["details"][
+        "configuration_operation_differentiation"
+    ]
+    assert normalized["score"] == 17
+    assert normalized["target_basis"] == ["독립항 1의 A-B-C 처리"]
+    assert normalized["difference_points"] == ["C 판단 단계"]
+    assert result["score"] == 69
+
+
 def test_valuation_fails_when_llm_valuation_is_disabled():
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": False, "use_llm_final_report": False},

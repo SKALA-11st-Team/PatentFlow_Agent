@@ -383,12 +383,21 @@ def normalize_technology_detail_scores(item: dict[str, Any], *, key: str) -> int
     candidates_by_detail = TECHNOLOGY_DETAIL_SCORE_CANDIDATES[key]
     if not isinstance(details, dict):
         return clamp_int(item.get("score"), default=0, max_value=50)
-    normalized_details = {
-        detail_key: nearest_candidate_score(details.get(detail_key), candidates)
-        for detail_key, candidates in candidates_by_detail.items()
-    }
+    normalized_details = {}
+    for detail_key, candidates in candidates_by_detail.items():
+        raw_detail = details.get(detail_key)
+        if isinstance(raw_detail, dict):
+            normalized_details[detail_key] = {
+                **raw_detail,
+                "score": nearest_candidate_score(raw_detail.get("score"), candidates),
+            }
+        else:
+            normalized_details[detail_key] = nearest_candidate_score(raw_detail, candidates)
     item["details"] = normalized_details
-    return sum(normalized_details.values())
+    return sum(
+        detail.get("score", 0) if isinstance(detail, dict) else detail
+        for detail in normalized_details.values()
+    )
 
 
 def nearest_candidate_score(value: Any, candidates: tuple[int, ...]) -> int:

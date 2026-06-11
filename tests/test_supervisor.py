@@ -314,6 +314,30 @@ def test_axis_supervisor_checks_are_stored_and_route_retry_or_research(monkeypat
 
 
 def test_run_axis_supervisor_checks_defaults_to_passed_without_llm():
+    technology_detail = {
+        "score": 7,
+        "assessment_status": "evaluated",
+        "target_basis": ["대상 근거"],
+        "comparison_basis": ["비교 근거"],
+        "score_reason": "대상과 비교문헌의 구체적 차이가 점수 구간과 일치합니다.",
+        "missing_information": [],
+    }
+    technology_subscores = {
+        "technical_differentiation": {
+            "details": {
+                "configuration_operation_differentiation": technology_detail,
+                "effect_differentiation": technology_detail,
+                "imitation_avoidance_difficulty": technology_detail,
+            }
+        },
+        "implementation_specificity": {
+            "details": {
+                "component_specificity": technology_detail,
+                "procedure_specificity": technology_detail,
+                "implementation_utilization_specificity": technology_detail,
+            }
+        },
+    }
     business_fit_subscores = {
         "official_business_evidence": {"score": 24},
         "product_function_direct_match": {"score": 24},
@@ -340,7 +364,13 @@ def test_run_axis_supervisor_checks_defaults_to_passed_without_llm():
                     "risk_factors": [],
                     "missing_information": [],
                     "confidence": 0.7,
-                    **({"subscores": business_fit_subscores} if axis == "business_fit" else {}),
+                    **(
+                        {"subscores": business_fit_subscores}
+                        if axis == "business_fit"
+                        else {"subscores": technology_subscores}
+                        if axis == "technology"
+                        else {}
+                    ),
                 }
                 for axis in ["legal", "technology", "market", "business_fit"]
             }
@@ -352,6 +382,139 @@ def test_run_axis_supervisor_checks_defaults_to_passed_without_llm():
     assert set(checks) == {"legal", "technology", "market", "business_fit"}
     assert all(item["status"] == "passed" for item in checks.values())
     assert state.valuation_result["axis_supervisor_checks"] == checks
+
+
+def test_rule_technology_supervisor_retries_when_detail_evidence_is_missing():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    state = PatentWorkflowState(
+        valuation_result={
+            "axes": {
+                "technology": {
+                    "score": 70,
+                    "grade": "B",
+                    "rationale": "기술성 평가",
+                    "confidence": 0.8,
+                    "evidence_ids": [],
+                    "subscores": {
+                        "technical_differentiation": {
+                            "details": {
+                                "configuration_operation_differentiation": 17,
+                                "effect_differentiation": 10,
+                                "imitation_avoidance_difficulty": 7,
+                            }
+                        },
+                        "implementation_specificity": {
+                            "details": {
+                                "component_specificity": 14,
+                                "procedure_specificity": 14,
+                                "implementation_utilization_specificity": 7,
+                            }
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    check = build_rule_axis_supervisor_check(state, "technology")
+
+    assert check["status"] == "valuation_retry"
+    assert any("세부 근거 객체가 없습니다" in issue for issue in check["issues"])
+
+
+def test_rule_technology_supervisor_accepts_complete_detail_evidence():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    detail = {
+        "score": 7,
+        "assessment_status": "evaluated",
+        "target_basis": ["대상 근거"],
+        "comparison_basis": ["비교 근거"],
+        "score_reason": "대상과 비교문헌의 구체적 차이가 점수 구간과 일치합니다.",
+        "missing_information": [],
+    }
+    state = PatentWorkflowState(
+        valuation_result={
+            "axes": {
+                "technology": {
+                    "score": 42,
+                    "grade": "C",
+                    "rationale": "기술성 평가",
+                    "confidence": 0.8,
+                    "evidence_ids": [],
+                    "subscores": {
+                        "technical_differentiation": {
+                            "details": {
+                                "configuration_operation_differentiation": detail,
+                                "effect_differentiation": detail,
+                                "imitation_avoidance_difficulty": detail,
+                            }
+                        },
+                        "implementation_specificity": {
+                            "details": {
+                                "component_specificity": detail,
+                                "procedure_specificity": detail,
+                                "implementation_utilization_specificity": detail,
+                            }
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    check = build_rule_axis_supervisor_check(state, "technology")
+
+    assert check["status"] == "passed"
+
+
+def test_rule_technology_supervisor_retries_for_vague_or_ungrounded_reason():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    detail = {
+        "score": 7,
+        "assessment_status": "evaluated",
+        "target_basis": [],
+        "comparison_basis": [],
+        "score_reason": "의미 있는 차이가 있습니다.",
+        "missing_information": [],
+    }
+    state = PatentWorkflowState(
+        valuation_result={
+            "axes": {
+                "technology": {
+                    "score": 42,
+                    "grade": "C",
+                    "rationale": "기술성 평가",
+                    "confidence": 0.8,
+                    "evidence_ids": [],
+                    "subscores": {
+                        key: {"details": {detail_key: detail for detail_key in detail_keys}}
+                        for key, detail_keys in {
+                            "technical_differentiation": (
+                                "configuration_operation_differentiation",
+                                "effect_differentiation",
+                                "imitation_avoidance_difficulty",
+                            ),
+                            "implementation_specificity": (
+                                "component_specificity",
+                                "procedure_specificity",
+                                "implementation_utilization_specificity",
+                            ),
+                        }.items()
+                    },
+                }
+            }
+        }
+    )
+
+    check = build_rule_axis_supervisor_check(state, "technology")
+
+    assert check["status"] == "valuation_retry"
+    assert any("지나치게 추상적" in issue for issue in check["issues"])
+    assert any("대상 특허 근거가 없습니다" in issue for issue in check["issues"])
+    assert any("비교문헌 근거가 없습니다" in issue for issue in check["issues"])
 
 
 

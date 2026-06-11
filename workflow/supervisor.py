@@ -414,6 +414,27 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
             ],
             "available_in_input": available_prior_art_identifiers(state),
         }
+    elif axis == "technology":
+        metrics = axis_result.get("technology_metrics")
+        similar_patents = metrics.get("similar_patents") if isinstance(metrics, dict) else []
+        payload["technology_context"] = {
+            "available_comparisons": [
+                {
+                    "identifier": (
+                        item.get("display_number")
+                        or item.get("application_number")
+                        or item.get("registration_number")
+                    ),
+                    "title": item.get("title"),
+                }
+                for item in (similar_patents or [])
+                if isinstance(item, dict)
+            ],
+            "target_document_indicators": (
+                metrics.get("target_document_indicators") if isinstance(metrics, dict) else {}
+            )
+            or {},
+        }
     elif axis == "business_fit":
         payload["business_fit_context"] = build_business_fit_supervisor_context(
             state,
@@ -487,9 +508,72 @@ def supervisor_subscores_payload(subscores: Any) -> dict[str, Any]:
             "score": item.get("score"),
             "max_score": item.get("max_score"),
             "details": item.get("details") if isinstance(item.get("details"), dict) else {},
-            "rationale_preview": preview_text(item.get("rationale"), 300),
+            "rationale": item.get("rationale"),
         }
     return payload
+
+
+TECHNOLOGY_DETAIL_KEYS = {
+    "technical_differentiation": (
+        "configuration_operation_differentiation",
+        "effect_differentiation",
+        "imitation_avoidance_difficulty",
+    ),
+    "implementation_specificity": (
+        "component_specificity",
+        "procedure_specificity",
+        "implementation_utilization_specificity",
+    ),
+}
+
+
+def check_technology_axis_rules(axis_result: dict[str, Any]) -> tuple[str, list[str]]:
+    subscores = axis_result.get("subscores")
+    if not isinstance(subscores, dict):
+        return "valuation_retry", ["technology 상세 하위 점수와 근거가 없습니다."]
+
+    issues: list[str] = []
+    for subscore_key, detail_keys in TECHNOLOGY_DETAIL_KEYS.items():
+        subscore = subscores.get(subscore_key)
+        details = subscore.get("details") if isinstance(subscore, dict) else None
+        if not isinstance(details, dict):
+            issues.append(f"technology 상세 근거가 없습니다: {subscore_key}")
+            continue
+        for detail_key in detail_keys:
+            detail = details.get(detail_key)
+            if not isinstance(detail, dict):
+                issues.append(f"technology 세부 근거 객체가 없습니다: {detail_key}")
+                continue
+            assessment_status = detail.get("assessment_status")
+            if assessment_status not in {"evaluated", "insufficient_evidence"}:
+                issues.append(f"technology assessment_status가 유효하지 않습니다: {detail_key}")
+            score_reason = str(detail.get("score_reason") or "").strip()
+            if not score_reason:
+                issues.append(f"technology 점수 선택 근거가 없습니다: {detail_key}")
+            elif len(score_reason) < 20 or score_reason in {
+                "의미 있는 차이가 있습니다.",
+                "구체적으로 설명되어 있습니다.",
+                "구현 난이도가 높습니다.",
+            }:
+                issues.append(f"technology 점수 선택 근거가 지나치게 추상적입니다: {detail_key}")
+            if assessment_status == "evaluated":
+                target_basis = detail.get("target_basis")
+                if not isinstance(target_basis, list) or not any(
+                    str(value).strip() for value in target_basis
+                ):
+                    issues.append(f"technology 대상 특허 근거가 없습니다: {detail_key}")
+                if subscore_key == "technical_differentiation":
+                    comparison_basis = detail.get("comparison_basis")
+                    if not isinstance(comparison_basis, list) or not any(
+                        str(value).strip() for value in comparison_basis
+                    ):
+                        issues.append(f"technology 비교문헌 근거가 없습니다: {detail_key}")
+            if assessment_status == "insufficient_evidence":
+                missing = detail.get("missing_information")
+                if not isinstance(missing, list) or not any(str(value).strip() for value in missing):
+                    issues.append(f"technology 자료 부족 내용이 없습니다: {detail_key}")
+
+    return ("valuation_retry" if issues else "passed"), issues
 
 
 def build_rule_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> dict[str, Any]:
@@ -517,6 +601,9 @@ def build_rule_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         if axis == "business_fit" and status == "passed":
             status, business_fit_issues = check_business_fit_axis_rules(state, axis_result)
             issues.extend(business_fit_issues)
+        if axis == "technology" and status == "passed":
+            status, technology_issues = check_technology_axis_rules(axis_result)
+            issues.extend(technology_issues)
 
     return axis_supervisor_check_result(
         axis=axis,
