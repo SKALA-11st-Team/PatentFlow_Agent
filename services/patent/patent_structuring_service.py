@@ -24,7 +24,8 @@ from services.observability.langsmith_service import trace
 
 logger = logging.getLogger(__name__)
 
-PROMPT_PATH = "valuation/patent_structuring.md"
+STEP1_PROMPT_PATH = "valuation/patent_structuring_step1.md"
+STEP2_PROMPT_PATH = "valuation/patent_structuring_step2.md"
 COMPARISON_TARGET_COUNT = 5
 MAX_STRUCTURING_WORKERS = 6
 
@@ -96,19 +97,56 @@ def _structure_one_outcome(role: str, patent_input: dict[str, Any]) -> dict[str,
 
 @trace(name="patent_structuring", run_type="chain")
 def structure_one_patent(patent_input: dict[str, Any]) -> dict[str, Any] | None:
-    """특허 1건을 구조화한다. 성공 시 dict, 빈 입력 시 None, 실패 시 예외."""
+    """특허 1건을 2-pass로 구조화한다. 성공 시 dict, 빈 입력 시 None, 실패 시 예외.
+
+    한 콜에서 전체 JSON을 뽑으면 출력이 길어 truncation·매핑 오류가 잦으므로 두 번에 나눈다.
+    Pass1: 명세서 → key_elements + key_flow (청구항 미입력)
+    Pass2: 청구항 + Pass1 key_elements → claims 분해 + 각 구성요소 명확성 backfill
+    """
     doc_id = str(patent_input.get("doc_id") or "")
     specification_text = str(patent_input.get("specification_text") or "").strip()
     claims_text = str(patent_input.get("claims_text") or "").strip()
+    drawings_text = str(patent_input.get("drawings_text") or "").strip()
     if not specification_text and not claims_text:
         return None
 
-    prompt = _build_structuring_prompt(
-        doc_id=doc_id,
-        specification_text=specification_text,
-        claims_text=claims_text,
-        drawings_text=str(patent_input.get("drawings_text") or "").strip(),
+    # Pass1 — 명세서에서 구성요소·흐름 추출
+    pass1 = _run_structuring_pass(
+        STEP1_PROMPT_PATH,
+        {
+            "doc_id": doc_id,
+            "specification_text": specification_text,
+            "drawings_text": drawings_text,
+        },
+        step="step1",
     )
+
+    # Pass2 — 청구항 분해 + 구성요소 명확성. Pass1의 구성요소 목록을 입력으로 준다.
+    pass2 = _run_structuring_pass(
+        STEP2_PROMPT_PATH,
+        {
+            "doc_id": doc_id,
+            "key_elements": _key_elements_for_step2(pass1.get("key_elements") or []),
+            "claims_text": claims_text,
+        },
+        step="step2",
+    )
+
+    merged = _merge_structuring_passes(doc_id=doc_id, pass1=pass1, pass2=pass2)
+    try:
+        validated = validate_patent_structure(merged).model_dump()
+    except ValidationError as exc:
+        raise PatentStructuringError(f"schema_validation_failed: {str(exc)[:200]}")
+    # 비교군 출처(prior_art/similar)를 구조화 결과에 실어, 권리성의 선행문헌-only 필터에 쓴다.
+    if patent_input.get("comparison_source"):
+        validated["comparison_source"] = str(patent_input["comparison_source"])
+    return validated
+
+
+def _run_structuring_pass(prompt_path: str, payload: dict[str, Any], *, step: str) -> dict[str, Any]:
+    """구조화 한 패스를 실행하고 파싱된 dict를 반환한다(JSON 실패 시 예외)."""
+    template = load_prompt(prompt_path).strip()
+    prompt = f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
     # 구조화는 추출·청구항 분해라 가치평가 축보다 가벼운 모델/추론으로 비용을 낮춘다.
     # 모델 미지정 시 openai_chat_model(gpt-5-mini)로 폴백.
     raw = call_llm(
@@ -120,31 +158,55 @@ def structure_one_patent(patent_input: dict[str, Any]) -> dict[str, Any] | None:
     )
     parsed = parse_json_object(raw)
     if not parsed:
-        raise PatentStructuringError("llm_response_not_json")
-    if not parsed.get("doc_id"):
-        parsed["doc_id"] = doc_id
-    try:
-        validated = validate_patent_structure(parsed).model_dump()
-    except ValidationError as exc:
-        raise PatentStructuringError(f"schema_validation_failed: {str(exc)[:200]}")
-    # 비교군 출처(prior_art/similar)를 구조화 결과에 실어, 권리성의 선행문헌-only 필터에 쓴다.
-    if patent_input.get("comparison_source"):
-        validated["comparison_source"] = str(patent_input["comparison_source"])
-    return validated
+        raise PatentStructuringError(f"{step}_response_not_json")
+    return parsed
 
 
-def _build_structuring_prompt(
+def _key_elements_for_step2(key_elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Pass2 입력용으로 구성요소를 경량화한다(청구항 매핑에 필요한 식별 정보만)."""
+    compact: list[dict[str, Any]] = []
+    for element in key_elements:
+        if not isinstance(element, dict):
+            continue
+        compact.append(
+            {
+                "key_element_id": element.get("key_element_id"),
+                "key_element_name": element.get("key_element_name"),
+                "why_essential": element.get("why_essential"),
+                "core_role": element.get("core_role"),
+            }
+        )
+    return compact
+
+
+def _merge_structuring_passes(
     *,
     doc_id: str,
-    specification_text: str,
-    claims_text: str,
-    drawings_text: str,
-) -> str:
-    template = load_prompt(PROMPT_PATH).strip()
-    payload = {
-        "doc_id": doc_id,
-        "specification_text": specification_text,
-        "claims_text": claims_text,
-        "drawings_text": drawings_text,
+    pass1: dict[str, Any],
+    pass2: dict[str, Any],
+) -> dict[str, Any]:
+    """Pass1(구성요소·흐름) + Pass2(청구항·명확성)를 최종 구조로 합친다."""
+    clarity_by_id = {
+        str(item.get("key_element_id")): item
+        for item in (pass2.get("key_element_clarity") or [])
+        if isinstance(item, dict) and item.get("key_element_id")
     }
-    return f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+    key_elements: list[dict[str, Any]] = []
+    for element in pass1.get("key_elements") or []:
+        if not isinstance(element, dict):
+            continue
+        clarity = clarity_by_id.get(str(element.get("key_element_id")), {})
+        key_elements.append(
+            {
+                **element,
+                "in_independent_claim": bool(clarity.get("in_independent_claim", False)),
+                "claim_clarity": clarity.get("claim_clarity"),
+                "clarity_issue": str(clarity.get("clarity_issue") or ""),
+            }
+        )
+    return {
+        "doc_id": doc_id or pass1.get("doc_id") or pass2.get("doc_id") or "",
+        "key_elements": key_elements,
+        "key_flow": pass1.get("key_flow") or [],
+        "claims": pass2.get("claims") or [],
+    }

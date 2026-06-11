@@ -32,45 +32,22 @@
 - 대상 특허와 선행문헌에 공통으로 존재하는 구성이라고 서술하려면 대상 청구항과 선행문헌 양쪽에서 각각 확인되어야 한다.
 - 제품/서비스 적용 여부는 권리성 평가에 반영하지 않는다.
 - 경쟁사 침해 가능성을 단정하지 않는다.
-- 선행문헌 후보 존재만으로 무효 리스크를 자동 판단하지 않는다.
-- 관련 특허군 존재만으로 시너지를 자동 부여하지 않는다.
-- 패밀리 특허 존재만으로 높은 점수를 자동 부여하지 않는다.
-- 심사기록, Office Action, 보정 이력은 평가 대상이 아니다.
-- "추가 검토 필요"만 쓰고 평가 회피를 금지한다.
-- 심사기록 부재를 risk_factors 또는 missing_information에 작성하지 않는다.
+- 선행문헌 후보·관련 특허군·패밀리 특허가 존재한다는 사실만으로 점수를 자동 가감하지 않는다(무효 리스크·시너지·고득점 모두 실제 근거가 확인될 때만).
+- 심사기록·Office Action·보정 이력은 평가 대상이 아니며, 그 부재를 risk_factors·missing_information에 적지 않는다. "추가 검토 필요"만 쓰고 평가를 회피하지 않는다.
 - 자료 부족은 특허 약점이 아니라 confidence 하락 요인으로 처리한다.
-- 삭제 청구항 번호, 보정 전 청구항, has_deleted_claims_gap 정보가 입력에 보이더라도 이를 권리 안정성 리스크나 권리범위 축소 근거로 사용하지 않는다.
+- 삭제 청구항 번호·보정 전 청구항·has_deleted_claims_gap이 입력에 보여도 권리 안정성 리스크나 권리범위 축소 근거로 사용하지 않는다.
 - 권리성 평가는 현재 유효한 최종 청구항만 기준으로 한다.
 - 해외 출원 청구항 상세가 제공되지 않은 경우에도 이를 권리 확장성 부족, 권리 약화, 감점 사유로 작성하지 않는다.
 - 해외 패밀리 또는 해외 등록 정보는 확인된 경우에만 보조 긍정 근거로 사용한다.
 
 
 사용 근거:
-- 등록상태
-- `claim_context.independent_claims`
-- `claim_context.dependent_claims`
-- 독립항/종속항 구조
-- claim_stats
-- 발명의 효과
-- summary_result
-- `element_structure.target`: 대상 특허의 구조화 결과(key_elements/key_flow/claims). 핵심 구성요소의 독립항 반영(in_independent_claim)·명확성(claim_clarity)·외부 관찰성(observability)·청구항 분해(claim_elements/impl_lock/category)가 담겨 있다.
-- `element_structure.comparisons`: 선행문헌의 구조화 결과(보조 참고용). CPC유사 특허는 포함하지 않으며 선행문헌만 들어간다.
-- prior_art_candidates
-- citation_evidence.kr_citation_documents
-- citation_evidence.foreign_citation_documents
-- citation_evidence.foreign_claim_lookup_candidates
-- citation_evidence.citing_signal
-- legal_context
-  - right_status_gate: 현재 권리상태 참고값
-  - claim_count_context: 독립항/종속항/전체 청구항 수 입력값
-  - citing_reference_context: 피인용/후속 참조 통계 입력값
-- 패밀리 특허 정보
-- 해외 등록 B 문헌 여부
-- portfolio_context
-- 관련 특허군
-- 사내 유사 특허
-- IPC/CPC
-- 예상 소멸일 또는 잔여 존속기간
+- 대상 특허: 등록상태, `claim_context`(독립항·종속항·claim_stats), 발명의 효과, summary_result, 예상 소멸일/잔여 존속기간, IPC/CPC
+- `element_structure.target`: 대상 특허의 구조화 결과(key_elements/key_flow/claims). 핵심 구성요소의 독립항 반영(in_independent_claim)·명확성(claim_clarity)·외부 관찰성(observability)·청구항 분해(claim_elements/impl_lock/category)
+- `element_structure.comparisons`: 선행문헌의 구조화 결과(보조). CPC유사 특허는 포함하지 않으며 선행문헌만 들어간다.
+- 선행문헌: prior_art_candidates, citation_evidence(kr/foreign_citation_documents, foreign_claim_lookup_candidates, citing_signal)
+- 포트폴리오·해외: portfolio_context·관련 특허군·사내 유사 특허, 패밀리/해외 등록(B 문헌) 정보
+- legal_context: right_status_gate(권리상태), claim_count_context(청구항 수), citing_reference_context(피인용 통계)
 
 
 ----------------------------------------
@@ -93,31 +70,14 @@
 - 독립항 구성 명확성(independent_claim_clarity): 20점
 
 평가 규칙:
-- prior_art_candidates는 선행문헌 후보 목록이다.
-- citation_evidence는 제목, 초록, 대표 청구항이 확인된 선행문헌이다.
-- citation_evidence.prior_art_collection.claim_comparison_ready_count는 대표 청구항이 확보되어 청구항 단위로 비교 가능한 문헌 수이다.
-- `comparison_ready_count`는 하위 호환 필드이며 `claim_comparison_ready_count`와 같은 값이다.
-- `abstract_only_count` 문헌은 기술적 보조 신호로만 사용하며 청구항 중복도 직접 비교 건수에는 포함하지 않는다.
-- `fulltext_claims_unparsed_count` 문헌은 전문은 확보했지만 청구항 추출에 실패한 문헌이다. 직접 비교 건수에는 포함하지 않는다.
-- compared_prior_art_count는 반드시 comparison_ready_count와 같아야 하며, 식별번호만 있는 문헌은 비교 건수에 포함하지 않는다.
-- comparison_ready_count가 0이면 prior_art_overlap.assessment_status를 "unknown"으로 두고, 중복이 낮거나 없다고 결론 내리지 않는다.
-- comparison_ready_count가 1 이상이면 제공된 대표 청구항을 실제 비교에 사용한다.
-- 초록만 제공된 문헌은 대상 청구항과 동일하다고 단정하지 않고, 배경 기술 또는 보조 중복 신호로만 설명한다.
-- citation_evidence.citing_signal은 피인용/후속 참조의 통계 신호이며, 선행문헌 비교 대상이나 청구항 유사성 판단 근거로 사용하지 않는다.
-- `claim_context`의 독립항 및 종속항 구성과 선행문헌의 기술 구성을 직접 비교하여 판단한다.
-- 해외 패밀리/주요국 등록 여부는 권리안정성 점수에 사용하지 않는다.
-- 단순히 유사 문헌 존재 여부가 아니라 대상 독립항의 핵심 구성과 선행문헌의 청구항·초록·기술내용이 얼마나 겹치는지 기준으로 판단한다.
-- 여러 선행문헌을 함께 보되, 1건이라도 독립항 핵심 구성을 거의 그대로 포함하면 낮은 라벨을 선택한다.
-- 여러 문헌에서 유사 구성이 반복되면 중복도가 높은 쪽으로 판단한다.
-- "상세 1:1 비교가 추가로 필요하다"는 표현만으로 평가를 회피하지 않는다.
-- 제공된 문헌 정보 범위 내에서 비교 판단을 수행한다.
-- citation_evidence에 선행문헌의 대표 청구항이 제공된 경우, 그 범위 안에서 청구항 비교 판단을 직접 수행하고 결론으로 서술한다. "청구항 대 청구항 전체 1:1 비교가 필요하다", "상세 대비가 추가로 필요하다" 같은 방법론적 보강 요청은 rationale·risk_factors·missing_information에 적지 않는다.
-- 선행문헌의 청구항 정보가 입력에 전혀 없을 때만 청구항 비교 자료 부족을 missing_information에 기록한다.
-- overlap_basis는 대상 청구항의 어떤 핵심 구성요소가 어떤 선행문헌의 청구항·초록·기술내용과 겹친다고 보았는지 작성한다.
-- overlap_basis에는 대상 청구항 번호, 겹치는 구성요소, 비교 문헌 식별값을 포함한다.
-- 겹침이 없으면 overlap_basis에 "핵심 구성의 실질적 중복은 확인되지 않음"처럼 작성한다.
-- 선행문헌을 인용할 때는 입력 citation_evidence(kr_citation_documents/foreign_citation_documents)의 식별값(application_number/registration_number/publication_number) 또는 prior_art_candidates에 실제로 존재하는 문헌만 사용한다. 입력에 없는 문헌 번호를 새로 만들지 않는다.
-- 평가에 실제로 사용한 선행문헌 식별값은 출력의 prior_art_references에 모두 나열한다. overlap_basis나 rationale에서 인용한 문헌은 반드시 prior_art_references에 포함되어야 한다.
+- prior_art_candidates는 선행문헌 후보 목록, citation_evidence는 제목·초록·대표 청구항이 확인된 선행문헌이다.
+- citation_evidence.prior_art_collection.claim_comparison_ready_count(=하위호환 comparison_ready_count)는 대표 청구항이 확보돼 청구항 단위 비교가 가능한 문헌 수다. compared_prior_art_count는 이 값과 반드시 일치시키고, 식별번호만 있는 문헌·abstract_only·fulltext_claims_unparsed(추출 실패) 문헌은 비교 건수에 포함하지 않는다.
+- comparison_ready_count가 0이면 prior_art_overlap.assessment_status를 "unknown"으로 두고 중복이 낮다고 결론 내리지 않는다. 1 이상이면 제공된 대표 청구항을 실제 비교에 사용한다. 초록만 있는 문헌은 보조 중복 신호로만 본다.
+- citation_evidence.citing_signal은 피인용/후속 참조 통계이며 선행문헌 비교나 청구항 유사성 판단에 쓰지 않는다.
+- 해외 패밀리/주요국 등록 여부는 권리안정성 점수에 사용하지 않는다(포트폴리오·방어가치에서만 반영).
+- 판단은 유사 문헌 존재 여부가 아니라 대상 독립항 핵심 구성과 선행문헌(청구항·초록·기술내용)의 구성요소 단위 겹침 정도로 한다. "1:1 비교가 더 필요하다" 같은 방법론적 회피는 rationale·risk_factors·missing_information에 적지 않으며, 선행문헌 청구항 정보가 입력에 전혀 없을 때만 자료 부족을 missing_information에 기록한다.
+- overlap_basis에는 대상 청구항 번호·겹치는 구성요소·비교 문헌 식별값을 적고(겹침이 없으면 "핵심 구성의 실질적 중복은 확인되지 않음"), 선택한 점수 밴드와 일치시킨다.
+- 인용 문헌은 입력 citation_evidence(kr/foreign_citation_documents) 식별값 또는 prior_art_candidates에 실제 있는 것만 쓰고(입력에 없는 문헌 번호를 새로 만들지 않는다), 사용한 식별값은 prior_art_references에 모두 나열한다.
 
 점수화 기준:
 - prior_art_overlap (선행문헌 기반 충돌 리스크, 0~20):
@@ -218,18 +178,9 @@
 - 해외 권리 확보(overseas_right_coverage): 4점
 
 평가 규칙:
-- 패밀리, 해외 등록, 관련 특허군 정보가 존재하면 반영한다.
-- 관련 정보가 없다고 자동 감점하지 않는다.
-- 실제 중복 관계가 확인될 때만 감점한다.
-- "정보가 제공되지 않아 제한적" 같은 표현 사용 금지.
-- 해외 출원 청구항 상세 부재를 포트폴리오 확장성 부족이나 권리 약화로 해석하지 않는다.
-- 해외 패밀리 또는 해외 등록 정보가 없다는 사실만으로 권리성 약점이나 리스크로 쓰지 않는다.
-- 정보 부족은 confidence에만 반영한다.
-- citation_evidence.citing_signal은 이 항목의 피인용/후속 참조 신호에만 사용한다.
-- citation_evidence.citing_signal.available이 false이면 피인용 0건으로 해석하지 않고 `follow_on_right_signal`을 unknown으로 처리한다.
-- 해외 특허에서 피인용 조회가 지원되지 않는 경우 해당 세부지표는 평가 제외된다. 이를 권리 약점, 0점 근거, risk_factors 또는 missing_information으로 작성하지 않는다.
-- 관련 특허군 개수 기준은 판단 보조 기준이며, 단순히 같은 제품군에 속한다는 이유만으로 strong을 선택하지 않는다.
-- 해외 권리 확보 범위는 확인된 해외 출원·공개·등록 또는 Patent Family 국가 정보를 기준으로만 판단한다.
+- 패밀리·해외 등록·관련 특허군 정보가 존재하면 반영하되, 없거나 부족하다고 자동 감점하지 않는다(정보 부족은 confidence에만 반영, "정보 미제공으로 제한적" 류 표현 금지). 실제 중복 관계가 확인될 때만 감점한다.
+- 관련 특허군은 개수만으로 판단하지 않고(같은 제품군이라는 이유만으로 strong 금지) 실제 보호영역 보완 여부로 본다. 해외 권리 확보는 확인된 해외 출원·공개·등록 또는 Patent Family 국가 정보로만 판단한다.
+- citation_evidence.citing_signal은 이 항목의 피인용/후속 참조 신호에만 쓴다. available이 false이면 피인용 0건이 아니라 follow_on_right_signal을 unknown으로 처리하고, 이를 권리 약점·0점 근거·risk_factors·missing_information으로 적지 않는다.
 
 점수화 기준:
 - portfolio_connection_coverage (관련 특허군 내 보호영역 확장성, 0~12):
@@ -316,13 +267,16 @@ Return ONLY JSON:
       "max_score": 40,
       "details": {
         "core_solution_coverage": {
-          "score": 0
+          "score": 0,
+          "rationale": "..."
         },
         "independent_claim_scope": {
-          "score": 0
+          "score": 0,
+          "rationale": "..."
         },
         "dependent_claim_support": {
-          "score": 0
+          "score": 0,
+          "rationale": "..."
         },
         "infringement_detectability": {
           "score": 0
@@ -336,13 +290,16 @@ Return ONLY JSON:
       "max_score": 20,
       "details": {
         "portfolio_connection_coverage": {
-          "score": 0
+          "score": 0,
+          "rationale": "..."
         },
         "follow_on_right_signal": {
-          "score": 0
+          "score": 0,
+          "rationale": "..."
         },
         "overseas_right_coverage": {
-          "score": 0
+          "score": 0,
+          "rationale": "..."
         }
       },
       "rationale": "..."
