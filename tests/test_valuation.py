@@ -1956,6 +1956,9 @@ def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
 
     monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
     monkeypatch.setattr("agents.writing.final_report.call_llm", fake_call_llm)
+    # WRIT-SC: 이 테스트는 마지막 프롬프트가 최종 보고서 작성 프롬프트임을 검증하므로
+    # self-critique 추가 호출은 끈다(critique 자체는 test_final_report_critique에서 검증).
+    monkeypatch.setattr("agents.writing.final_report.settings.report_self_critique_enabled", False)
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": True, "use_llm_final_report": True},
         patent_structured={"title_final": "문서변환 특허", "related_product": "문서변환 SW"},
@@ -2348,6 +2351,9 @@ def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
 
     monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
     monkeypatch.setattr("agents.writing.final_report.call_llm", fake_call_llm)
+    # WRIT-SC: critique 프롬프트도 "Return ONLY one JSON object"를 포함해 축 프롬프트 카운트가
+    # 흔들리므로 self-critique는 끈다(critique 자체는 test_final_report_critique에서 검증).
+    monkeypatch.setattr("agents.writing.final_report.settings.report_self_critique_enabled", False)
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": True, "use_llm_final_report": True, "no_save": True},
         patent_structured={"related_product": "문서변환 SW"},

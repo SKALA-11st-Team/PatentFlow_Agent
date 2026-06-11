@@ -202,6 +202,8 @@ def normalize_news_compression(item: dict[str, Any], parsed: dict[str, Any]) -> 
         "relation_type": normalize_relation_type(parsed.get("relation_type")),
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
+        # EVID-12: 출처 신뢰도·최신성 가중치를 압축 후에도 보존한다(후속 선택/절단 정렬용).
+        "quality_weight": to_float(item.get("quality_weight")),
     }
 
 
@@ -231,6 +233,8 @@ def normalize_industry_compression(item: dict[str, Any], parsed: dict[str, Any])
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
         "retrieval_score": to_float(item.get("score")),
+        # EVID-12: 출처 신뢰도·최신성 가중치를 압축 후에도 보존한다(후속 선택/절단 정렬용).
+        "quality_weight": to_float(item.get("quality_weight")),
     }
 
 
