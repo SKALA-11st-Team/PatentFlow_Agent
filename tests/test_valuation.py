@@ -1748,10 +1748,20 @@ def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
         item = {
             "display_number": "KR-A",
             "source_type": "prior_art",
-            "pdf_text": "원문 전체",
+            "pdf_text": "원문 전체" * 10000,
             "pdf_text_excerpt": "원문 전체",
             "similarity_text": "유사도 계산용 텍스트",
             "resolved_search_matches": [{"title": "검색 결과"}],
+            "markdown_paths": ["/tmp/prior.md"],
+            "representative_claims": [
+                {"claim_no": 1, "text": "A" * 2000, "is_independent": True}
+            ],
+            "technical_content": {
+                "problem": "P" * 2000,
+                "solution": "S" * 4000,
+                "effect": "E" * 2000,
+                "detailed_description": "D" * 10000,
+            },
         }
         return {
             "comparison_mode": "prior-art",
@@ -1769,7 +1779,7 @@ def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
             "similar_patents": [
                 {
                     "application_number": "1020200000001",
-                    "pdf_text": "유사문헌 원문 전체",
+                    "pdf_text": "유사문헌 원문 전체" * 10000,
                     "pdf_text_excerpt": "유사문헌 원문 전체",
                     "similarity_text": "유사도 계산용 텍스트",
                     "resolved_search_matches": [],
@@ -1788,10 +1798,16 @@ def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
     )
 
     assert "prior_art_patents" not in metrics
-    assert metrics["similar_patents"][0]["pdf_text"] == "원문 전체"
+    assert all("pdf_text" not in item for item in metrics["similar_patents"])
     assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
     assert all("similarity_text" not in item for item in metrics["similar_patents"])
     assert all("resolved_search_matches" not in item for item in metrics["similar_patents"])
+    assert all("markdown_paths" not in item for item in metrics["similar_patents"])
+    assert len(metrics["similar_patents"][0]["representative_claims"][0]["text"]) == 1200
+    assert len(metrics["similar_patents"][0]["technical_content"]["problem"]) == 1200
+    assert len(metrics["similar_patents"][0]["technical_content"]["solution"]) == 2500
+    assert len(metrics["similar_patents"][0]["technical_content"]["effect"]) == 1500
+    assert len(metrics["similar_patents"][0]["technical_content"]["detailed_description"]) == 5000
 
 
 def test_technology_metrics_prior_art_only_payload_omits_prior_art_duplicates(monkeypatch):

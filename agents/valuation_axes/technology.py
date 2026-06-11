@@ -16,6 +16,13 @@ AXIS = "technology"
 LABEL = "기술성"
 PROMPT_PATH = "valuation/valuation_technology.md"
 TECHNOLOGY_COMPARISON_TARGET_COUNT = 5
+COMPARISON_CLAIM_TEXT_LIMIT = 1200
+COMPARISON_TECHNICAL_CONTENT_LIMITS = {
+    "problem": 1200,
+    "solution": 2500,
+    "effect": 1500,
+    "detailed_description": 5000,
+}
 TECHNOLOGY_DETAIL_SCORE_CANDIDATES = {
     "technical_differentiation": {
         "configuration_operation_differentiation": (0, 8, 17, 25),
@@ -346,14 +353,45 @@ def merge_hybrid_items(*, prior_items: list[dict[str, Any]], similar_items: list
 
 
 def compact_comparison_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    drop_keys = {"pdf_text_excerpt", "similarity_text", "resolved_search_matches"}
+    drop_keys = {
+        "pdf_text",
+        "pdf_text_excerpt",
+        "similarity_text",
+        "resolved_search_matches",
+        "markdown_paths",
+    }
     return [
         {
             "document_role": "prior_art_or_similar_comparison",
-            **{key: value for key, value in item.items() if key not in drop_keys},
+            **{
+                key: compact_comparison_value(key, value)
+                for key, value in item.items()
+                if key not in drop_keys
+            },
         }
         for item in items
     ]
+
+
+def compact_comparison_value(key: str, value: Any) -> Any:
+    if key == "representative_claims" and isinstance(value, list):
+        return [
+            {
+                **claim,
+                "text": normalize_text(claim.get("text"))[:COMPARISON_CLAIM_TEXT_LIMIT],
+            }
+            for claim in value[:5]
+            if isinstance(claim, dict) and normalize_text(claim.get("text"))
+        ]
+    if key == "technical_content" and isinstance(value, dict):
+        return {
+            field: normalize_text(value.get(field))[:limit]
+            for field, limit in COMPARISON_TECHNICAL_CONTENT_LIMITS.items()
+            if normalize_text(value.get(field))
+        }
+    return value
+
+
 def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     subscores = normalize_candidate_subscores(result.get("subscores") or {})
     technical_differentiation_score = int(subscores["technical_differentiation"]["score"])

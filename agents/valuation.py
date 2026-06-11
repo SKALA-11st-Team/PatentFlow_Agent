@@ -94,6 +94,7 @@ def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, An
         model=settings.openai_valuation_model,
         temperature=0,
         reasoning_effort=settings.openai_valuation_reasoning_effort,
+        timeout=settings.openai_valuation_timeout_seconds,
     )
     parsed = parse_json_object(raw)
     if not parsed:

@@ -45,6 +45,9 @@ class Settings(BaseModel):
     openai_writing_verbosity: str | None = getenv("OPENAI_WRITING_VERBOSITY")
     openai_supervisor_reasoning_effort: str | None = getenv("OPENAI_SUPERVISOR_REASONING_EFFORT")
     openai_request_timeout_seconds: float = float(getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "90"))
+    openai_valuation_timeout_seconds: float = float(
+        getenv("OPENAI_VALUATION_TIMEOUT_SECONDS", "180")
+    )
     # 보고서/요약 작성(writing)은 출력이 길어 일반 호출보다 오래 걸리므로 별도 timeout.
     openai_writing_timeout_seconds: float = float(getenv("OPENAI_WRITING_TIMEOUT_SECONDS", "240"))
     # 수집 후 뉴스 recency 필터의 최대 기간(일). naver·글로벌 뉴스 공통. 기본 5년.
