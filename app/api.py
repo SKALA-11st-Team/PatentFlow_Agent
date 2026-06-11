@@ -18,6 +18,7 @@ from agents.writing.final_report import build_evidence_references
 from app.config import settings
 from app.main import save_outputs
 from schemas.valuation import resolve_valuation_config
+from services.observability import progress_registry
 from services.patent.shared_db_service import get_patent_identifiers
 from workflow.graph import run_workflow
 from workflow.state import PatentWorkflowState
@@ -279,6 +280,22 @@ def validate_valuation_prompt_markdown(axis: str, markdown: str) -> None:
         raise HTTPException(status_code=400, detail="미지원 평가축(라이프사이클 경제성)은 사용할 수 없습니다.")
 
 
+# FR-006/UI-005: 평가 진행 단계 응답. BE(Spring)가 그대로 프록시하므로 필드명은 camelCase 계약 고정.
+class PatentEvaluationProgressResponse(BaseModel):
+    patentId: str
+    stage: str
+    stageLabel: str
+    updatedAt: str
+
+
+@app.get("/api/v1/ai/patents/{patent_id}/evaluate/progress")
+def get_patent_evaluation_progress(patent_id: str) -> PatentEvaluationProgressResponse:
+    entry = progress_registry.get(patent_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="no progress")
+    return PatentEvaluationProgressResponse(patentId=patent_id, **entry)
+
+
 @app.post("/api/v1/ai/patents/{patent_id}/evaluate")
 def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentEvaluationResponse:
     initial_state = PatentWorkflowState(user_input=build_api_user_input(patent_id, request))
@@ -356,6 +373,8 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
     user_input: dict[str, Any] = {
         "collect_pdf": True,
         "collect_kipris_api": True,
+        # FR-006: 평가 진행 단계 레지스트리 키. BE가 progress 조회에 쓰는 경로의 patent_id를 그대로 사용한다.
+        "progress_patent_id": patent_id,
         "no_save": request.noSave,
         "artifact_dir": str(artifact_dir),
         "use_llm_summary": True,

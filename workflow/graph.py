@@ -1,9 +1,10 @@
-from typing import Any, TypedDict
+from typing import Any, Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
 from agents.valuation import VALUATION_AXES, finalize_valuation_axis_results, run_axis_valuation_result
 from app.config import settings
+from services.observability import progress_registry
 from workflow.nodes import (
     common_preprocess_node,
     evidence_compression_node,
@@ -64,6 +65,23 @@ class WorkflowGraphState(TypedDict, total=False):
 
 def _as_state(payload: dict[str, Any]) -> PatentWorkflowState:
     return PatentWorkflowState.model_validate(payload)
+
+
+def _progress_patent_id(payload: dict[str, Any]) -> str | None:
+    # FR-006: API 평가 경로에서만 user_input에 progress_patent_id가 주입된다(CLI 실행은 no-op).
+    patent_id = str((payload.get("user_input") or {}).get("progress_patent_id") or "").strip()
+    return patent_id or None
+
+
+def _with_progress(stage: str, fn: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    # FR-006: 단계 경계 노드 진입 시 진행 단계를 기록한다(진행 표시는 비치명 부가 기능).
+    def run_with_progress(payload: dict[str, Any]) -> dict[str, Any]:
+        patent_id = _progress_patent_id(payload)
+        if patent_id:
+            progress_registry.set_stage(patent_id, stage)
+        return fn(payload)
+
+    return run_with_progress
 
 
 def _run_node(payload: dict[str, Any], fn: Any) -> dict[str, Any]:
@@ -188,15 +206,27 @@ def _route_after_writing_supervisor(payload: dict[str, Any]) -> str:
 def _build_graph() -> Any:
     graph = StateGraph(WorkflowGraphState)
     graph.add_node("top_supervisor", lambda payload: _run_node(payload, top_supervisor_node))
-    graph.add_node("patent_context_collect", lambda payload: _run_node(payload, patent_fetch_node))
+    graph.add_node(
+        "patent_context_collect",
+        _with_progress("PREPARING", lambda payload: _run_node(payload, patent_fetch_node)),
+    )
     graph.add_node("portfolio_sibling", lambda payload: _run_node(payload, portfolio_sibling_node))
     graph.add_node("common_preprocess", lambda payload: _run_node(payload, common_preprocess_node))
     graph.add_node("research_supervisor", lambda payload: _run_node(payload, research_supervisor_node))
     graph.add_node("summary", lambda payload: _run_node_partial(payload, summary_node, ["summary_result"]))
-    graph.add_node("query_rewriting", lambda payload: _run_node(payload, query_rewriting_node))
-    graph.add_node("evidence_search", lambda payload: _run_node(payload, evidence_search_node))
-    graph.add_node("evidence_compression", lambda payload: _run_node(payload, evidence_compression_node))
-    graph.add_node("valuation_axes_analyze", _start_valuation_axes_analysis)
+    graph.add_node(
+        "query_rewriting",
+        _with_progress("EVIDENCE_COLLECTION", lambda payload: _run_node(payload, query_rewriting_node)),
+    )
+    graph.add_node(
+        "evidence_search",
+        _with_progress("EVIDENCE_COLLECTION", lambda payload: _run_node(payload, evidence_search_node)),
+    )
+    graph.add_node(
+        "evidence_compression",
+        _with_progress("EVIDENCE_COMPRESSION", lambda payload: _run_node(payload, evidence_compression_node)),
+    )
+    graph.add_node("valuation_axes_analyze", _with_progress("VALUATION", _start_valuation_axes_analysis))
     graph.add_node("prior_art_fulltext", lambda payload: _run_node(payload, prior_art_fulltext_node))
     graph.add_node("valuation_legal", lambda payload: _run_valuation_axis_result_node(payload, "legal"))
     graph.add_node("valuation_technology", lambda payload: _run_valuation_axis_result_node(payload, "technology"))
@@ -204,15 +234,21 @@ def _build_graph() -> Any:
     graph.add_node("valuation_business_fit", lambda payload: _run_valuation_axis_result_node(payload, "business_fit"))
     graph.add_node("valuation_axes_merge", lambda payload: _run_valuation_axes_merge(payload))
     graph.add_node("valuation_supervisor", lambda payload: _run_node(payload, valuation_supervisor_node))
-    graph.add_node("writing_start", _start_writing_reports)
+    graph.add_node("writing_start", _with_progress("WRITING", _start_writing_reports))
     graph.add_node("final_report", lambda payload: _run_node_partial(payload, final_report_node, ["valuation_result"]))
     graph.add_node(
         "report_validation",
-        lambda payload: _run_node_partial(payload, report_validation_node, ["report_validation_result"]),
+        _with_progress(
+            "VALIDATION",
+            lambda payload: _run_node_partial(payload, report_validation_node, ["report_validation_result"]),
+        ),
     )
     graph.add_node(
         "summary_validation",
-        lambda payload: _run_node_partial(payload, summary_validation_node, ["summary_validation_result"]),
+        _with_progress(
+            "VALIDATION",
+            lambda payload: _run_node_partial(payload, summary_validation_node, ["summary_validation_result"]),
+        ),
     )
     graph.add_node("writing_join", _join_writing_validations)
     graph.add_node("writing_supervisor", lambda payload: _run_node(payload, writing_supervisor_node))
@@ -317,11 +353,21 @@ def run_workflow(state: PatentWorkflowState) -> PatentWorkflowState:
     # LangGraph traces the whole run as a single nested tree (one root named
     # below) when LANGSMITH_TRACING is enabled; node spans and wrap_openai LLM
     # calls nest under it. See services.observability.langsmith_service.
-    result = WORKFLOW_GRAPH.invoke(
-        state.model_dump(),
-        config={
-            "run_name": "patent_valuation_workflow",
-            "recursion_limit": settings.workflow_recursion_limit,
-        },
-    )
+    # FR-006: 진행 단계는 성공 시 DONE으로 마감하고, 실패 시 엔트리를 제거해
+    # 폴링 측이 실패한 평가의 낡은 단계를 계속 보지 않게 한다.
+    progress_patent_id = _progress_patent_id(state.model_dump(include={"user_input"}))
+    try:
+        result = WORKFLOW_GRAPH.invoke(
+            state.model_dump(),
+            config={
+                "run_name": "patent_valuation_workflow",
+                "recursion_limit": settings.workflow_recursion_limit,
+            },
+        )
+    except Exception:
+        if progress_patent_id:
+            progress_registry.clear(progress_patent_id)
+        raise
+    if progress_patent_id:
+        progress_registry.set_stage(progress_patent_id, "DONE")
     return PatentWorkflowState.model_validate(result)
