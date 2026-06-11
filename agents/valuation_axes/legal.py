@@ -33,15 +33,15 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 
 LEGAL_SUBSCORE_MAX = {
-    "right_stability": 35,
+    "right_stability": 40,
     "claim_protection": 40,
-    "portfolio_defensive_value": 25,
+    "portfolio_defensive_value": 20,
 }
 
 
 FOREIGN_LEGAL_EXCLUDED_DETAILS = {"prior_art_overlap"}
 LEGAL_DETAIL_MAX = {
-    "prior_art_overlap": 25,
+    "prior_art_overlap": 20,
     "follow_on_right_signal": 4,
 }
 

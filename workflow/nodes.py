@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import contextvars
+import json
 import re
 
 from app.config import settings
@@ -286,13 +287,68 @@ def patent_structuring_node(state: PatentWorkflowState) -> PatentWorkflowState:
     if not target_input and not comparison_inputs:
         return state
 
-    target_structure, comparison_structures = structure_target_and_comparisons(
+    target_structure, comparison_structures, failures = structure_target_and_comparisons(
         target_input=target_input or {},
         comparison_inputs=comparison_inputs,
     )
     state.target_structure = target_structure
     state.comparison_structures = comparison_structures
+    save_patent_structures(
+        state,
+        target_structure,
+        comparison_structures,
+        failures,
+        comparison_input_count=len(comparison_inputs),
+    )
     return state
+
+
+def save_patent_structures(
+    state: PatentWorkflowState,
+    target_structure: dict | None,
+    comparison_structures: list[dict],
+    failures: list[dict] | None = None,
+    *,
+    comparison_input_count: int | None = None,
+) -> None:
+    """구조화 결과(타깃 + 비교군)를 artifact_dir/patent_structures 아래 JSON으로 저장한다."""
+    if state.user_input.get("no_save", False):
+        return
+    failures = failures or []
+    output_dir = artifact_subdir(state, "patent_structures")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if target_structure is not None:
+        _write_json(output_dir / "target.json", target_structure)
+
+    for index, structure in enumerate(comparison_structures, start=1):
+        doc_id = _safe_filename(str((structure or {}).get("doc_id") or f"comparison_{index}"))
+        _write_json(output_dir / f"comparison_{index:02d}_{doc_id}.json", structure)
+
+    # 타깃 + 비교군을 한 파일로도 묶어 둔다(전체 조회용 + 누락/실패 추적용).
+    _write_json(
+        output_dir / "all_structures.json",
+        {
+            "target": target_structure,
+            "comparisons": comparison_structures,
+            "target_structured": target_structure is not None,
+            "comparison_input_count": comparison_input_count
+            if comparison_input_count is not None
+            else len(comparison_structures) + len(failures),
+            "comparison_structured_count": len(comparison_structures),
+            "failure_count": len(failures),
+            "failures": failures,
+        },
+    )
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z._-]", "_", value).strip("_")
+    return cleaned[:80] or "unknown"
 
 
 def build_target_structuring_input(state: PatentWorkflowState) -> dict | None:

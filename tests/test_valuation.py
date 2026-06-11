@@ -2802,8 +2802,8 @@ def test_reconcile_legal_scores_keeps_domestic_prior_art_metric():
             "right_stability": {
                 "score": 0,
                 "details": {
-                    "prior_art_overlap": {"score": 18},
-                    "claim_structure_stability": {"score": 7},
+                    "prior_art_overlap": {"score": 13},
+                    "independent_claim_clarity": {"score": 12},
                 },
             },
             "claim_protection": {"score": 24},
@@ -2815,7 +2815,7 @@ def test_reconcile_legal_scores_keeps_domestic_prior_art_metric():
 
     assert scored["score"] == 64
     assert scored["subscores"]["right_stability"]["score"] == 25
-    assert scored["subscores"]["right_stability"]["max_score"] == 35
+    assert scored["subscores"]["right_stability"]["max_score"] == 40
 
 
 def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_comparison_ready():
@@ -2830,8 +2830,8 @@ def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_c
             "right_stability": {
                 "score": 0,
                 "details": {
-                    "prior_art_overlap": {"score": 18},
-                    "claim_structure_stability": {"score": 7},
+                    "prior_art_overlap": {"score": 13},
+                    "independent_claim_clarity": {"score": 12},
                 },
             },
             "claim_protection": {"score": 24},
@@ -2842,7 +2842,7 @@ def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_c
     scored = reconcile_legal_scores(result, state=state)
 
     assert scored["subscores"]["right_stability"]["score"] == 25
-    assert scored["subscores"]["right_stability"]["max_score"] == 35
+    assert scored["subscores"]["right_stability"]["max_score"] == 40
     assert scored["score"] == 64
 
 
@@ -2862,13 +2862,13 @@ def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
     )
     result = {
         "subscores": {
-            "right_stability": {"score": 35},
+            "right_stability": {"score": 40},
             "claim_protection": {"score": 40},
             "portfolio_defensive_value": {
-                "score": 21,
+                "score": 16,
                 "details": {
-                    "portfolio_connection_coverage": {"score": 15},
-                    "overseas_right_coverage": {"score": 6},
+                    "portfolio_connection_coverage": {"score": 12},
+                    "overseas_right_coverage": {"score": 4},
                     "follow_on_right_signal": {"score": 0},
                 },
             },
@@ -2877,8 +2877,8 @@ def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
 
     scored = reconcile_legal_scores(result, state=state)
 
-    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 21
-    assert scored["subscores"]["portfolio_defensive_value"]["max_score"] == 25
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 16
+    assert scored["subscores"]["portfolio_defensive_value"]["max_score"] == 20
     assert scored["subscores"]["portfolio_defensive_value"]["details"]["follow_on_right_signal"]["score"] is None
     assert scored["score"] == 96
 
@@ -2895,8 +2895,8 @@ def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign
             "right_stability": {
                 "score": 0,
                 "details": {
-                    "prior_art_overlap": {"score": 18},
-                    "claim_structure_stability": {"score": 7},
+                    "prior_art_overlap": {"score": 13},
+                    "independent_claim_clarity": {"score": 7},
                 },
             },
             "claim_protection": {"score": 24},
@@ -2907,7 +2907,7 @@ def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign
     scored = reconcile_legal_scores(result, state=state)
 
     assert scored["subscores"]["right_stability"]["score"] == 7
-    assert scored["subscores"]["right_stability"]["max_score"] == 35
+    assert scored["subscores"]["right_stability"]["max_score"] == 40
     assert scored["subscores"]["right_stability"]["details"]["prior_art_overlap"]["score"] is None
     assert scored["score"] == 46
 
@@ -2926,9 +2926,9 @@ def test_reconcile_legal_scores_caps_missing_foreign_details_without_renormalizi
 
     scored = reconcile_legal_scores(result, state=state)
 
-    assert scored["subscores"]["right_stability"]["score"] == 10
-    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 21
-    assert scored["score"] == 71
+    assert scored["subscores"]["right_stability"]["score"] == 20
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 16
+    assert scored["score"] == 76
 
 
 def test_legal_axis_input_falls_back_to_kipris_api_citation_evidence(tmp_path):

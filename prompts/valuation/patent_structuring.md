@@ -86,7 +86,7 @@
 
 - `claim_element_id`: "1-e1", "1-e2"… (청구항번호-순번).
 - `claim_element_text`: 해당 청구항 문구 원문(또는 충실한 발췌).
-- `maps_to_key_element_id`: 이 문구가 1단계에서 뽑은 어느 구성요소(K…)에 해당하는지. **해당하는 구성요소가 없는 순수 한정구이면 null.**
+- `maps_to_key_element_id`: 이 문구가 1단계에서 뽑은 어느 구성요소(K…)에 해당하는지. **해당하는 구성요소가 없는 순수 한정구이면 null.** (반드시 JSON `null`로 쓴다. 문자열 `"null"`이나 `"none"`을 쓰지 않는다.)
 - `role`:
   - `essential`: 발명의 핵심 기능을 이루는 구성.
   - `supporting`: 핵심을 보조하는 구성.
@@ -175,7 +175,7 @@
 출력하기 전에 다음을 확인한다.
 
 - [ ] 주요 구성요소를 명세서(과제해결수단·효과)에서 뽑았는가? 청구항에서 역으로 만들지 않았는가?
-- [ ] 모든 `claim_element`의 `maps_to_key_element_id`가 실제 존재하는 K… 이거나 null인가?
+- [ ] 모든 `claim_element`의 `maps_to_key_element_id`가 실제 존재하는 K… 이거나 JSON null인가? (문자열 "null" 금지)
 - [ ] `in_independent_claim`을 실제 매핑 결과에 근거해 채웠는가? (독립항 매핑이 있으면 true)
 - [ ] `claim_clarity`를 형식 검사(`antecedent_ok`·`term_consistent`) 결과와 일치시켰는가? (문구에 흠이 있는데 self_clear로 두지 않았는가)
 - [ ] `clarity_issue`가 spec_resolved/unresolved인 구성요소에만 채워졌고, 문제 문구 ID를 가리키는가?

@@ -7,9 +7,22 @@ LLM이 생성한 구조화 JSON이 정해진 형식을 지켰는지만 코드로
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+_NULLISH_STRINGS = {"null", "none", "n/a", "nan", ""}
+
+
+def _none_if_nullish(value: Any) -> Any:
+    """문자열 "null"/"none"/"" 등을 실제 None으로 정규화한다.
+
+    LLM이 JSON null 대신 문자열 "null"을 넣는 흔한 실수를 흡수한다.
+    """
+    if isinstance(value, str) and value.strip().lower() in _NULLISH_STRINGS:
+        return None
+    return value
 
 
 class SpecSupport(BaseModel):
@@ -64,6 +77,11 @@ class ClaimElement(BaseModel):
     antecedent_ok: bool = True
     term_consistent: bool = True
 
+    @field_validator("maps_to_key_element_id", mode="before")
+    @classmethod
+    def _normalize_maps_to(cls, value: Any) -> Any:
+        return _none_if_nullish(value)
+
 
 class Claim(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -74,6 +92,11 @@ class Claim(BaseModel):
     depends_on: str | None = None
     added_limitation: str | None = None
     claim_elements: list[ClaimElement] = Field(default_factory=list)
+
+    @field_validator("depends_on", "added_limitation", mode="before")
+    @classmethod
+    def _normalize_nullable(cls, value: Any) -> Any:
+        return _none_if_nullish(value)
 
 
 class PatentStructure(BaseModel):
