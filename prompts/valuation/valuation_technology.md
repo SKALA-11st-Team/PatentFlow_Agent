@@ -67,10 +67,20 @@
   - `technical_content.solution`
   - `technical_content.effect`
   - `technical_content.detailed_description`
+- `technology_metrics.target_document_indicators`
+- `technology_metrics.similar_patents[].document_indicators`
 - `technology_metrics.warnings`
 - citation_evidence
 - prior_art_candidates
 - 국내특허는 CPC 기반, 해외특허는 IPC 기반 해당 국가 유사 특허 검색 결과
+
+정량 보조지표 사용 규칙:
+- `document_indicators`는 문서에 구현 관련 표현이 존재하는지 확인하는 참고값이며 세부점수를 자동 결정하지 않는다.
+- 언급 횟수가 많다는 이유만으로 차별성, 구현 난이도 또는 구현 구체성을 높게 평가하지 않는다.
+- 구성 요소와 절차의 실제 내용은 반드시 청구항, `technical_context`, `technical_content` 원문으로 확인한다.
+- `embodiment_mentions`, `figure_mentions`, `formula_mentions`, `parameter_mentions`, `data_structure_mentions`는 구현 설명 및 기술적 활용 가능성의 참고값으로만 사용한다.
+- `input_output_mentions`, `condition_branch_mentions`, `control_mentions`, `step_reference_mentions`는 구성 요소와 처리 절차 설명의 존재 여부를 확인하는 보조값으로만 사용한다.
+- 대상 특허와 비교문헌에 같은 키워드가 존재한다는 사실만으로 기술적으로 동일하다고 판단하지 않는다.
 
 
 ----------------------------------------

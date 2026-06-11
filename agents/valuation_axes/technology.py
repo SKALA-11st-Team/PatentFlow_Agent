@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_source_types
@@ -89,6 +90,11 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
     preprocessed = state.preprocessed_patent or {}
     sections = (preprocessed.get("sections") or {}) if isinstance(preprocessed, dict) else {}
     claims = (preprocessed.get("claims") or []) if isinstance(preprocessed, dict) else []
+    drawing_context = (
+        preprocessed.get("drawing_context")
+        if isinstance(preprocessed.get("drawing_context"), dict)
+        else {}
+    )
     metadata = {
         **(state.patent_structured or {}),
         **((preprocessed.get("metadata")) or {}),
@@ -110,7 +116,7 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
     artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
     similar_dir = Path(artifact_dir) / "similar_patents" if artifact_dir else None
     prior_art_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
-    return build_hybrid_context(
+    metrics = build_hybrid_context(
         metadata=metadata,
         kipris_api_data=state.kipris_api_data,
         representative_cpc=representative_cpc,
@@ -120,6 +126,79 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
         prior_art_dir=prior_art_dir,
         prior_art_context=state.prior_art_context,
     )
+    metrics["target_document_indicators"] = build_document_indicators(
+        text_parts=[
+            sections.get("solution"),
+            sections.get("effect"),
+            sections.get("detailed_description"),
+            sections.get("figure_description"),
+            drawing_context.get("representative_figure_detail"),
+        ],
+        claims=claims,
+    )
+    metrics["similar_patents"] = [
+        attach_comparison_document_indicators(item)
+        for item in metrics.get("similar_patents") or []
+    ]
+    return metrics
+
+
+DOCUMENT_INDICATOR_PATTERNS = {
+    "embodiment_mentions": r"실시예|실시\s*형태|example|embodiment|実施例|実施形態|实施例|具体实施方式",
+    "figure_mentions": r"(?:도|도면|fig(?:ure)?\.?|図|附图)\s*\d+",
+    "formula_mentions": r"수학식|산식|equation|formula|式\s*\d+|公式",
+    "parameter_mentions": r"파라미터|매개변수|임계값|가중치|parameter|threshold|weight|閾値|参数|阈值",
+    "data_structure_mentions": r"데이터\s*구조|테이블|리스트|배열|행렬|벡터|그래프|data\s*structure|table|list|array|matrix|vector|graph",
+    "input_output_mentions": r"입력|출력|input|output|入力|出力|输入|输出",
+    "condition_branch_mentions": r"조건|분기|경우|이면|반복|\b(?:condition|branch|if|when|loop)\b|条件|分岐|分支",
+    "control_mentions": r"제어|피드백|상태|동기화|control|feedback|state|synchroni[sz]|制御|控制|反馈",
+    "step_reference_mentions": r"\bS\d{2,4}\b|단계|step\s*\d+|ステップ|步骤",
+}
+
+
+def build_document_indicators(
+    *,
+    text_parts: list[Any],
+    claims: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    text = "\n".join(normalize_text(value) for value in text_parts if normalize_text(value))
+    claims = claims or []
+    indicators = {
+        key: len(re.findall(pattern, text, flags=re.IGNORECASE))
+        for key, pattern in DOCUMENT_INDICATOR_PATTERNS.items()
+    }
+    return {
+        "text_available": bool(text),
+        "independent_claim_count": sum(1 for claim in claims if claim.get("is_independent")),
+        "dependent_claim_count": sum(1 for claim in claims if not claim.get("is_independent")),
+        **indicators,
+    }
+
+
+def attach_comparison_document_indicators(item: dict[str, Any]) -> dict[str, Any]:
+    technical_content = item.get("technical_content")
+    if not isinstance(technical_content, dict):
+        technical_content = {}
+    claims = item.get("representative_claims")
+    if not isinstance(claims, list):
+        claims = []
+    structured_text_parts = [
+        technical_content.get("problem"),
+        technical_content.get("solution"),
+        technical_content.get("effect"),
+        technical_content.get("detailed_description"),
+    ]
+    return {
+        **item,
+        "document_indicators": build_document_indicators(
+            text_parts=(
+                structured_text_parts
+                if any(normalize_text(value) for value in structured_text_parts)
+                else [item.get("pdf_text")]
+            ),
+            claims=[claim for claim in claims if isinstance(claim, dict)],
+        ),
+    }
 
 
 def build_similar_context(

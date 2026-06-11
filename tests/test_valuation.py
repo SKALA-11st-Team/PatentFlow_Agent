@@ -1526,6 +1526,77 @@ def test_technology_metrics_are_added_to_payload(monkeypatch):
     assert captured_prompts[0]["artifact_name"] == "technology_input"
 
 
+def test_technology_metrics_include_target_document_indicators(monkeypatch):
+    from agents.valuation_axes import technology
+
+    monkeypatch.setattr(
+        technology,
+        "build_hybrid_context",
+        lambda **kwargs: {"similar_patents": [], "warnings": []},
+    )
+    state = PatentWorkflowState(
+        preprocessed_patent={
+            "claims": [
+                {"claim_no": 1, "text": "독립항", "is_independent": True},
+                {"claim_no": 2, "text": "종속항", "is_independent": False},
+            ],
+            "sections": {
+                "solution": "입력 벡터를 행렬에 저장하고 임계값 조건에 따라 분기한다.",
+                "effect": "출력 정확도가 향상된다.",
+                "detailed_description": "실시예에서 파라미터 가중치를 계산하고 피드백 제어를 수행한다.",
+                "figure_description": "도 1은 처리 흐름을 나타낸다.",
+            },
+            "drawing_context": {
+                "representative_figure_detail": "S110 입력 후 S120 출력 단계를 수행한다."
+            },
+        }
+    )
+
+    indicators = technology.build_technology_metrics(state)["target_document_indicators"]
+
+    assert indicators["independent_claim_count"] == 1
+    assert indicators["dependent_claim_count"] == 1
+    assert indicators["embodiment_mentions"] == 1
+    assert indicators["figure_mentions"] == 1
+    assert indicators["parameter_mentions"] >= 2
+    assert indicators["data_structure_mentions"] >= 2
+    assert indicators["input_output_mentions"] >= 4
+    assert indicators["condition_branch_mentions"] >= 2
+    assert indicators["control_mentions"] >= 2
+    assert indicators["step_reference_mentions"] >= 2
+
+
+def test_technology_metrics_include_comparison_document_indicators(monkeypatch):
+    from agents.valuation_axes import technology
+
+    monkeypatch.setattr(
+        technology,
+        "build_hybrid_context",
+        lambda **kwargs: {
+            "similar_patents": [
+                {
+                    "application_number": "1020200000001",
+                    "representative_claims": [
+                        {"claim_no": 1, "is_independent": True, "text": "시스템"}
+                    ],
+                    "technical_content": {
+                        "solution": "입력 배열을 처리한다.",
+                        "detailed_description": "실시예에서 조건 분기를 수행한다.",
+                    },
+                }
+            ],
+            "warnings": [],
+        },
+    )
+
+    item = technology.build_technology_metrics(PatentWorkflowState())["similar_patents"][0]
+
+    assert item["document_indicators"]["independent_claim_count"] == 1
+    assert item["document_indicators"]["embodiment_mentions"] == 1
+    assert item["document_indicators"]["data_structure_mentions"] == 1
+    assert item["document_indicators"]["condition_branch_mentions"] == 2
+
+
 def test_foreign_technology_metrics_use_ipc_and_country(monkeypatch):
     captured_payloads = []
 
