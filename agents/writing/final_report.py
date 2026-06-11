@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
+from services.evidence.compression_service import parse_json_object
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.observability.langsmith_service import trace
@@ -21,10 +22,16 @@ def run_final_report_agent(state: PatentWorkflowState) -> PatentWorkflowState:
         raise RuntimeError("Final report generation requires valuation_result.")
 
     body_markdown = run_final_report_llm_required(state, valuation_result)
-    valuation_result["final_report_markdown"] = build_complete_final_report_markdown(
-        state,
-        body_markdown,
+    report_markdown = build_complete_final_report_markdown(state, body_markdown)
+    # WRIT-SC: 점수-서술 일관성 self-critique 1회 + 불일치 시 교정 1회. 실패는 비치명(원본 유지).
+    report_markdown, critique_meta = apply_report_self_critique(
+        state=state,
+        valuation_result=valuation_result,
+        report_markdown=report_markdown,
     )
+    valuation_result["final_report_markdown"] = report_markdown
+    if critique_meta is not None:
+        valuation_result["report_self_critique"] = critique_meta
     state.valuation_result = valuation_result
     state.current_stage = "final_check"
     return state
@@ -52,6 +59,123 @@ def run_final_report_llm_required(
     if not markdown:
         raise RuntimeError("LLM final report response was empty.")
     return markdown
+
+
+def apply_report_self_critique(
+    *,
+    state: PatentWorkflowState,
+    valuation_result: dict[str, Any],
+    report_markdown: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """WRIT-SC: 점수-서술 일관성 critique 1회 + 불일치 시 교정 1회를 적용한다.
+
+    critique/교정 어느 단계가 실패해도 원본 보고서를 그대로 반환한다(비치명).
+    """
+    if not settings.report_self_critique_enabled:
+        return report_markdown, None
+
+    try:
+        critique = run_report_critique_llm(valuation_result, report_markdown)
+    except Exception as exc:
+        return report_markdown, {
+            "checked": False,
+            "revised": False,
+            "warning": f"report_critique_failed:{exc.__class__.__name__}:{str(exc)[:200]}",
+        }
+
+    meta: dict[str, Any] = {
+        "checked": True,
+        "consistent": critique["consistent"],
+        "issues": critique["issues"],
+        "revised": False,
+    }
+    if critique["consistent"] or not critique["issues"]:
+        return report_markdown, meta
+
+    try:
+        revised = run_report_revision_llm(
+            state=state,
+            valuation_result=valuation_result,
+            report_markdown=report_markdown,
+            issues=critique["issues"],
+        )
+    except Exception as exc:
+        meta["warning"] = f"report_revision_failed:{exc.__class__.__name__}:{str(exc)[:200]}"
+        return report_markdown, meta
+    if not revised:
+        meta["warning"] = "report_revision_empty"
+        return report_markdown, meta
+    meta["revised"] = True
+    return revised, meta
+
+
+def run_report_critique_llm(valuation_result: dict[str, Any], report_markdown: str) -> dict[str, Any]:
+    # critique는 판정 작업이므로 supervisor 모델을 사용한다(작성 모델보다 저렴·빠름).
+    template = load_prompt("writing/report_critique.md").strip()
+    payload = {
+        "valuation_result": compact_final_report_valuation_result(valuation_result),
+        "report_markdown": report_markdown,
+    }
+    raw = call_llm(
+        f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}",
+        model=settings.openai_supervisor_model,
+        temperature=0,
+        reasoning_effort=settings.openai_supervisor_reasoning_effort,
+    )
+    parsed = parse_json_object(raw)
+    if not parsed:
+        raise ValueError("Report critique response was not a valid JSON object.")
+    return {
+        "consistent": bool(parsed.get("consistent", True)),
+        "issues": [str(issue).strip() for issue in (parsed.get("issues") or []) if str(issue).strip()],
+    }
+
+
+def run_report_revision_llm(
+    *,
+    state: PatentWorkflowState,
+    valuation_result: dict[str, Any],
+    report_markdown: str,
+    issues: list[str],
+) -> str:
+    # 교정은 서술 품질 유지를 위해 작성(writing) 모델을 사용한다.
+    rights_scope_context = build_rights_scope_context(state)
+    revised = sanitize_final_report_markdown(
+        call_llm(
+            build_report_revision_prompt(valuation_result, report_markdown, issues),
+            model=settings.openai_writing_model,
+            reasoning_effort=settings.openai_writing_reasoning_effort,
+            verbosity=settings.openai_writing_verbosity,
+            timeout=settings.openai_writing_timeout_seconds,
+        ).strip(),
+        include_rights_scope_reference=bool(
+            (rights_scope_context or {}).get("representative_drawing")
+        ),
+    )
+    return revised.strip()
+
+
+def build_report_revision_prompt(
+    valuation_result: dict[str, Any],
+    report_markdown: str,
+    issues: list[str],
+) -> str:
+    instructions = "\n".join(
+        [
+            "당신은 특허 가치평가 최종 보고서의 점수-서술 불일치를 교정하는 Agent입니다.",
+            "아래 Input JSON의 report_markdown 보고서를 issues에 나열된 불일치만 고쳐 다시 작성하세요.",
+            "- valuation_result의 점수·등급·종합 검토 의견(recommendation)을 정답 기준으로 삼고, 서술이 점수와 어긋나는 부분만 수정하세요.",
+            "- 보고서의 구조(섹션 제목·표·총점 표기)와 점수·등급 수치는 변경하지 말고 그대로 유지하세요.",
+            "- 수정이 필요 없는 문장·표·링크는 그대로 두세요.",
+            "- 결과는 수정된 보고서 Markdown 전문만 출력하세요(설명·코드펜스 금지).",
+        ]
+    )
+    payload = {
+        "issues": issues,
+        "valuation_result": compact_final_report_valuation_result(valuation_result),
+        "report_markdown": report_markdown,
+    }
+    return f"{instructions}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
 
 
 def sanitize_final_report_markdown(

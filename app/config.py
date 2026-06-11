@@ -100,6 +100,9 @@ class Settings(BaseModel):
     valuation_seed_supported: bool = getenv("VALUATION_SEED_SUPPORTED", "false").lower() == "true"
     valuation_model: str = getenv("VALUATION_MODEL") or openai_chat_model
     fetch_news_full_text: bool = getenv("FETCH_NEWS_FULL_TEXT", "true").lower() == "true"
+    # WRIT-SC: 최종 레포트 self-critique(점수-서술 일관성 검증 1회 + 불일치 시 교정 1회).
+    # 실패는 비치명(원본 레포트 유지)이며, 끄려면 false로 설정한다.
+    report_self_critique_enabled: bool = getenv("REPORT_SELF_CRITIQUE_ENABLED", "true").lower() == "true"
     enable_shared_db_fallback: bool = getenv("ENABLE_SHARED_DB_FALLBACK", "false").lower() == "true"
     
     # Vector DB (pgvector) 접속 정보.
