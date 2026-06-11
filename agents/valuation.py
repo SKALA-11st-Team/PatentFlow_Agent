@@ -199,6 +199,10 @@ def subscore_override_block(state: PatentWorkflowState, axis: str) -> str:
         else:
             lines.append(f"- {label}({key}): {default_value}점 → {max_score}점")
     lines.append(f"- 위 subscore 만점 합계: {sum(configured.values())}점")
+    lines.append(
+        "- 단, 세부지표(details)의 개별 배점은 프롬프트 본문 기준을 그대로 유지해 채점하세요. "
+        "세부지표 부분합은 시스템이 위 배점으로 자동 변환합니다(이중 변환 금지)."
+    )
     return "\n".join(lines)
 
 
@@ -321,8 +325,11 @@ def build_final_valuation_result(
     # total_score는 기존 의미(축 점수 단순 합, 0~400)를 유지하고, 가중치는 average_score에만 반영한다.
     average_score = weighted_average_score(validated_axes, axis_weights)
     final_grade = grade_for_score(average_score, cutoffs)
+    # `or 60`은 유효 설정값 0(항상 유지 권고)을 기본값 60으로 되돌리는 버그라 None 체크로 처리한다.
+    configured_threshold = applied_config.get("maintainThreshold")
     final_indicator = score_to_final_recommendation(
-        average_score, threshold=float(applied_config.get("maintainThreshold") or 60)
+        average_score,
+        threshold=60.0 if configured_threshold is None else float(configured_threshold),
     )
     missing_information = unique_texts(
         item for axis in validated_axes.values() for item in axis.get("missing_information", [])

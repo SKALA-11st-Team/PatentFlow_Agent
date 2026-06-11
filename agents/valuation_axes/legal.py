@@ -106,9 +106,23 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
             excluded_detail_keys=excluded,
         )
         raw_score = coerce_int(item.get("score"))
+        # 세부지표(details) 점수는 프롬프트 본문의 기본 배점(35/40/25 스케일) 기준으로 보고된다.
+        # 운영 설정으로 subscore 만점이 바뀌면 detail 부분합을 설정 배점으로 비례 변환해야 한다 —
+        # 변환 없이는 만점 특허도 detail_sum(기본 스케일)이 그대로 쓰여 축 점수가 체계적으로 왜곡된다.
+        default_max = DEFAULT_SUBSCORE_WEIGHTS["legal"][key]
+        default_effective_max = default_max
+        if foreign_patent and key == "right_stability":
+            default_effective_max = legal_subscore_max_without_details(
+                max_score=default_max,
+                details=details,
+                excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS,
+                detail_max_map=LEGAL_DETAIL_MAX,
+            )
         score_status = None
         if not missing_keys and detail_sum is not None:
             score = detail_sum
+            if effective_max_score != default_effective_max and default_effective_max > 0:
+                score = round(detail_sum * effective_max_score / default_effective_max)
         elif detail_sum is None:
             # 세부지표가 전무하면 부분합 대신 LLM 자기보고로 폴백하되 표면화한다.
             score = raw_score if raw_score is not None else 0

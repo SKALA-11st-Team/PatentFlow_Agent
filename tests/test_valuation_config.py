@@ -173,6 +173,71 @@ def test_legal_detail_max_scales_with_right_stability_weight():
     }
 
 
+def test_reconcile_legal_scores_rescales_detail_sums_to_configured_max():
+    """세부지표(details)는 프롬프트 본문(기본 배점 35/40/25) 기준으로 보고되므로,
+    설정 배점이 다르면 detail 부분합을 비례 변환해야 한다(리뷰 HIGH 회귀 테스트).
+    만점 특허 + 50/30/20 설정 → 변환 없으면 (35+40+25)/100=100이 아니라 85가 됐다."""
+    state = PatentWorkflowState(
+        user_input={
+            "valuation_config": resolve_valuation_config(
+                {"subscoreWeights": {"legal": {"right_stability": 50, "claim_protection": 30, "portfolio_defensive_value": 20}}}
+            )
+        },
+        patent_structured={"country": "KR"},
+    )
+    perfect = {
+        "subscores": {
+            "right_stability": {
+                "score": 35,
+                "details": {
+                    "prior_art_overlap": {"score": 25},
+                    "claim_structure_stability": {"score": 10},
+                },
+            },
+            "claim_protection": {
+                "score": 40,
+                "details": {
+                    "core_solution_coverage": {"score": 12},
+                    "independent_claim_scope": {"score": 12},
+                    "dependent_claim_support": {"score": 10},
+                    "claim_type_diversity": {"score": 6},
+                },
+            },
+            "portfolio_defensive_value": {
+                "score": 25,
+                "details": {
+                    "portfolio_connection_coverage": {"score": 15},
+                    "overseas_right_coverage": {"score": 6},
+                    "follow_on_right_signal": {"score": 4},
+                },
+            },
+        }
+    }
+
+    reconciled = reconcile_legal_scores(perfect, state=state)
+
+    # 만점은 설정 배점으로 변환되어 50+30+20=100점이어야 한다.
+    assert reconciled["subscores"]["right_stability"]["score"] == 50
+    assert reconciled["subscores"]["claim_protection"]["score"] == 30
+    assert reconciled["subscores"]["portfolio_defensive_value"]["score"] == 20
+    assert reconciled["score"] == 100
+
+    # 기본 배점에서는 변환이 일어나지 않는다(기존 동작 보존).
+    default_state = PatentWorkflowState(user_input={}, patent_structured={"country": "KR"})
+    legacy = reconcile_legal_scores(perfect, state=default_state)
+    assert legacy["score"] == 100
+    assert legacy["subscores"]["right_stability"]["score"] == 35
+
+
+def test_build_final_valuation_result_honors_zero_maintain_threshold():
+    """maintainThreshold=0(항상 유지 권고)이 `or 60`으로 무시되던 버그 회귀 테스트."""
+    config = resolve_valuation_config({"maintainThreshold": 0})
+
+    result = build_final_valuation_result(four_axes(10, 10, 10, 10), config=config)
+
+    assert result["recommendation"] == "유지 권고"
+
+
 def test_reconcile_legal_scores_uses_configured_subscore_max():
     state = PatentWorkflowState(
         user_input={
