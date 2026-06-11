@@ -165,7 +165,8 @@ jobs:
         run: |
           cp -R k8s /tmp/agent-k8s
           sed -i "s/namespace: patentflow/namespace: ${KUBE_NAMESPACE}/g" /tmp/agent-k8s/*.yaml
-          sed -i "s|harbor.example.com/patentflow/team11-patentflow-agent:placeholder|${IMAGE_REF}|g" /tmp/agent-k8s/deployment.yaml
+          # 게이트웨이(gateway-deployment.yaml)도 동일 이미지를 쓰므로 모든 매니페스트에 치환한다.
+          sed -i "s|harbor.example.com/patentflow/team11-patentflow-agent:placeholder|${IMAGE_REF}|g" /tmp/agent-k8s/*.yaml
 
       - name: Apply Harbor image pull secret
         run: |
