@@ -29,7 +29,7 @@ class Settings(BaseModel):
     openai_chat_model: str = getenv("OPENAI_CHAT_MODEL") or getenv("OPENAI_MODEL", "gpt-5-mini")
     openai_supervisor_model: str | None = getenv("OPENAI_SUPERVISOR_MODEL", "gpt-5-nano")
     # 채점(가치평가 축) 전용 모델. 미설정 시 VALUATION_MODEL → openai_chat_model 순으로 폴백.
-    # 점수 결정성이 필요하면 temperature를 지원하는 모델(gpt-4.1-mini 등)을 지정한다.
+    # 특허 가치평가 품질을 우선하면 gpt-5 계열을 지정한다.
     openai_valuation_model: str | None = getenv("OPENAI_VALUATION_MODEL")
     # 최종 보고서·요약 작성 전용 모델. 미설정 시 openai_chat_model로 폴백.
     # 서술 품질을 위해 gpt-5 같은 상위 모델을 쓰고 싶을 때 지정한다(작성은 KIPRIS
@@ -75,7 +75,7 @@ class Settings(BaseModel):
     # SK AX(Tavily/Google) 사이트 검색 HTTP 타임아웃(초). raw_content 수집 때문에
     # 5초로는 자주 ReadTimeout이 나므로 기본을 넉넉히 둔다.
     skax_search_timeout_seconds: int = int(getenv("SKAX_SEARCH_TIMEOUT_SECONDS", "20"))
-    max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "4"))
+    max_evidence_search_rounds: int = int(getenv("MAX_EVIDENCE_SEARCH_ROUNDS", "3"))
     workflow_recursion_limit: int = int(getenv("WORKFLOW_RECURSION_LIMIT", "80"))
     evaluate_timeout_seconds: int = int(getenv("EVALUATE_TIMEOUT_SECONDS", "180"))
     evaluate_max_concurrency: int = int(getenv("EVALUATE_MAX_CONCURRENCY", "2"))
