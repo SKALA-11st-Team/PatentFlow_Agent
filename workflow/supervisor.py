@@ -526,6 +526,44 @@ TECHNOLOGY_DETAIL_KEYS = {
     ),
 }
 
+TECHNOLOGY_SCORE_CANDIDATES = {
+    "configuration_operation_differentiation": {0, 8, 17, 25},
+    "effect_differentiation": {0, 5, 10, 15},
+    "imitation_avoidance_difficulty": {0, 3, 7, 10},
+    "component_specificity": {0, 7, 14, 20},
+    "procedure_specificity": {0, 7, 14, 20},
+    "implementation_utilization_specificity": {0, 3, 7, 10},
+}
+
+TECHNOLOGY_MAX_SCORE_LIMITATION_TERMS = (
+    "명시되지",
+    "기재되지",
+    "불명확",
+    "부족",
+    "제한적",
+    "제한되어",
+    "추상적",
+    "추가 설계",
+    "추가적인 설계",
+    "구현자 재량",
+)
+
+
+def technology_detail_has_max_score_conflict(detail: dict[str, Any]) -> bool:
+    missing = detail.get("missing_information")
+    if isinstance(missing, list) and any(str(value).strip() for value in missing):
+        return True
+
+    limitation_texts: list[str] = []
+    for field in ("difference_points", "score_reason"):
+        value = detail.get(field)
+        if isinstance(value, list):
+            limitation_texts.extend(str(item) for item in value)
+        elif value:
+            limitation_texts.append(str(value))
+    combined = " ".join(limitation_texts)
+    return any(term in combined for term in TECHNOLOGY_MAX_SCORE_LIMITATION_TERMS)
+
 
 def check_technology_axis_rules(axis_result: dict[str, Any]) -> tuple[str, list[str]]:
     subscores = axis_result.get("subscores")
@@ -533,17 +571,31 @@ def check_technology_axis_rules(axis_result: dict[str, Any]) -> tuple[str, list[
         return "valuation_retry", ["technology 상세 하위 점수와 근거가 없습니다."]
 
     issues: list[str] = []
+    calculated_axis_score = 0
     for subscore_key, detail_keys in TECHNOLOGY_DETAIL_KEYS.items():
         subscore = subscores.get(subscore_key)
         details = subscore.get("details") if isinstance(subscore, dict) else None
         if not isinstance(details, dict):
             issues.append(f"technology 상세 근거가 없습니다: {subscore_key}")
             continue
+        calculated_subscore = 0
         for detail_key in detail_keys:
             detail = details.get(detail_key)
             if not isinstance(detail, dict):
                 issues.append(f"technology 세부 근거 객체가 없습니다: {detail_key}")
                 continue
+            score = detail.get("score")
+            candidates = TECHNOLOGY_SCORE_CANDIDATES[detail_key]
+            if score not in candidates:
+                issues.append(
+                    f"technology 허용되지 않은 세부점수입니다: {detail_key}={score}"
+                )
+            else:
+                calculated_subscore += score
+                if score == max(candidates) and technology_detail_has_max_score_conflict(detail):
+                    issues.append(
+                        f"technology 최고점과 누락·추가설계 근거가 모순됩니다: {detail_key}"
+                    )
             assessment_status = detail.get("assessment_status")
             if assessment_status not in {"evaluated", "insufficient_evidence"}:
                 issues.append(f"technology assessment_status가 유효하지 않습니다: {detail_key}")
@@ -572,6 +624,24 @@ def check_technology_axis_rules(axis_result: dict[str, Any]) -> tuple[str, list[
                 missing = detail.get("missing_information")
                 if not isinstance(missing, list) or not any(str(value).strip() for value in missing):
                     issues.append(f"technology 자료 부족 내용이 없습니다: {detail_key}")
+                if score != 0:
+                    issues.append(
+                        f"technology 자료 부족 상태는 0점이어야 합니다: {detail_key}={score}"
+                    )
+
+        if isinstance(subscore, dict):
+            if subscore.get("score") != calculated_subscore:
+                issues.append(
+                    f"technology 하위점수 합계가 일치하지 않습니다: "
+                    f"{subscore_key}={subscore.get('score')}, 계산값={calculated_subscore}"
+                )
+            calculated_axis_score += calculated_subscore
+
+    if axis_result.get("score") != calculated_axis_score:
+        issues.append(
+            f"technology 총점 합계가 일치하지 않습니다: "
+            f"score={axis_result.get('score')}, 계산값={calculated_axis_score}"
+        )
 
     return ("valuation_retry" if issues else "passed"), issues
 
