@@ -11,6 +11,13 @@ metadata:
 spec:
   replicas: 1
   revisionHistoryLimit: 3
+  # INFRA-12: agent deployment와 동일 — 공유 클러스터 자원 부족으로 서지 파드가 Pending에
+  # 멈추는 문제를 막기 위해 서지 없이 교체한다(짧은 중단 허용).
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: team11-patentflow-unified-api
