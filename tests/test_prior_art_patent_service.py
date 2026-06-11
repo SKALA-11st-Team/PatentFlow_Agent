@@ -1,4 +1,8 @@
-from services.patent.prior_art_patent_service import resolve_prior_art_candidate
+from services.patent.prior_art_patent_service import (
+    collect_prior_art_candidates,
+    prior_art_legal_content_from_markdown,
+    resolve_prior_art_candidate,
+)
 
 
 class Response:
@@ -15,6 +19,38 @@ class Session:
     def get(self, url, timeout=None):
         self.calls.append({"url": url, "timeout": timeout})
         return Response()
+
+
+def test_prior_art_fulltext_without_parsed_claims_has_separate_status():
+    result = prior_art_legal_content_from_markdown(
+        "(57)【要約】 統計的な工程監視を行う装置。",
+        country_code="JP",
+    )
+
+    assert result["comparison_status"] == "fulltext_claims_unparsed"
+    assert result["representative_claims"] == []
+
+
+def test_collect_prior_art_candidates_excludes_kind_code_digits_from_kr_document_number():
+    candidates = collect_prior_art_candidates(
+        target_metadata={
+            "prior_art": [
+                "KR102284539 B1",
+                "KR102311787 B1",
+                "KR1020210131720 A",
+            ]
+        },
+        citation_documents=[],
+    )
+
+    by_display = {candidate["display_number"]: candidate for candidate in candidates}
+
+    assert by_display["KR102284539 B1"]["standard_number"] == "102284539"
+    assert by_display["KR102284539 B1"]["kind_code"] == "B1"
+    assert by_display["KR102311787 B1"]["standard_number"] == "102311787"
+    assert by_display["KR102311787 B1"]["kind_code"] == "B1"
+    assert by_display["KR1020210131720 A"]["standard_number"] == "1020210131720"
+    assert by_display["KR1020210131720 A"]["kind_code"] == "A"
 
 
 def test_resolve_foreign_prior_art_collects_registration_fulltext(monkeypatch, tmp_path):
@@ -123,4 +159,7 @@ def test_resolve_foreign_prior_art_falls_back_to_google_patents_pdf(monkeypatch,
     assert result["foreign_fulltext_type"] == "google_patents"
     assert result["literature_number"] == "US20100241261A1"
     assert result["pdf_collected"] is True
-    assert "What is claimed is" in result["pdf_text"]
+    assert "CLAIMS" in result["pdf_text"]
+    assert result["representative_claims"][0]["claim_no"] == 1
+    assert result["representative_claims"][0]["text"] == "A method comprising a processor and a memory."
+    assert result["comparison_status"] == "claim_comparison_ready"

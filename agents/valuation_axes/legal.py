@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_types_or_axes
+from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_source_types
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context, unique_texts
 from schemas.valuation import DEFAULT_SUBSCORE_WEIGHTS
 from workflow.state import PatentWorkflowState
@@ -35,6 +35,7 @@ FOREIGN_LEGAL_EXCLUDED_DETAILS = {"prior_art_overlap"}
 LEGAL_DETAIL_MAX = {
     "prior_art_overlap": 25,
     "claim_structure_stability": 10,
+    "follow_on_right_signal": 4,
 }
 
 
@@ -52,16 +53,23 @@ def legal_detail_max_map(subscore_max: dict[str, int]) -> dict[str, int]:
     """right_stability 만점이 조정되면 그 하위 세부지표(prior_art_overlap/claim_structure_stability)
     배점도 같은 비율로 스케일한다(합계는 right_stability 만점과 정확히 일치)."""
     right_stability_max = int(subscore_max.get("right_stability") or 0)
-    default_total = sum(LEGAL_DETAIL_MAX.values())  # 35
+    # follow_on_right_signal은 portfolio_defensive_value 하위라 합산 기준(35)에서 제외한다.
+    default_total = LEGAL_DETAIL_MAX["prior_art_overlap"] + LEGAL_DETAIL_MAX["claim_structure_stability"]  # 35
     if right_stability_max == default_total:
         return dict(LEGAL_DETAIL_MAX)
     if right_stability_max <= 0 or default_total <= 0:
-        return {key: 0 for key in LEGAL_DETAIL_MAX}
+        return {
+            "prior_art_overlap": 0,
+            "claim_structure_stability": 0,
+            "follow_on_right_signal": LEGAL_DETAIL_MAX["follow_on_right_signal"],
+        }
     prior_art = round(LEGAL_DETAIL_MAX["prior_art_overlap"] * right_stability_max / default_total)
     prior_art = max(0, min(right_stability_max, prior_art))
     return {
         "prior_art_overlap": prior_art,
         "claim_structure_stability": right_stability_max - prior_art,
+        # follow_on_right_signal은 portfolio_defensive_value 하위라 right_stability 스케일과 무관하다.
+        "follow_on_right_signal": LEGAL_DETAIL_MAX["follow_on_right_signal"],
     }
 # 각 권리성 subscore가 가져야 할 세부지표 키 전체 목록(docs/valuation_legal 공표 기준).
 LEGAL_SUBSCORE_DETAIL_KEYS = {
@@ -86,24 +94,30 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
     total = 0
     total_max = 0
     foreign_patent = is_foreign_patent(state)
+    exclude_prior_art_metric = foreign_patent and not has_comparison_ready_prior_art(state)
+    exclude_citing_metric = foreign_patent and not has_available_citing_signal(state)
     subscore_max_map = legal_subscore_max_map(state)
     detail_max_map = legal_detail_max_map(subscore_max_map)
     for key, max_score in subscore_max_map.items():
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
+        excluded_detail_keys: set[str] = set()
+        if exclude_prior_art_metric and key == "right_stability":
+            excluded_detail_keys.update(FOREIGN_LEGAL_EXCLUDED_DETAILS)
+        if exclude_citing_metric and key == "portfolio_defensive_value":
+            excluded_detail_keys.add("follow_on_right_signal")
         effective_max_score = max_score
-        if foreign_patent and key == "right_stability":
+        if excluded_detail_keys:
             effective_max_score = legal_subscore_max_without_details(
                 max_score=max_score,
                 details=details,
-                excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS,
+                excluded_detail_keys=excluded_detail_keys,
                 detail_max_map=detail_max_map,
             )
-        excluded = FOREIGN_LEGAL_EXCLUDED_DETAILS if foreign_patent and key == "right_stability" else None
         detail_sum, missing_keys = sum_detail_scores(
             details,
             expected_keys=LEGAL_SUBSCORE_DETAIL_KEYS.get(key, []),
-            excluded_detail_keys=excluded,
+            excluded_detail_keys=excluded_detail_keys or None,
         )
         raw_score = coerce_int(item.get("score"))
         # 세부지표(details) 점수는 프롬프트 본문의 기본 배점(35/40/25 스케일) 기준으로 보고된다.
@@ -111,11 +125,11 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
         # 변환 없이는 만점 특허도 detail_sum(기본 스케일)이 그대로 쓰여 축 점수가 체계적으로 왜곡된다.
         default_max = DEFAULT_SUBSCORE_WEIGHTS["legal"][key]
         default_effective_max = default_max
-        if foreign_patent and key == "right_stability":
+        if excluded_detail_keys:
             default_effective_max = legal_subscore_max_without_details(
                 max_score=default_max,
                 details=details,
-                excluded_detail_keys=FOREIGN_LEGAL_EXCLUDED_DETAILS,
+                excluded_detail_keys=excluded_detail_keys,
                 detail_max_map=LEGAL_DETAIL_MAX,
             )
         score_status = None
@@ -144,12 +158,46 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
         total += score
         total_max += effective_max_score
     total = normalize_score_to_100(total, total_max)
-    return {
+    reconciled_result = {
         **result,
         "subscores": {**subscores, **reconciled},
         "score": total,
         "grade": grade_for_score(total),
     }
+    return sanitize_foreign_legal_information_gaps(
+        reconciled_result,
+        exclude_citing_metric=exclude_citing_metric,
+        foreign_patent=is_foreign_patent(state),
+    )
+
+
+def sanitize_foreign_legal_information_gaps(
+    result: dict[str, Any],
+    *,
+    exclude_citing_metric: bool,
+    foreign_patent: bool,
+) -> dict[str, Any]:
+    if not foreign_patent:
+        return result
+
+    def should_remove(value: Any) -> bool:
+        text = normalize_text(value).lower()
+        if exclude_citing_metric and any(
+            token in text for token in ("피인용", "후속 참조", "후속 권리화", "citing signal")
+        ):
+            return True
+        return (
+            any(token in text for token in ("관련 특허군", "포트폴리오", "해외 출원", "해외 패밀리"))
+            and "청구항" in text
+            and any(token in text for token in ("부재", "미제공", "전문", "상세", "확보"))
+        )
+
+    sanitized = dict(result)
+    for field in ("risk_factors", "missing_information"):
+        values = result.get(field)
+        if isinstance(values, list):
+            sanitized[field] = [value for value in values if not should_remove(value)]
+    return sanitized
 
 
 def sum_detail_scores(
@@ -200,6 +248,17 @@ def is_foreign_patent(state: PatentWorkflowState) -> bool:
     return bool(country and country.upper() != "KR")
 
 
+def has_comparison_ready_prior_art(state: PatentWorkflowState) -> bool:
+    evidence = state.citation_evidence or (state.kipris_api_data or {}).get("citation_evidence") or {}
+    collection = evidence.get("prior_art_collection") if isinstance(evidence, dict) else {}
+    return int((collection or {}).get("comparison_ready_count") or 0) > 0
+
+
+def has_available_citing_signal(state: PatentWorkflowState) -> bool:
+    stats = (state.kipris_api_data or {}).get("citing_stats") or {}
+    return isinstance(stats, dict) and bool(stats.get("available", bool(stats)))
+
+
 def coerce_int(value: Any) -> int | None:
     try:
         return int(value)
@@ -209,10 +268,9 @@ def coerce_int(value: Any) -> int | None:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     del state
-    return select_by_types_or_axes(
+    return select_by_source_types(
         items,
         source_types={"portfolio_context", "patent_api", "prior_art", "citation"},
-        axes={AXIS},
     )
 
 
@@ -224,6 +282,10 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
         prior_art_candidates=valuation_prior_art_candidates(state),
         citation_evidence=valuation_citation_evidence(state),
     )
+    preprocessed_claim_stats = (state.preprocessed_patent or {}).get("claim_stats")
+    if isinstance(preprocessed_claim_stats, dict) and preprocessed_claim_stats:
+        payload["patent"]["claim_stats"] = preprocessed_claim_stats
+        payload["patent"]["claim_availability"]["claim_stats_provided"] = True
     payload["legal_context"] = build_legal_context(payload=payload, state=state, labels={})
     return payload
 
@@ -262,8 +324,11 @@ def enforce_prior_art_comparison_status(
         return result
 
     overlap["compared_prior_art_count"] = ready_count
-    overlap["assessment_status"] = "comparison_ready" if ready_count else "unknown"
-    if ready_count and int(collection.get("identifier_only_count") or 0) == 0:
+    overlap["assessment_status"] = "claim_comparison_ready" if ready_count else "unknown"
+    unresolved_count = int(collection.get("identifier_only_count") or 0) + int(
+        collection.get("fulltext_claims_unparsed_count") or 0
+    )
+    if ready_count and unresolved_count == 0:
         missing = result.get("missing_information")
         if isinstance(missing, list):
             result["missing_information"] = [
@@ -273,10 +338,10 @@ def enforce_prior_art_comparison_status(
             ]
     if ready_count == 0:
         overlap["overlap_basis"] = "상세 내용이 확보된 선행문헌이 없어 청구항 중복도를 판단할 수 없음"
-        overlap["rationale"] = "선행문헌 식별번호만 확인되어 청구항·초록 기반 비교는 수행하지 않음"
+        overlap["rationale"] = "선행문헌 청구항이 확보되지 않아 청구항 단위 직접 비교는 수행하지 않음"
         result["prior_art_references"] = []
         missing = result.setdefault("missing_information", [])
-        message = "선행문헌의 대표 청구항 또는 초록"
+        message = "선행문헌의 대표 청구항"
         if isinstance(missing, list) and message not in missing:
             missing.append(message)
     return result
@@ -454,11 +519,14 @@ def _valuation_citing_signal(state: PatentWorkflowState) -> dict[str, Any]:
     if not isinstance(stats, dict):
         stats = {}
         available = False
+    elif "available" in stats:
+        available = bool(stats.get("available"))
     return {
         "available": available,
-        "total_count": int(stats.get("total_count") or 0),
-        "standardized_count": int(stats.get("standardized_count") or 0),
-        "non_standardized_count": int(stats.get("non_standardized_count") or 0),
+        "total_count": int(stats.get("total_count") or 0) if available else None,
+        "standardized_count": int(stats.get("standardized_count") or 0) if available else None,
+        "non_standardized_count": int(stats.get("non_standardized_count") or 0) if available else None,
+        "missing_reason": stats.get("missing_reason") if not available else None,
         "used_for": "portfolio_defensive_value_only",
     }
 
@@ -470,6 +538,7 @@ def _valuation_reference_document_payload(
     max_claims: int = 3,
 ) -> dict[str, Any]:
     return {
+        "document_role": "prior_art",
         "direction": item.get("direction"),
         "country_code": item.get("country_code"),
         "application_number": item.get("application_number"),

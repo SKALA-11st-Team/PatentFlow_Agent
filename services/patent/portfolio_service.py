@@ -11,7 +11,10 @@ from services.evidence.compression_service import parse_json_object
 from services.evidence.store_service import now_iso, safe_filename
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
-from services.patent.kipris_patent_service import fetch_kipris_bibliography
+from services.patent.kipris_patent_service import (
+    fetch_kipris_bibliography,
+    fetch_kipris_bibliography_basic,
+)
 
 
 DEFAULT_PORTFOLIO_OUTPUT_DIR = settings.output_dir / "portfolio_evidence"
@@ -26,7 +29,9 @@ def analyze_portfolio_siblings(
     database_path: Path | str = settings.patent_db_path,
     sibling_limit: int = DEFAULT_SIBLING_LIMIT,
     llm: Callable[[str], str] = call_llm,
-    kipris_fetcher: Callable[[str], dict[str, Any]] = fetch_kipris_bibliography,
+    # 포트폴리오 보강은 제목·초록·청구항·IPC/CPC만 쓰므로 sibling마다 전체 서지(패밀리·
+    # 인용·피인용·인용근거)를 당기지 않고 bibliography_detail 1회만 호출한다.
+    kipris_fetcher: Callable[[str], dict[str, Any]] = fetch_kipris_bibliography_basic,
 ) -> dict[str, Any]:
     siblings = find_sibling_patents(
         target_patent,
@@ -282,7 +287,6 @@ def build_portfolio_evidence(
         "technology_area": target_patent.get("technology_area"),
         "group_size": len(enriched_siblings) + 1,
         "sibling_patents": siblings,
-        "related_axes": ["legal", "technology", "market", "business_fit"],
         "compressed_summary": normalize_text(parsed.get("compressed_summary")),
         "key_facts": normalize_text_list(parsed.get("key_facts")),
         "collected_at": now_iso(),

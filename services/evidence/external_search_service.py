@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -18,10 +17,9 @@ from app.config import settings
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.evidence.api_normalizers import (
-    normalize_dart_disclosures,
-    normalize_gnews_response,
     normalize_kipris_patent_results,
     normalize_naver_news_response,
+    normalize_tavily_news_response,
 )
 from services.evidence.news_article_extraction_service import enrich_news_items_with_full_text
 from services.evidence.news_filter_service import extract_keywords
@@ -34,10 +32,39 @@ from services.evidence.store_service import (
 DEFAULT_UNIFIED_API_BASE_URL = settings.unified_api_base_url
 MAX_SEARCH_QUERIES = settings.search_query_count
 MAX_INDUSTRY_RAG_QUERIES = settings.industry_rag_query_count
+# skax_site 검색어는 3개로 고정한다: 1번은 관련제품명 그대로, 2~3번은 기술/서비스 변형.
+SKAX_QUERY_COUNT = 3
 API_REQUEST_MAX_ATTEMPTS = 3
 API_REQUEST_RETRY_STATUS_CODES = {502, 503, 504}
 BLOCKED_HOSTNAMES = {"localhost.localdomain", "metadata.google.internal"}
 BLOCKED_LINK_LOCAL_IP = ipaddress.ip_address("169.254.169.254")
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+
+
+def search_global_news_via_tavily(query: str, *, max_results: int) -> dict[str, Any]:
+    """GNews 대체: Tavily(topic=news, 도메인 제한 없음)로 글로벌 영어 뉴스를 검색한다.
+
+    국가 제한 없이 영어 검색어로 전세계 뉴스를 가져오고, 최근 기간은 뉴스 필터(5년)와
+    정렬된 days 범위로 제한한다. 본문은 raw_content로 함께 수집한다.
+    """
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        raise requests.RequestException("TAVILY_API_KEY is not set")
+    response = requests.post(
+        TAVILY_SEARCH_URL,
+        json={
+            "api_key": api_key,
+            "query": query,
+            "topic": "news",
+            "search_depth": "basic",
+            "max_results": max(1, int(max_results)),
+            "include_raw_content": True,
+            "days": settings.tavily_news_max_age_days,
+        },
+        timeout=settings.skax_search_timeout_seconds,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def rewrite_search_queries(
@@ -78,11 +105,11 @@ def rewrite_search_queries(
         for query in compact_queries(llm_result.get("industry_rag", []))[:MAX_INDUSTRY_RAG_QUERIES]
         if query not in previous
     ]
-    rewritten_skax_site = [
-        query
-        for query in normalize_skax_site_queries(llm_result.get("skax_site", []))[:MAX_SEARCH_QUERIES]
-        if query not in previous
-    ]
+    rewritten_skax_site = ensure_skax_product_first(
+        llm_result.get("skax_site", []),
+        preprocessed_patent,
+        previous,
+    )
 
     return {
         "ko": rewritten_ko,
@@ -108,9 +135,6 @@ def collect_external_evidence(
     include_naver: bool = True,
     include_gnews: bool = True,
     include_kipris: bool = False,
-    dart_corp_code: str | None = None,
-    dart_bgn_de: str | None = None,
-    dart_end_de: str | None = None,
     missing_evidence: list[str] | None = None,
     previous_queries: list[str] | None = None,
     use_llm_rewrite: bool = True,
@@ -149,15 +173,18 @@ def collect_external_evidence(
     attempted_calls = 0
     failed_calls = 0
 
-    # EVID-04: naver/gnews/kipris/dart 소스 호출을 직렬 → 병렬화. 각 호출을 독립 태스크로 만들고
+    # EVID-04: naver/global_news/kipris 소스 호출을 직렬 → 병렬화. 각 호출을 독립 태스크로 만들고
     # ThreadPoolExecutor로 동시 실행한 뒤 결과를 집계한다. attempted/failed 카운트(EXT-03 hard-surface)는
     # 태스크 수·실패 수로 동일하게 보존한다. sources/warnings/saved_paths는 순서 무관이라 병렬 안전.
     fetch_tasks: list[dict[str, Any]] = []
     if include_naver:
         for query in selected_queries:
             fetch_tasks.append({
-                "path": "/api/news/search",
-                "params": {"query": query, "display": news_results_per_query, "start": 1, "sort": "sim"},
+                "fetch": lambda q=query: request_json(
+                    api_base_url,
+                    "/api/news/search",
+                    {"query": q, "display": news_results_per_query, "start": 1, "sort": "sim"},
+                ),
                 "normalize": lambda raw, q=query: normalize_naver_news_response(raw, query=q),
                 "enrich": True,
                 "source_type": "news",
@@ -166,22 +193,25 @@ def collect_external_evidence(
                 "warn_prefix": f"naver_news call failed for query '{query}'",
             })
     if include_gnews:
+        # GNews 대체: 글로벌 뉴스는 게이트웨이 대신 Tavily(topic=news)를 직접 호출한다.
         for gnews_query in selected_gnews_queries:
             fetch_tasks.append({
-                "path": "/api/v4/search",
-                "params": {"q": gnews_query, "lang": "en", "max": news_results_per_query, "page": 1},
-                "normalize": lambda raw, q=gnews_query: normalize_gnews_response(raw, query=q),
+                "fetch": lambda q=gnews_query: search_global_news_via_tavily(q, max_results=news_results_per_query),
+                "normalize": lambda raw, q=gnews_query: normalize_tavily_news_response(raw, query=q),
                 "enrich": True,
                 "source_type": "news",
-                "source": "gnews",
+                "source": "global_news",
                 "query": gnews_query,
-                "warn_prefix": f"gnews call failed for query '{gnews_query}'",
+                "warn_prefix": f"global_news call failed for query '{gnews_query}'",
             })
     if include_kipris and application_number:
         kipris_query = f"application_number:{application_number}"
         fetch_tasks.append({
-            "path": "/kipris/patent-utility/search/application-number",
-            "params": {"applicationNumber": application_number},
+            "fetch": lambda: request_json(
+                api_base_url,
+                "/kipris/patent-utility/search/application-number",
+                {"applicationNumber": application_number},
+            ),
             "normalize": lambda raw, q=kipris_query: normalize_kipris_patent_results(raw, query=q, source="kipris"),
             "enrich": False,
             "source_type": "competitor_patent",
@@ -189,25 +219,12 @@ def collect_external_evidence(
             "query": kipris_query,
             "warn_prefix": f"kipris call failed for application_number '{application_number}'",
         })
-    if dart_corp_code:
-        bgn_de, end_de = resolve_dart_date_range(dart_bgn_de, dart_end_de)
-        dart_query = f"corp_code:{dart_corp_code}"
-        fetch_tasks.append({
-            "path": "/dart/disclosure",
-            "params": {"corp_code": dart_corp_code, "bgn_de": bgn_de, "end_de": end_de},
-            "normalize": lambda raw, q=dart_query: normalize_dart_disclosures(raw, query=q),
-            "enrich": False,
-            "source_type": "company_disclosure",
-            "source": "dart",
-            "query": dart_query,
-            "warn_prefix": f"dart call failed for corp_code '{dart_corp_code}'",
-        })
 
     attempted_calls = len(fetch_tasks)
 
     def _run_fetch_task(task: dict[str, Any]) -> dict[str, Any]:
         try:
-            raw = request_json(api_base_url, task["path"], task["params"])
+            raw = task["fetch"]()
             items = task["normalize"](raw)
             if task["enrich"]:
                 items = enrich_news_items_with_full_text(items, enabled=fetch_news_full_text)
@@ -270,6 +287,7 @@ def collect_external_evidence(
     }
 
 
+
 def compact_queries(queries: list[str]) -> list[str]:
     result = []
     seen = set()
@@ -280,6 +298,37 @@ def compact_queries(queries: list[str]) -> list[str]:
         seen.add(compacted)
         result.append(compacted)
     return result
+
+
+def ensure_skax_product_first(
+    llm_queries: list[str],
+    preprocessed_patent: dict[str, Any],
+    previous_queries: set[str],
+) -> list[str]:
+    """skax_site 검색어 3개를 구성한다.
+
+    1번: 관련제품명을 그대로(변형·접두사 없이) 검색한다. SK AX 공식 사이트에
+    제품 페이지가 있으면 가장 정확히 잡기 위함이다.
+    2~3번: LLM이 만든 기술/서비스 변형 검색어로 채운다(제품명 페이지가 없을 때를
+    대비한 일반 표현). 1번 제품 검색어는 재검색 라운드에서도 항상 유지하고,
+    previous_queries 필터는 변형 검색어(2~3번)에만 적용한다.
+    모든 항목은 normalize_skax_site_queries로 canonical 형태(site:skax.co.kr 접두)로
+    맞춰 두면, Tavily 단계에서 site: 연산자가 제거되어 키워드만 전송된다.
+    """
+    product = extract_related_product(preprocessed_patent)
+    head = normalize_skax_site_queries([product]) if product else []
+    product_norm = normalize_related_product(product)
+    tail_source = [
+        query
+        for query in llm_queries
+        if not product_norm or normalize_related_product(query) != product_norm
+    ]
+    tail = [
+        query
+        for query in normalize_skax_site_queries(tail_source)
+        if query not in previous_queries and query not in head
+    ]
+    return compact_queries([*head, *tail])[:SKAX_QUERY_COUNT]
 
 
 def ensure_related_product_query(
@@ -560,18 +609,6 @@ def with_response_detail(exc: requests.HTTPError) -> requests.HTTPError:
         return exc
     detail = exc.response.text[:300]
     return requests.HTTPError(f"{exc}; response={detail}", response=exc.response)
-
-
-def resolve_dart_date_range(
-    bgn_de: str | None,
-    end_de: str | None,
-) -> tuple[str, str]:
-    if bgn_de and end_de:
-        return bgn_de, end_de
-    today = datetime.now()
-    end_value = end_de or today.strftime("%Y%m%d")
-    bgn_value = bgn_de or (today - timedelta(days=365)).strftime("%Y%m%d")
-    return bgn_value, end_value
 
 
 def contains_hangul(value: str) -> bool:

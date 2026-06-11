@@ -394,3 +394,143 @@ from services.patent.markdown_preprocess_service import _extract_claim_dependenc
 )
 def test_extract_claim_dependency_requires_citation_terminator(text, expected):
     assert _extract_claim_dependency(text) == expected
+
+
+def test_preprocess_extracts_us_html_claims_when_api_claims_are_empty():
+    raw_text = """
+## ABSTRACT
+
+A method controls dynamic lot measurement using equipment reliability.
+
+## DETAILED DESCRIPTION
+
+A processor calculates a lot risk score and controls semiconductor measurement.
+
+## CLAIMS
+
+1. A method comprising calculating an equipment reliability index.
+
+2. The method of claim 1, further comprising determining whether to measure a lot.
+
+## FIG.1
+
+![image 1](<US11782432B2_images/imageFile1.png>)
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        source={"markdown_paths": ["/tmp/US11782432B2.md"]},
+        db_metadata={
+            "country": "US",
+            "application_number": "16/622,097",
+            "registration_number": "11,782,432",
+            "title_final": "Dynamic lot measurement control",
+        },
+        api_data={
+            "metadata": {"country": "US"},
+            "claims": [],
+            "claim_stats": {"active_claim_count": 0},
+        },
+    )
+
+    assert [claim["claim_no"] for claim in result["claims"]] == [1, 2]
+    assert result["claims"][1]["dependency"] == 1
+    assert result["claim_stats"]["active_claim_count"] == 2
+    assert result["drawing_context"]["representative_drawing"]["image_path"].endswith("imageFile1.png")
+    assert result["validation"]["is_valid"] is True
+
+
+def test_preprocess_extracts_japanese_bracket_claims_and_removes_self_prior_art():
+    raw_text = """
+# JP 6947850 B2 2021.10.13
+
+(57)【特許請求の範囲】 【請求項１】 半導体製造において、装備信頼指数を算定するステップと、
+リスクスコアに基づいて計測を行うか否かを決定するステップと、を含む計測制御方法。
+【請求項２】 装備信頼指数は、次の数式を用いて算定されることを特徴とする請求項１に記載の計測制御方法。
+
+【発明の詳細な説明】 【技術分野】 【０００１】 本発明は、半導体計測関連の技術に関する。
+【背景技術】 【０００２】 半導体製造において計測が行われている。
+【発明の概要】 【発明が解決しようとする課題】 【０００３】 動的ロット計測制御方法を提供する。
+【課題を解決するための手段】 【０００４】 装備信頼指数に基づいてリスクスコアを算定する。
+【発明の効果】 【０００５】 品質のモニタリングが可能になる。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "JP",
+            "application_number": "2019-565924",
+            "registration_number": "6947850",
+            "title_final": "動的ロット計測制御方法",
+        },
+        api_data={
+            "metadata": {"country": "JP"},
+            "claims": [],
+            "claim_stats": {"active_claim_count": 0},
+        },
+    )
+
+    assert [claim["claim_no"] for claim in result["claims"]] == [1, 2]
+    assert result["claims"][0]["is_independent"] is True
+    assert result["claims"][1]["dependency"] == 1
+    assert result["claim_stats"]["active_claim_count"] == 2
+    assert result["metadata"]["prior_art"] == []
+
+
+def test_preprocess_detects_japanese_dependency_variants():
+    raw_text = """
+(57)【特許請求の範囲】
+【請求項１】 基準データを用いて変動を検知する方法。
+【請求項２】 請求項１記載の方法。
+【請求項３】 請求項１又は２に記載の方法。
+【請求項４】 請求項１ないし３のいずれか１項に記載の方法。
+【請求項５】 請求項１記載の方法を実行するシステムであって、プロセッサを含むシステム。
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={"country": "JP", "registration_number": "6757846"},
+    )
+
+    assert result["claim_stats"]["independent_claim_numbers"] == [1, 5]
+    assert result["claim_stats"]["dependent_claim_numbers"] == [2, 3, 4]
+    assert [claim["dependency"] for claim in result["claims"][1:]] == [1, 1, 1, None]
+
+
+def test_preprocess_normalizes_japanese_and_us_reference_formats():
+    raw_text = """
+(56)参考文献
+特開平１１−３４５７５２（ＪＰ，Ａ）
+特開２００２−３７３０１４（ＪＰ，Ａ）
+米国特許出願公開第２００９／０３０６８０３（ＵＳ，Ａ１）
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={"country": "JP", "registration_number": "6947850"},
+    )
+
+    assert result["metadata"]["prior_art"] == [
+        "JP1999345752 A",
+        "JP2002373014 A",
+        "US20090306803 A1",
+    ]
+
+
+def test_preprocess_extracts_us_what_is_claimed_section():
+    result = build_preprocessed_patent(
+        """
+(57) ABSTRACT
+Semiconductor process control.
+
+What is claimed is:
+
+- 1. A method comprising measuring a semiconductor wafer.
+- 2. The method of claim 1, further comprising changing a sampling rate.
+""",
+        db_metadata={"country": "US"},
+    )
+
+    assert [claim["claim_no"] for claim in result["claims"]] == [1, 2]
+    assert result["claims"][0]["is_independent"] is True
+    assert result["claims"][1]["dependency"] == 1

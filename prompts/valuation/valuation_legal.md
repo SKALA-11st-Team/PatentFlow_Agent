@@ -25,6 +25,9 @@
 
 평가 원칙:
 - 입력에 없는 사실을 추정하지 않는다.
+- `patent.document_role=target_patent`의 청구항과 `summary_result`만 대상 특허의 구성으로 서술한다.
+- `citation_evidence`의 문헌은 모두 선행문헌이다. 선행문헌에만 존재하는 구성·알고리즘을 대상 특허의 특징이나 권리범위로 서술하지 않는다.
+- 대상 특허와 선행문헌에 공통으로 존재하는 구성이라고 서술하려면 대상 청구항과 선행문헌 양쪽에서 각각 확인되어야 한다.
 - 제품/서비스 적용 여부는 권리성 평가에 반영하지 않는다.
 - 경쟁사 침해 가능성을 단정하지 않는다.
 - 선행문헌 후보 존재만으로 무효 리스크를 자동 판단하지 않는다.
@@ -88,10 +91,14 @@
 평가 규칙:
 - prior_art_candidates는 선행문헌 후보 목록이다.
 - citation_evidence는 제목, 초록, 대표 청구항이 확인된 선행문헌이다.
-- citation_evidence.prior_art_collection.comparison_ready_count는 실제 청구항 또는 초록이 확보되어 비교 가능한 문헌 수이다.
+- citation_evidence.prior_art_collection.claim_comparison_ready_count는 대표 청구항이 확보되어 청구항 단위로 비교 가능한 문헌 수이다.
+- `comparison_ready_count`는 하위 호환 필드이며 `claim_comparison_ready_count`와 같은 값이다.
+- `abstract_only_count` 문헌은 기술적 보조 신호로만 사용하며 청구항 중복도 직접 비교 건수에는 포함하지 않는다.
+- `fulltext_claims_unparsed_count` 문헌은 전문은 확보했지만 청구항 추출에 실패한 문헌이다. 직접 비교 건수에는 포함하지 않는다.
 - compared_prior_art_count는 반드시 comparison_ready_count와 같아야 하며, 식별번호만 있는 문헌은 비교 건수에 포함하지 않는다.
 - comparison_ready_count가 0이면 prior_art_overlap.assessment_status를 "unknown"으로 두고, 중복이 낮거나 없다고 결론 내리지 않는다.
-- comparison_ready_count가 1 이상이면 제공된 대표 청구항·초록을 실제 비교에 사용하고, 해당 선행문헌의 원문이나 청구항이 미확보되었다고 서술하지 않는다.
+- comparison_ready_count가 1 이상이면 제공된 대표 청구항을 실제 비교에 사용한다.
+- 초록만 제공된 문헌은 대상 청구항과 동일하다고 단정하지 않고, 배경 기술 또는 보조 중복 신호로만 설명한다.
 - citation_evidence.citing_signal은 피인용/후속 참조의 통계 신호이며, 선행문헌 비교 대상이나 청구항 유사성 판단 근거로 사용하지 않는다.
 - `claim_context`의 독립항 및 종속항 구성과 선행문헌의 기술 구성을 직접 비교하여 판단한다.
 - 해외 패밀리/주요국 등록 여부는 권리안정성 점수에 사용하지 않는다.
@@ -207,6 +214,8 @@
 - 해외 패밀리 또는 해외 등록 정보가 없다는 사실만으로 권리성 약점이나 리스크로 쓰지 않는다.
 - 정보 부족은 confidence에만 반영한다.
 - citation_evidence.citing_signal은 이 항목의 피인용/후속 참조 신호에만 사용한다.
+- citation_evidence.citing_signal.available이 false이면 피인용 0건으로 해석하지 않고 `follow_on_right_signal`을 unknown으로 처리한다.
+- 해외 특허에서 피인용 조회가 지원되지 않는 경우 해당 세부지표는 평가 제외된다. 이를 권리 약점, 0점 근거, risk_factors 또는 missing_information으로 작성하지 않는다.
 - 관련 특허군 개수 기준은 판단 보조 기준이며, 단순히 같은 제품군에 속한다는 이유만으로 strong을 선택하지 않는다.
 - 해외 권리 확보 범위는 확인된 해외 출원·공개·등록 또는 Patent Family 국가 정보를 기준으로만 판단한다.
 
@@ -279,7 +288,7 @@ Return ONLY JSON:
         "prior_art_overlap": {
           "label": "선행문헌 대비 청구항 중복도",
           "score": 0,
-          "assessment_status": "comparison_ready",
+          "assessment_status": "claim_comparison_ready",
           "compared_prior_art_count": 0,
           "overlap_basis": "독립항 1의 데이터 수집/분석 구성과 KR...의 대표 청구항 일부가 겹침",
           "rationale": "선행문헌 일부와 핵심 구성은 겹치지만 대상 특허의 차별 구성 또는 결합 방식이 남아 있어 18점으로 판단함"

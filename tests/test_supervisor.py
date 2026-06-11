@@ -314,19 +314,33 @@ def test_axis_supervisor_checks_are_stored_and_route_retry_or_research(monkeypat
 
 
 def test_run_axis_supervisor_checks_defaults_to_passed_without_llm():
+    business_fit_subscores = {
+        "official_business_evidence": {"score": 24},
+        "product_function_direct_match": {"score": 24},
+        "business_context_fit": {"score": 18},
+    }
     state = PatentWorkflowState(
         user_input={"use_llm_supervisor": False},
-        evidence_bundle=[{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}],
+        evidence_bundle=[
+            {
+                "evidence_id": "known",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "url": "https://www.skax.co.kr/manufacturing/example",
+                "content": "SK AX 제조 솔루션",
+            }
+        ],
         valuation_result={
             "axes": {
                 axis: {
-                    "score": 70,
+                    "score": 66 if axis == "business_fit" else 70,
                     "grade": "B",
                     "rationale": "known 근거 기반 평가",
                     "evidence_ids": ["known"],
                     "risk_factors": [],
                     "missing_information": [],
                     "confidence": 0.7,
+                    **({"subscores": business_fit_subscores} if axis == "business_fit" else {}),
                 }
                 for axis in ["legal", "technology", "market", "business_fit"]
             }
@@ -798,6 +812,171 @@ def test_non_legal_axis_payload_has_no_prior_art_context():
     payload = axis_supervisor_payload(state, axis="market")
 
     assert "prior_art_context" not in payload
+
+
+def test_business_fit_axis_payload_includes_official_evidence_context():
+    from workflow.supervisor import axis_supervisor_payload
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "official",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "SK AX 제조 솔루션",
+                "url": "https://www.skax.co.kr/manufacturing/example",
+                "content": "SK AX 제조 공정 관리 솔루션",
+            }
+        ],
+        valuation_result={
+            "axes": {
+                "business_fit": {
+                    "score": 54,
+                    "grade": "C",
+                    "rationale": "공식 사업 문맥과 연결",
+                    "evidence_ids": ["official"],
+                    "risk_factors": ["핵심 기능 직접 매칭 제한"],
+                    "missing_information": [],
+                    "confidence": 0.6,
+                    "subscores": {
+                        "official_business_evidence": {"score": 16},
+                        "product_function_direct_match": {"score": 20},
+                        "business_context_fit": {"score": 18},
+                    },
+                }
+            }
+        },
+    )
+
+    payload = axis_supervisor_payload(state, axis="business_fit")
+
+    context = payload["business_fit_context"]
+    assert context["skax_official_evidence"][0]["evidence_id"] == "official"
+    assert context["cited_evidence"][0]["is_sk_ax_official"] is True
+
+
+def test_business_fit_rule_rejects_general_news_as_direct_evidence():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "official",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "url": "https://www.skax.co.kr/manufacturing/example",
+                "content": "SK AX 제조 솔루션",
+            },
+            {
+                "evidence_id": "external_news",
+                "source": "naver_news",
+                "source_type": "news",
+                "url": "https://example.com/news",
+                "content": "외부 제조 기사",
+            },
+        ],
+        valuation_result={
+            "axes": {
+                "business_fit": {
+                    "score": 54,
+                    "grade": "C",
+                    "rationale": "외부 기사를 직접 사업 근거로 사용",
+                    "evidence_ids": ["external_news"],
+                    "risk_factors": ["직접 매칭 제한"],
+                    "missing_information": [],
+                    "confidence": 0.6,
+                    "subscores": {
+                        "official_business_evidence": {"score": 24},
+                        "product_function_direct_match": {"score": 12},
+                        "business_context_fit": {"score": 18},
+                    },
+                }
+            }
+        },
+    )
+
+    result = build_rule_axis_supervisor_check(state, "business_fit")
+
+    assert result["status"] == "valuation_retry"
+    assert any("일반 뉴스/외부 자료" in issue for issue in result["issues"])
+
+
+def test_business_fit_rule_requests_search_when_sk_evidence_is_absent():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "external_news",
+                "source": "naver_news",
+                "source_type": "news",
+                "content": "외부 제조 기사",
+            }
+        ],
+        valuation_result={
+            "axes": {
+                "business_fit": {
+                    "score": 0,
+                    "grade": "D",
+                    "rationale": "공식 근거 미확인",
+                    "evidence_ids": [],
+                    "risk_factors": ["공식 근거 미확인"],
+                    "missing_information": ["SK AX 공식 페이지"],
+                    "confidence": 0.3,
+                    "subscores": {
+                        "official_business_evidence": {"score": 0},
+                        "product_function_direct_match": {"score": 0},
+                        "business_context_fit": {"score": 0},
+                    },
+                }
+            }
+        },
+    )
+
+    result = build_rule_axis_supervisor_check(state, "business_fit")
+
+    assert result["status"] == "query_rewriting"
+    assert any("SK AX 공식" in issue for issue in result["issues"])
+
+
+def test_business_fit_rule_accepts_owned_media_tier_without_text_marker():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "owned_without_marker",
+                "source": "sk_group_owned_media",
+                "source_type": "news",
+                "source_domain": "skcareersjournal.com",
+                "source_tier": "sk_related_owned_media",
+                "content": "다른 SK 계열사의 일반 채용 소식",
+            }
+        ],
+        valuation_result={
+            "axes": {
+                "business_fit": {
+                    "score": 0,
+                    "grade": "D",
+                    "rationale": "SK AX 사업 근거 미확인",
+                    "evidence_ids": [],
+                    "risk_factors": ["공식 근거 미확인"],
+                    "missing_information": ["SK AX 공식 페이지"],
+                    "confidence": 0.3,
+                    "subscores": {
+                        "official_business_evidence": {"score": 0},
+                        "product_function_direct_match": {"score": 0},
+                        "business_context_fit": {"score": 0},
+                    },
+                }
+            }
+        },
+    )
+
+    result = build_rule_axis_supervisor_check(state, "business_fit")
+
+    assert result["status"] == "valuation_retry"
+    assert any("evidence_ids" in issue for issue in result["issues"])
 
 
 

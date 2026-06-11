@@ -52,6 +52,40 @@ def test_legal_prompt_does_not_treat_missing_foreign_claims_as_weakness():
     assert "해외 패밀리 또는 해외 등록 정보는 확인된 경우에만 보조 긍정 근거로 사용한다." in text
 
 
+def test_foreign_legal_result_removes_unavailable_citing_and_family_claim_gaps():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "JP"},
+        kipris_api_data={
+            "citing_stats": {
+                "available": False,
+                "missing_reason": "foreign_citing_api_not_connected",
+            }
+        },
+    )
+    result = reconcile_legal_scores(
+        {
+            "score": 0,
+            "grade": "D",
+            "risk_factors": [
+                "피인용/후속 권리화 신호 조회 불가",
+                "독립항의 특정 조건으로 보호범위 해석에 영향 가능",
+            ],
+            "missing_information": [
+                "피인용/후속 참조 통계",
+                "포트폴리오상 해외 관련 특허군의 청구항 전문",
+                "선행문헌의 대표 청구항",
+            ],
+            "subscores": {},
+        },
+        state=state,
+    )
+
+    assert result["risk_factors"] == ["독립항의 특정 조건으로 보호범위 해석에 영향 가능"]
+    assert result["missing_information"] == ["선행문헌의 대표 청구항"]
+
+
 def test_final_report_prompt_does_not_require_benchmark_data():
     final_report = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
@@ -70,7 +104,7 @@ def test_final_report_prompt_uses_rights_scope_explanation_for_legal_axis():
     assert "patent.rights_scope_context.representative_figure_detail" in final_report
     assert "도면에 나타난 주요 구성 또는 처리 단계가 청구항의 어느 필수 구성과 연결되는지 매칭하세요." in final_report
     assert "도면상 구성/흐름 → 청구항 필수 구성 → 권리범위 형성 의미" in final_report
-    assert "왼쪽 열에는 도면 이미지와 도면 설명만 작성하고 권리범위 판단을 쓰지 마세요." in final_report
+    assert "표 셀 안에는 도면 이미지를 넣지 말고 설명 텍스트만 작성하세요." in final_report
     assert "아이디어 자체보다" not in final_report
 
 
@@ -133,8 +167,9 @@ def test_run_valuation_agent_sets_result():
     assert set(axes) == {"legal", "technology", "market", "business_fit"}
     assert "strategy" not in axes
     assert axes["business_fit"]["label"] == "사업 연계성"
-    assert result.valuation_result["total_score"] == sum(axis["score"] for axis in axes.values())
-    assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 4, 1)
+    core_axes = ("legal", "technology", "market")
+    assert result.valuation_result["total_score"] == sum(axes[name]["score"] for name in core_axes)
+    assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 3, 1)
     assert "평균 점수는" in result.valuation_result["decision_rationale"][0]
     assert axes["market"]["subscores"]["market_growth"]["score"] is None
     assert "final_report_markdown" not in result.valuation_result
@@ -181,10 +216,13 @@ def test_final_valuation_result_validates_schema_and_uses_domain_recommendation_
 
     result = build_final_valuation_result(axes)
 
-    assert result["total_score"] == 280
+    # 종합 점수는 권리성·기술성·시장성 3축 합산(0~300)이고, 사업 연계성은 오버라이드로만 작용한다.
+    assert result["total_score"] == 210
+    assert result["total_score_max"] == 300
     assert result["average_score"] == 70.0
     assert result["final_grade"] == "B"
-    assert result["final_indicator"] == "유지 권고"
+    assert result["final_indicator"] == "유지"
+    assert result["business_fit_override"] is True
     assert result["recommendation"] == "유지 권고"
     assert "technology_comparison_empty" in result["warnings"]
 
@@ -341,7 +379,8 @@ def test_run_axis_valuation_agent_sets_only_legal_axis(monkeypatch, tmp_path):
     assert "citation_evidence" in captured_prompts[0]
 
 
-def test_business_fit_selects_only_news_with_sk_ax_or_cnc_context():
+def test_business_fit_excludes_news_even_when_it_mentions_sk_ax():
+    # SK AX를 언급한 뉴스라도 사업연계성에는 들어가지 않는다(시장성 축으로만 간다).
     state = PatentWorkflowState(
         user_input={"use_llm_valuation": False, "use_llm_final_report": False},
         patent_structured={
@@ -369,7 +408,7 @@ def test_business_fit_selects_only_news_with_sk_ax_or_cnc_context():
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected] == ["news_001"]
+    assert selected == []
 
 
 def test_business_fit_prioritizes_sk_ax_official_evidence():
@@ -409,7 +448,8 @@ def test_business_fit_prioritizes_sk_ax_official_evidence():
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected[:3]] == ["skax_high", "skax_low", "news_001"]
+    # 공식 콘텐츠만 점수 순으로 남고, SK를 언급한 뉴스(news_001)는 제외된다.
+    assert [item["evidence_id"] for item in selected] == ["skax_high", "skax_low"]
 
 
 def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
@@ -437,7 +477,7 @@ def test_business_fit_detects_sk_ax_official_evidence_from_metadata():
     assert selected[0]["evidence_id"] == "skax_meta"
 
 
-def test_business_fit_prioritizes_owned_media_before_sk_mentioned_news_and_secondary():
+def test_business_fit_uses_only_sk_ax_official_content_excluding_news_and_portfolio():
     state = PatentWorkflowState(
         patent_structured={
             "related_product": "문서변환 SW",
@@ -483,7 +523,9 @@ def test_business_fit_prioritizes_owned_media_before_sk_mentioned_news_and_secon
 
     selected = select_business_fit_evidence(state.evidence_bundle, state)
 
-    assert [item["evidence_id"] for item in selected] == ["owned_media", "sk_news", "portfolio_001"]
+    # SK를 언급한 뉴스(sk_news)와 portfolio_context는 더 이상 사업연계성에 포함되지
+    # 않고, SK AX 공식/계열 콘텐츠(owned_media)만 남는다.
+    assert [item["evidence_id"] for item in selected] == ["owned_media"]
 
 
 def test_business_fit_input_context_uses_summary_and_limited_official_evidence():
@@ -560,6 +602,41 @@ def test_business_fit_input_context_uses_summary_and_limited_official_evidence()
     assert "청구항 전체 원문은 들어가면 안 됨" not in serialized
     assert "정제된 전체 원문은 들어가면 안 됨" not in serialized
     assert "PDF 전체 원문은 들어가면 안 됨" not in serialized
+
+
+def test_business_fit_uses_current_preprocessed_source_status_and_preserves_portfolio_evidence():
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    state = PatentWorkflowState(
+        kipris_api_data={"claim_stats": {"active_claim_count": 0}},
+        preprocessed_patent={
+            "claims": [{"claim_no": 1, "text": "독립항", "is_independent": True}],
+            "claim_stats": {"active_claim_count": 1},
+            "sections": {"solution": "상세한 해결수단"},
+        },
+    )
+    evidence = [
+        {
+            "evidence_id": "portfolio_stale",
+            "source_type": "portfolio_context",
+            "compressed_summary": "대상 특허의 청구항과 초록이 제공되지 않았다.",
+            "key_facts": ["청구항 부재"],
+            "sibling_patents": [{"registration_number": "123"}],
+        }
+    ]
+
+    payload = build_input_payload(state=state, evidence=evidence)
+
+    assert payload["business_fit_context"]["target_source_status"] == {
+        "claims_available": True,
+        "active_claim_count": 1,
+        "abstract_available": False,
+        "description_available": True,
+        "authority": "preprocessed_patent",
+    }
+    assert payload["evidence"][0]["compressed_summary"] == "대상 특허의 청구항과 초록이 제공되지 않았다."
+    assert payload["evidence"][0]["key_facts"] == ["청구항 부재"]
+    assert payload["evidence"][0]["sibling_patents"] == [{"registration_number": "123"}]
 
 
 def test_business_fit_patent_description_falls_back_to_sections_and_kipris():
@@ -1167,7 +1244,7 @@ def test_market_prompt_uses_18_month_lagged_three_window_activity():
 
     assert "18개월 전을 마지막 시점으로 하는 3개 1년 구간" in prompt
     assert "최근 3개년 공개 활동성" not in prompt
-    assert "`source`가 `gnews`인 해외 뉴스는 산업 시장성 점수의 직접 근거로 쓰지 않는다(글로벌 사업성은 Patent Family 기준 코드 계산값을 사용한다)." in prompt
+    assert "`source`가 `global_news`인 해외 뉴스는 산업 시장성 점수의 직접 근거로 쓰지 않는다(글로벌 사업성은 Patent Family 기준 코드 계산값을 사용한다)." in prompt
     assert "Patent Family Size(출원 국가 수)를 기준으로" in prompt
     assert "시장성 점수(100) = 산업 시장성(40) + 시장 성장성(40) + 글로벌 사업성(20)" in prompt
     assert "시장성 총점은 원칙적으로 55점을 넘기지 않는다" not in prompt
@@ -1438,7 +1515,7 @@ def test_foreign_market_select_evidence_prioritizes_named_industry_reports():
         {
             "evidence_id": "news_1",
             "source_type": "news",
-            "source": "gnews",
+            "source": "global_news",
             "related_axes": ["market"],
         },
     ]
@@ -1609,6 +1686,34 @@ def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
         "1020200000002",
         "1020200000003",
     ]
+
+
+def test_technology_metrics_reuses_shared_prior_art_context(monkeypatch):
+    from agents.valuation_axes import technology
+
+    monkeypatch.setattr(
+        technology,
+        "build_prior_art_context",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("shared context should be reused")),
+    )
+    state = PatentWorkflowState(
+        prior_art_context={
+            "comparison_mode": "prior-art",
+            "candidate_count": 5,
+            "similar_patents": [
+                {"display_number": f"JP-{index}", "source_type": "foreign_prior_art"}
+                for index in range(5)
+            ],
+            "prior_art_patents": [],
+            "warnings": [],
+        },
+        preprocessed_patent={"metadata": {}},
+    )
+
+    metrics = technology.build_technology_metrics(state)
+
+    assert metrics["selection_policy"] == "prior-art-only"
+    assert len(metrics["similar_patents"]) == 5
 
 
 def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
@@ -1902,6 +2007,33 @@ def test_final_report_markdown_sanitizes_meta_note_lines():
     assert "해외 패밀리는 확인되지 않았습니다" in markdown
 
 
+def test_final_report_markdown_omits_rights_scope_table_without_representative_drawing():
+    from agents.writing.final_report import sanitize_final_report_markdown
+
+    markdown = sanitize_final_report_markdown(
+        "\n".join(
+            [
+                "## 4. 평가축별 상세 근거",
+                "",
+                "**권리범위 참고도 및 이해**",
+                "",
+                "| 권리범위 참고도 | 권리범위 이해 |",
+                "| --- | --- |",
+                "| 도면 설명 | 권리범위 설명 |",
+                "",
+                "### 4.1 권리성",
+                "",
+                "- **점수/등급**: 78, B",
+            ]
+        ),
+        include_rights_scope_reference=False,
+    )
+
+    assert "권리범위 참고도 및 이해" not in markdown
+    assert "| 권리범위 참고도 |" not in markdown
+    assert "### 4.1 권리성" in markdown
+
+
 def test_final_report_input_payload_is_compact_without_raw_technology_sources():
     from agents.writing.final_report import build_final_report_input_payload
 
@@ -2027,6 +2159,8 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
     assert [item["evidence_id"] for item in payload["evidence_references"]] == ["news_001"]
     assert payload["evidence_references"][0]["citation_title"] == "문서변환 SW 시장 확대"
     assert payload["evidence_references"][0]["url"] == "https://example.com/news"
+    assert payload["evidence_references"][0]["cited_by_axes"] == ["market"]
+    assert "related_axes" not in payload["evidence_references"][0]
     assert "compressed_summary" not in payload["evidence_references"][0]
     assert "key_facts" not in payload["evidence_references"][0]
 
@@ -2096,7 +2230,7 @@ def test_final_report_input_payload_uses_preprocessed_drawing_context(tmp_path):
 
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(run_dir)},
-        patent_structured={"title_final": "권리범위 설명 특허"},
+        patent_structured={"title_final": "권리범위 설명 특허", "country": "KR"},
         preprocessed_patent={
             "drawing_context": {
                 "representative_drawing": {
@@ -2124,6 +2258,83 @@ def test_final_report_input_payload_uses_preprocessed_drawing_context(tmp_path):
     )
     assert "도면 섹션의 원본 이미지" in rights_scope["figure_description"]
     assert "입력 문장을 토큰화하고(S410)" in rights_scope["representative_figure_detail"]
+
+
+def test_final_report_input_payload_omits_drawing_context_for_foreign_patent(tmp_path):
+    from agents.writing.final_report import build_final_report_input_payload
+
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path / "run")},
+        patent_structured={"title_final": "해외 특허", "country": "JP"},
+        preprocessed_patent={
+            "drawing_context": {
+                "representative_drawing": {
+                    "figure_number": "도1",
+                    "image_path": "images/figure1.png",
+                },
+                "figure_description": "도 1 설명",
+            }
+        },
+        summary_result={"plain_summary": "요약"},
+    )
+
+    payload = build_final_report_input_payload(
+        state=state,
+        valuation_result={"total_score": 200, "average_score": 66.7, "axes": {}},
+    )
+
+    assert payload["patent"]["metadata"]["country"] == "JP"
+    assert "rights_scope_context" not in payload["patent"]
+
+
+def test_final_report_evidence_references_use_actual_axis_citations():
+    from agents.writing.final_report import build_evidence_references
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "broad_news",
+                "source_type": "news",
+                "source": "naver_news",
+                "title": "공정 계측 기사",
+                "url": "https://example.com/news",
+                "related_axes": ["market", "technology", "business_fit"],
+            },
+            {
+                "evidence_id": "official_page",
+                "source_type": "company_disclosure",
+                "source": "sk_ax_official",
+                "title": "공식 제조 솔루션",
+                "url": "https://www.skax.co.kr/manufacturing/example",
+                "related_axes": ["business_fit"],
+            },
+            {
+                "evidence_id": "owned_media",
+                "source_type": "news",
+                "source": "sk_group_owned_media",
+                "source_domain": "skcareersjournal.com",
+                "source_tier": "sk_related_owned_media",
+                "title": "SK AX 제조 사업 인터뷰",
+                "url": "https://www.skcareersjournal.com/example",
+                "content": "SK AX의 제조 사업과 공정 혁신 서비스를 소개한다.",
+                "related_axes": ["business_fit"],
+            },
+        ]
+    )
+    valuation_result = {
+        "axes": {
+            "market": {"evidence_ids": ["broad_news"]},
+            "business_fit": {"evidence_ids": ["official_page", "owned_media"]},
+        }
+    }
+
+    references = build_evidence_references(state, valuation_result)
+
+    assert references[0]["cited_by_axes"] == ["market"]
+    assert references[1]["cited_by_axes"] == ["business_fit"]
+    assert references[2]["cited_by_axes"] == ["business_fit"]
+    assert references[2]["source_domain"] == "skcareersjournal.com"
+    assert references[2]["source_tier"] == "sk_related_owned_media"
 
 
 def test_axis_valuation_prompt_includes_common_rules(monkeypatch):
@@ -2244,13 +2455,18 @@ def test_legal_axis_input_includes_full_claim_context_without_representative_dup
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
         kipris_api_data={
-            "claim_stats": {"active_claim_count": 2},
+            "claim_stats": {"active_claim_count": 0},
         },
         preprocessed_patent={
             "claims": [
                 {"claim_no": 1, "text": "독립항 전체 내용", "is_independent": True, "dependency": None},
                 {"claim_no": 2, "text": "종속항 전체 내용", "is_independent": False, "dependency": 1},
-            ]
+            ],
+            "claim_stats": {
+                "active_claim_count": 2,
+                "independent_claim_numbers": [1],
+                "dependent_claim_numbers": [2],
+            },
         },
     )
 
@@ -2267,6 +2483,7 @@ def test_legal_axis_input_includes_full_claim_context_without_representative_dup
     assert legal_payload["patent"]["claim_context"]["independent_claims"][0]["text"] == "독립항 전체 내용"
     assert legal_payload["patent"]["claim_context"]["dependent_claims"][0]["text"] == "종속항 전체 내용"
     assert legal_payload["patent"]["claim_context"]["all_claims_included"] is True
+    assert legal_payload["patent"]["claim_stats"]["active_claim_count"] == 2
     assert legal_payload["patent"]["claim_availability"]["claim_context_provided"] is True
     assert legal_payload["patent"]["claim_availability"]["full_claims_provided"] is True
     assert market_payload["patent"]["claim_context"] == {}
@@ -2409,6 +2626,7 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
         "total_count": 2,
         "standardized_count": 1,
         "non_standardized_count": 1,
+        "missing_reason": None,
         "used_for": "portfolio_defensive_value_only",
     }
     assert citation_evidence["foreign_citation_documents"][0]["publication_number"] == "JP-2017047511-A"
@@ -2422,6 +2640,34 @@ def test_legal_axis_input_includes_citation_evidence(tmp_path):
     assert citation_evidence["foreign_claim_lookup_candidates"][0]["lookup_source"] == "kipris_foreign_demand_paragraph"
     assert legal_payload["patent"]["claim_availability"]["citation_evidence_provided"] is True
     assert technology_payload["patent"]["citation_evidence"] == {}
+
+
+def test_legal_citing_signal_distinguishes_unavailable_foreign_api_from_zero():
+    from agents.valuation_axes.legal import build_input_payload
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "JP"},
+        kipris_api_data={
+            "citing_stats": {
+                "available": False,
+                "total_count": None,
+                "standardized_count": None,
+                "non_standardized_count": None,
+                "missing_reason": "foreign_citing_api_not_connected",
+            }
+        },
+    )
+
+    signal = build_input_payload(state=state, evidence=[])["patent"]["citation_evidence"]["citing_signal"]
+
+    assert signal == {
+        "available": False,
+        "total_count": None,
+        "standardized_count": None,
+        "non_standardized_count": None,
+        "missing_reason": "foreign_citing_api_not_connected",
+        "used_for": "portfolio_defensive_value_only",
+    }
 
 
 def test_attach_legal_context_preserves_prompt_scores_and_adds_input_context(tmp_path):
@@ -2538,7 +2784,7 @@ def test_attach_legal_context_marks_prior_art_unknown_without_comparison_ready_d
     assert overlap["compared_prior_art_count"] == 0
     assert "판단할 수 없음" in overlap["overlap_basis"]
     assert scored["prior_art_references"] == []
-    assert "선행문헌의 대표 청구항 또는 초록" in scored["missing_information"]
+    assert "선행문헌의 대표 청구항" in scored["missing_information"]
 
 
 def test_valuation_citation_evidence_preserves_foreign_document_identifier():
@@ -2600,7 +2846,7 @@ def test_attach_legal_context_removes_resolved_prior_art_missing_message():
 
     assert scored["missing_information"] == ["제품 적용 여부"]
     overlap = scored["subscores"]["right_stability"]["details"]["prior_art_overlap"]
-    assert overlap["assessment_status"] == "comparison_ready"
+    assert overlap["assessment_status"] == "claim_comparison_ready"
     assert overlap["compared_prior_art_count"] == 2
 
 
@@ -2629,10 +2875,76 @@ def test_reconcile_legal_scores_keeps_domestic_prior_art_metric():
     assert scored["subscores"]["right_stability"]["max_score"] == 35
 
 
-def test_reconcile_legal_scores_excludes_prior_art_metric_for_foreign_patent():
+def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_comparison_ready():
     from agents.valuation_axes.legal import reconcile_legal_scores
 
-    state = PatentWorkflowState(patent_structured={"country": "US"})
+    state = PatentWorkflowState(
+        patent_structured={"country": "US"},
+        citation_evidence={"prior_art_collection": {"comparison_ready_count": 2}},
+    )
+    result = {
+        "subscores": {
+            "right_stability": {
+                "score": 0,
+                "details": {
+                    "prior_art_overlap": {"score": 18},
+                    "claim_structure_stability": {"score": 7},
+                },
+            },
+            "claim_protection": {"score": 24},
+            "portfolio_defensive_value": {"score": 15},
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+
+    assert scored["subscores"]["right_stability"]["score"] == 25
+    assert scored["subscores"]["right_stability"]["max_score"] == 35
+    assert scored["score"] == 64
+
+
+def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "JP"},
+        kipris_api_data={
+            "citing_stats": {
+                "available": False,
+                "total_count": None,
+                "missing_reason": "foreign_citing_api_not_connected",
+            }
+        },
+    )
+    result = {
+        "subscores": {
+            "right_stability": {"score": 35},
+            "claim_protection": {"score": 40},
+            "portfolio_defensive_value": {
+                "score": 21,
+                "details": {
+                    "portfolio_connection_coverage": {"score": 15},
+                    "overseas_right_coverage": {"score": 6},
+                    "follow_on_right_signal": {"score": 0},
+                },
+            },
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 21
+    assert scored["subscores"]["portfolio_defensive_value"]["max_score"] == 21
+    assert scored["score"] == 100
+
+
+def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign_patent():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(
+        patent_structured={"country": "US"},
+        citation_evidence={"prior_art_collection": {"comparison_ready_count": 0}},
+    )
     result = {
         "subscores": {
             "right_stability": {
@@ -3019,6 +3331,32 @@ def test_normalize_axis_result_passes_through_prior_art_references():
 
     # Empty/whitespace entries are dropped; identifiers survive normalization.
     assert result["prior_art_references"] == ["KR10-0948760", "KR10-2014-0072547"]
+
+
+def test_axis_llm_retries_when_first_response_is_not_json(monkeypatch):
+    import agents.valuation as valuation
+
+    calls = iter(
+        [
+            "권리성 평가 결과는 다음과 같습니다.",
+            '{"score": 70, "grade": "B", "rationale": "근거 기반 평가", '
+            '"confidence": 0.7, "evidence_ids": [], "risk_factors": [], '
+            '"missing_information": []}',
+        ]
+    )
+    prompts = []
+
+    def fake_call_llm(prompt, **kwargs):
+        prompts.append(prompt)
+        return next(calls)
+
+    monkeypatch.setattr(valuation, "call_llm", fake_call_llm)
+
+    result = valuation.run_axis_llm_required(axis="legal", prompt="original prompt", evidence=[])
+
+    assert result["score"] == 70
+    assert len(prompts) == 2
+    assert "JSON 객체 하나로만 다시 출력" in prompts[1]
 
 
 def test_legal_prompt_grounds_and_surfaces_prior_art_references():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.config import settings
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.observability.langsmith_service import trace
@@ -38,7 +39,13 @@ def run_summary_agent(state: PatentWorkflowState) -> PatentWorkflowState:
 def run_summary_llm_required(state: PatentWorkflowState, summary_result: dict[str, Any]) -> str:
     if state.user_input.get("use_llm_summary", True) is False:
         raise RuntimeError("LLM summary is required, but use_llm_summary is disabled.")
-    markdown = call_llm(build_summary_prompt(state=state, summary_result=summary_result)).strip()
+    markdown = call_llm(
+        build_summary_prompt(state=state, summary_result=summary_result),
+        model=settings.openai_writing_model,
+        reasoning_effort=settings.openai_writing_reasoning_effort,
+        verbosity=settings.openai_writing_verbosity,
+        timeout=settings.openai_writing_timeout_seconds,
+    ).strip()
     if not markdown:
         raise RuntimeError("LLM summary response was empty.")
     return markdown

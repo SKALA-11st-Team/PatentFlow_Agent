@@ -1,4 +1,12 @@
-from workflow.nodes import common_preprocess_node, evidence_compression_node, evidence_search_node, final_merge_node, patent_fetch_node, query_rewriting_node
+from workflow.nodes import (
+    common_preprocess_node,
+    evidence_compression_node,
+    evidence_search_node,
+    final_merge_node,
+    patent_fetch_node,
+    prior_art_fulltext_node,
+    query_rewriting_node,
+)
 from workflow.supervisor import check_evidence_bundle
 from workflow.state import PatentWorkflowState
 
@@ -29,7 +37,7 @@ def test_evidence_check_requires_at_least_three_news_items():
         evidence_bundle=[
             {"evidence_id": "news_001", "source": "naver_news", "source_type": "news", "content": "뉴스 본문"},
             {"evidence_id": "rag_001", "source": "industry_report.pdf", "source_type": "industry_report", "context": "산업 보고서 청크"},
-            {"evidence_id": "dart_001", "source": "dart", "source_type": "company_disclosure", "content": "공시 본문"},
+            {"evidence_id": "disclosure_001", "source": "sk_group_owned_media", "source_type": "company_disclosure", "content": "공시 본문"},
         ]
     )
 
@@ -170,6 +178,47 @@ def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
     assert captured_kwargs["collect_pdf"] is True
 
 
+def test_patent_fetch_accepts_foreign_html_fulltext_without_pdf_path(monkeypatch):
+    monkeypatch.setattr(
+        "workflow.nodes.get_patent",
+        lambda **kwargs: {
+            "id": 70,
+            "management_number": "P201702001-US0",
+            "country": "US",
+            "application_number": "16/622,097",
+            "registration_number": "11,782,432",
+            "status": "등록",
+        },
+    )
+    monkeypatch.setattr(
+        "workflow.nodes.fetch_foreign_patent_rights_data",
+        lambda patent, **kwargs: {
+            "source_type": "kipris_foreign_patent",
+            "metadata": {"country": "US", "application_number": patent["application_number"]},
+            "claim_stats": {"active_claim_count": 1},
+            "family_patents": [],
+            "citation_evidence": {},
+            "citation_stats": {"total_count": 0},
+            "citing_stats": {"total_count": 0},
+            "parsed_pdf": {
+                "selected_type": "GOOGLE_PATENTS_HTML_FULLTEXT",
+                "pdf_path": None,
+                "markdown_paths": ["/tmp/US11782432B2.md"],
+                "markdown_text": "## CLAIMS\n\n1. A method comprising a processor.",
+            },
+        },
+    )
+
+    result = patent_fetch_node(
+        PatentWorkflowState(
+            user_input={"management_number": "P201702001-US0", "collect_kipris_api": True}
+        )
+    )
+
+    assert result.parsed_pdf["selected_type"] == "GOOGLE_PATENTS_HTML_FULLTEXT"
+    assert result.pdf_paths == []
+
+
 def test_common_preprocess_enriches_foreign_pdf_prior_art(monkeypatch):
     monkeypatch.setattr(
         "workflow.nodes.resolve_foreign_prior_art_evidence",
@@ -215,6 +264,77 @@ def test_common_preprocess_enriches_foreign_pdf_prior_art(monkeypatch):
 
     assert result.citation_evidence["foreign_citation_documents"][0]["representative_claims"][0]["text"] == "Prior art claim"
     assert result.citation_evidence["prior_art_collection"]["comparison_ready_count"] == 1
+
+
+def test_prior_art_fulltext_node_merges_pdf_claims_into_citation_evidence(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "workflow.nodes.build_prior_art_patent_context",
+        lambda **kwargs: {
+            "comparison_mode": "prior-art",
+            "candidate_count": 2,
+            "similar_patents": [],
+            "prior_art_patents": [
+                {
+                    "display_number": "US 20100249974 A1",
+                    "country_code": "US",
+                    "document_number": "20100249974",
+                    "kind_code": "A1",
+                    "title": "Advanced process control",
+                    "abstract": "Sampling rate based on process capability.",
+                    "representative_claims": [
+                        {
+                            "claim_no": 1,
+                            "is_independent": True,
+                            "dependency": None,
+                            "text": "A semiconductor manufacturing method comprising determining a sampling rate.",
+                        }
+                    ],
+                    "lookup_status": "resolved",
+                    "lookup_source": "prior_art_pdf_fulltext",
+                    "comparison_status": "claim_comparison_ready",
+                }
+            ],
+            "warnings": [],
+        },
+    )
+    state = PatentWorkflowState(
+        user_input={"artifact_dir": str(tmp_path)},
+        preprocessed_patent={
+            "metadata": {
+                "country": "JP",
+                "prior_art": ["US20100249974 A1", "JP1999345752 A"],
+            }
+        },
+        citation_evidence={
+            "foreign_claim_lookup_candidates": [
+                {"display_number": "US 20100249974 A1"},
+                {"display_number": "JP 1999345752 A"},
+            ],
+            "foreign_citation_documents": [
+                {
+                    "display_number": "US20100249974 A1",
+                    "abstract": "기존 KIPRIS 초록",
+                    "representative_claims": [],
+                }
+            ],
+        },
+    )
+
+    result = prior_art_fulltext_node(state)
+
+    document = result.citation_evidence["foreign_citation_documents"][0]
+    assert len(result.citation_evidence["foreign_citation_documents"]) == 1
+    assert document["lookup_source"] == "prior_art_pdf_fulltext"
+    assert document["representative_claims"][0]["claim_no"] == 1
+    assert result.citation_evidence["prior_art_collection"] == {
+        "candidate_count": 2,
+        "comparison_ready_count": 1,
+        "claim_comparison_ready_count": 1,
+        "abstract_only_count": 0,
+        "fulltext_claims_unparsed_count": 0,
+        "identifier_only_count": 1,
+        "comparison_status": "claim_comparison_ready",
+    }
 
 
 def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
@@ -440,6 +560,9 @@ def test_evidence_compression_merges_portfolio_evidence(monkeypatch):
 
 
 def test_evidence_compression_preserves_skax_official_evidence(monkeypatch):
+    # SK AX 공식 근거도 이제 압축 단계를 거치되 식별 필드(source/source_type/url/
+    # related_axes/content)는 그대로 보존된다(normalize_company_disclosure_compression).
+    skax_content = "SK AX 공식 금융 서비스 근거 본문"
     monkeypatch.setattr(
         "workflow.nodes.compress_evidence_items",
         lambda items, **kwargs: {
@@ -449,13 +572,23 @@ def test_evidence_compression_preserves_skax_official_evidence(monkeypatch):
                     "source": "naver_news",
                     "source_type": "news",
                     "compressed_summary": "뉴스 요약",
-                }
+                },
+                {
+                    "evidence_id": "skax_site_001",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "title": "SK AX 금융 서비스",
+                    "url": "https://www.skax.co.kr/finance/service",
+                    "content": skax_content,
+                    "related_axes": ["business_fit"],
+                    "compressed_summary": "SK AX 금융 서비스 요약",
+                    "sk_ax_relevant": True,
+                },
             ],
             "warnings": [],
-            "stats": {"compressed_count": 1, "input_count": len(items)},
+            "stats": {"compressed_count": 2, "input_count": len(items)},
         },
     )
-    skax_content = "SK AX 공식 금융 서비스 근거 본문"
     state = PatentWorkflowState(
         user_input={"no_save": True},
         patent_structured={"id": 1, "related_product": "로보어드바이저"},
@@ -491,7 +624,6 @@ def test_evidence_compression_preserves_skax_official_evidence(monkeypatch):
     assert by_id["skax_site_001"]["url"] == "https://www.skax.co.kr/finance/service"
     assert by_id["skax_site_001"]["source"] == "sk_ax_official"
     assert by_id["skax_site_001"]["source_type"] == "company_disclosure"
-    assert by_id["skax_site_001"]["related_axes"] == ["business_fit"]
     assert result.query_plan["compressed_evidence"]["stats"]["skax_official_evidence_count"] == 1
 
 
@@ -546,9 +678,25 @@ def test_evidence_compression_deduplicates_preserved_skax_official_evidence(monk
 def test_evidence_compression_preserved_skax_reaches_business_fit_input(monkeypatch):
     from agents.valuation_axes.business_fit import build_input_payload
 
+    # skax는 이제 압축 단계를 통과하므로, 압축 결과에 식별 필드를 보존한 채 담겨
+    # business_fit 입력의 skax_official_evidence로 도달한다.
     monkeypatch.setattr(
         "workflow.nodes.compress_evidence_items",
-        lambda items, **kwargs: {"items": [], "warnings": [], "stats": {"compressed_count": 0}},
+        lambda items, **kwargs: {
+            "items": [
+                {
+                    "evidence_id": "skax_site_001",
+                    "source": "sk_ax_official",
+                    "source_type": "company_disclosure",
+                    "title": "SK AX 금융 서비스",
+                    "url": "https://www.skax.co.kr/finance/service",
+                    "content": "로보어드바이저와 금융 서비스 공식 근거",
+                    "related_axes": ["business_fit"],
+                }
+            ],
+            "warnings": [],
+            "stats": {"compressed_count": 1},
+        },
     )
     state = PatentWorkflowState(
         user_input={"no_save": True},
@@ -673,7 +821,7 @@ def _report_state(markdown, total_score=223):
 def test_report_validation_passes_well_formed_report():
     from workflow.nodes import report_validation_node
 
-    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합 점수 223/400점, 평균 55.8/100점"
+    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합 점수 223/300점, 평균 74.3/100점"
     result = report_validation_node(_report_state(md)).report_validation_result
 
     assert result["passed"] is True
@@ -683,7 +831,7 @@ def test_report_validation_passes_well_formed_report():
 def test_report_validation_flags_missing_sections_and_score_mismatch():
     from workflow.nodes import report_validation_node
 
-    md = "## 1. 한눈에 보는 검토 결과\n## 2. 평가대상\n종합 점수 999/400점"
+    md = "## 1. 한눈에 보는 검토 결과\n## 2. 평가대상\n종합 점수 999/300점"
     result = report_validation_node(_report_state(md, total_score=223)).report_validation_result
 
     assert result["passed"] is False
@@ -703,11 +851,11 @@ def _capture_collect_external_evidence(monkeypatch):
     return captured
 
 
-def test_evidence_search_node_enables_kipris_and_threads_dart(monkeypatch):
-    # EVID-02: KIPRIS 경쟁근거 기본 ON, DART corp_code는 user_input로 전달.
+def test_evidence_search_node_enables_kipris_by_default(monkeypatch):
+    # EVID-02: KIPRIS 경쟁근거 기본 ON.
     captured = _capture_collect_external_evidence(monkeypatch)
     state = PatentWorkflowState(
-        user_input={"no_save": True, "dart_corp_code": "00126380"},
+        user_input={"no_save": True},
         patent_structured={"application_number": "10-2024-0000001"},
         preprocessed_patent={"metadata": {}, "sections": {}},
         query_plan={},
@@ -716,7 +864,6 @@ def test_evidence_search_node_enables_kipris_and_threads_dart(monkeypatch):
     evidence_search_node(state)
 
     assert captured["include_kipris"] is True
-    assert captured["dart_corp_code"] == "00126380"
 
 
 def test_evidence_search_node_kipris_can_be_disabled(monkeypatch):
@@ -731,4 +878,19 @@ def test_evidence_search_node_kipris_can_be_disabled(monkeypatch):
     evidence_search_node(state)
 
     assert captured["include_kipris"] is False
-    assert captured["dart_corp_code"] is None
+
+
+def test_report_validation_flags_recommendation_mismatch():
+    from workflow.nodes import report_validation_node
+
+    md = (
+        "\n".join(f"## {i}. 섹션" for i in range(1, 7))
+        + "\n| 종합 검토 의견 | 조건부 유지 |\n종합 점수 223/400점"
+    )
+    state = _report_state(md)
+    state.valuation_result["recommendation"] = "추가 정보 필요"
+
+    result = report_validation_node(state).report_validation_result
+
+    assert result["passed"] is False
+    assert any("recommendation" in issue for issue in result["issues"])

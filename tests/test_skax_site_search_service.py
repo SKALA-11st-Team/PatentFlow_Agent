@@ -1,3 +1,6 @@
+import threading
+import time
+
 import requests
 
 from services.evidence.skax_site_search_service import (
@@ -74,6 +77,48 @@ def test_collect_skax_site_evidence_uses_rewritten_query_override():
     assert result["query_generation_diagnostics"]["query_source"] == "rule_based_with_query_rewriting"
 
 
+def test_collect_skax_site_evidence_searches_queries_concurrently():
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    class SlowSearchClient:
+        def search(self, query, *, max_results=5):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            time.sleep(0.03)
+            with lock:
+                active -= 1
+            return {
+                "results": [
+                    {
+                        "title": query,
+                        "url": f"https://www.skax.co.kr/finance/{query.rsplit(' ', 1)[-1]}",
+                        "snippet": "로보어드바이저 데이터분석 금융",
+                        "content": "로보어드바이저 데이터분석 금융",
+                    }
+                ],
+                "diagnostics": {"search_provider": "fake"},
+            }
+
+    result = collect_skax_site_evidence(
+        PATENT_CONTEXT,
+        search_client=SlowSearchClient(),
+        queries_override=["로보어드바이저 one", "로보어드바이저 two"],
+        max_queries=2,
+        max_results_per_query=1,
+    )
+
+    assert max_active > 1
+    assert result["queries"][:2] == [
+        "site:skax.co.kr 로보어드바이저",
+        "site:skax.co.kr SK AX 로보어드바이저",
+    ]
+    assert [diagnostic["query"] for diagnostic in result["search_diagnostics"][:2]] == result["queries"][:2]
+
+
 def test_build_search_queries_adds_finance_hints_only_when_context_supports_them():
     blockchain_context = {
         "관리번호": "P202307002-KR0",
@@ -146,8 +191,11 @@ def test_filter_search_results_keeps_skax_non_file_urls_and_sorts_by_relevance()
 
     filtered = filter_search_results(results, PATENT_CONTEXT)
 
+    # 관련성 점수로 더는 버리지 않는다. skax.co.kr 비파일 URL은 모두 통과하고,
+    # 점수가 높은 항목이 앞에 오도록 정렬만 한다(외부 도메인/PDF/중복은 여전히 제외).
     assert [item["url"] for item in filtered] == [
         "https://www.skax.co.kr/financial/robo-advisor",
+        "https://www.skax.co.kr/data/analytics",
     ]
     assert "로보어드바이저" in filtered[0]["matched_keywords"]
     assert "matched_related_product" in filtered[0]["score_reasons"]
@@ -213,7 +261,6 @@ def test_collect_skax_site_evidence_fetches_relevant_results_and_normalizes_evid
     assert "로보어드바이저" in evidence["content"]
     assert "메뉴 텍스트" not in evidence["content"]
     assert "푸터 텍스트" not in evidence["content"]
-    assert "business_fit" in evidence["related_axes"]
     assert evidence["management_number"] == "P202405001-KR0"
     assert evidence["related_product"] == "로보어드바이저"
     assert evidence["business_area"] == "Data"
@@ -222,10 +269,12 @@ def test_collect_skax_site_evidence_fetches_relevant_results_and_normalizes_evid
     assert "로보어드바이저" in evidence["matched_keywords"]
     assert result["stats"]["generated_query_count"] == 1
     assert result["stats"]["searched_result_count"] == 4
-    assert result["stats"]["filtered_result_count"] == 1
+    # 관련성으로 더는 버리지 않으므로 skax 비파일 URL 2건이 모두 통과한다(외부/PNG 제외).
+    assert result["stats"]["filtered_result_count"] == 2
     assert result["stats"]["fetched_url_count"] == 1
     assert result["stats"]["collected_evidence_count"] == 1
-    assert result["stats"]["skipped_url_count"] == 3
+    # data/analytics가 이제 필터를 통과하므로(외부/PNG만 제외) 덜 버려진다.
+    assert result["stats"]["skipped_url_count"] == 2
     assert result["stats"]["failed_url_count"] == 0
 
 
@@ -1145,7 +1194,9 @@ def test_tavily_search_client_extracts_only_skax_results(monkeypatch):
 
     assert captured["url"] == "https://api.tavily.com/search"
     assert captured["json"]["api_key"] == "tavily-key"
-    assert captured["json"]["query"] == "site:skax.co.kr 로보어드바이저"
+    # Tavily는 site: 연산자를 지원하지 않으므로 도메인 제한은 include_domains로만 하고,
+    # 쿼리 텍스트에서는 site:<domain> 토큰을 제거해 키워드만 보낸다.
+    assert captured["json"]["query"] == "로보어드바이저"
     assert captured["json"]["include_domains"] == ["skax.co.kr", "skcareersjournal.com", "openapi.sk.com"]
     assert captured["json"]["include_raw_content"] is True
     assert captured["json"]["search_depth"] == "basic"
@@ -1534,7 +1585,7 @@ def test_aicc_scores_lower_than_finance_ai_candidate():
     assert "matched_preferred_path:/finance" in filtered[0]["score_reasons"]
 
 
-def test_blockchain_broad_hints_alone_do_not_select_unrelated_finance_pages():
+def test_blockchain_related_page_ranks_first_unrelated_page_still_kept():
     context = {
         "management_number": "P202307002-KR0",
         "title_final": "블록체인 합의 과정에서의 서명 검증 방법 및 시스템",
@@ -1559,9 +1610,15 @@ def test_blockchain_broad_hints_alone_do_not_select_unrelated_finance_pages():
         context,
     )
 
-    assert [item["url"] for item in filtered] == ["https://www.skax.co.kr/security/chainz"]
+    # 관련성 점수로 더는 버리지 않는다(실제 관련성 판단은 압축 단계로 이관).
+    # 두 skax 페이지 모두 통과하되, 대상 특허와 직접 관련된 ChainZ 페이지가
+    # 더 높은 점수로 맨 앞에 온다.
+    assert filtered[0]["url"] == "https://www.skax.co.kr/security/chainz"
     assert "matched_related_product" in filtered[0]["score_reasons"]
     assert "matched_strong_term:블록체인" in filtered[0]["score_reasons"]
+    assert "https://www.skax.co.kr/finance/payment-convenience-improvement" in [
+        item["url"] for item in filtered
+    ]
 
 
 def test_manufacturing_query_generation_includes_mcs_hint_without_finance_terms():
@@ -1603,3 +1660,42 @@ def test_default_search_client_falls_back_to_google_html_without_config(monkeypa
     monkeypatch.delenv("GOOGLE_CUSTOM_SEARCH_CX", raising=False)
 
     assert isinstance(default_search_client(), GoogleHtmlSearchClient)
+
+
+def test_default_search_falls_back_when_tavily_returns_no_results(monkeypatch):
+    from services.evidence.skax_site_search_service import search_with_default_fallback
+
+    monkeypatch.setenv("TAVILY_API_KEY", "tavily-key")
+    monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_API_KEY", "google-key")
+    monkeypatch.setenv("GOOGLE_CUSTOM_SEARCH_CX", "cx")
+    monkeypatch.setattr(
+        TavilySearchClient,
+        "search",
+        lambda self, query, max_results: {
+            "results": [],
+            "diagnostics": {
+                "search_provider": "tavily_search",
+                "search_failure_reason": "no_skax_results",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        GoogleCustomSearchClient,
+        "search",
+        lambda self, query, max_results: {
+            "results": [{"title": "SK AX 제조", "url": "https://www.skax.co.kr/manufacturing"}],
+            "diagnostics": {
+                "search_provider": "google_custom_search_json",
+                "search_failure_reason": None,
+            },
+        },
+    )
+
+    result = search_with_default_fallback("site:skax.co.kr 제조", max_results=3)
+
+    assert len(result["results"]) == 1
+    assert result["diagnostics"]["fallback_used"] is True
+    assert [item["search_provider"] for item in result["diagnostics"]["fallback_attempts"]] == [
+        "tavily_search",
+        "google_custom_search_json",
+    ]

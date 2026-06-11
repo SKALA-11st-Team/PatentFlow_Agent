@@ -1,4 +1,7 @@
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import contextvars
+import re
 
 from app.config import settings
 from services.patent.kipris_patent_service import (
@@ -9,6 +12,10 @@ from services.patent.kipris_patent_service import (
     resolve_foreign_prior_art_evidence,
 )
 from services.patent.markdown_preprocess_service import build_preprocessed_patent
+from services.patent.prior_art_patent_service import (
+    build_prior_art_patent_context,
+    prior_art_context_citation_documents,
+)
 from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
 from services.evidence.compression_service import (
     DEFAULT_RAG_SCORE_THRESHOLD,
@@ -49,7 +56,8 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
             parsed_pdf = state.kipris_api_data.get("parsed_pdf") or {}
             if parsed_pdf:
                 state.parsed_pdf = parsed_pdf
-                state.pdf_paths = [parsed_pdf["pdf_path"]]
+                pdf_path = parsed_pdf.get("pdf_path")
+                state.pdf_paths = [pdf_path] if pdf_path else []
         else:
             state.kipris_api_data = fetch_kipris_bibliography(patent["application_number"])
         state.kipris_family_patents = state.kipris_api_data.get("family_patents", [])
@@ -210,6 +218,137 @@ def common_preprocess_node(state: PatentWorkflowState) -> PatentWorkflowState:
 
 
 @trace(run_type="tool")
+def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    if state.prior_art_context is not None:
+        return state
+    preprocessed = state.preprocessed_patent or {}
+    metadata = preprocessed.get("metadata") if isinstance(preprocessed.get("metadata"), dict) else {}
+    if not metadata.get("prior_art"):
+        state.prior_art_context = {
+            "comparison_mode": "prior-art",
+            "candidate_count": 0,
+            "similar_patents": [],
+            "prior_art_patents": [],
+            "warnings": ["prior_art_candidates_not_found"],
+        }
+        return state
+
+    artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
+    output_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
+    try:
+        state.prior_art_context = build_prior_art_patent_context(
+            target_metadata=metadata,
+            kipris_api_data=state.kipris_api_data,
+            collect_pdf=bool(output_dir),
+            output_dir=output_dir,
+            pdf_text_limit=None,
+        )
+    except Exception as exc:
+        state.prior_art_context = {
+            "comparison_mode": "prior-art",
+            "candidate_count": len(metadata.get("prior_art") or []),
+            "similar_patents": [],
+            "prior_art_patents": [],
+            "warnings": [f"prior_art_fulltext_collection_failed:{exc.__class__.__name__}"],
+        }
+        return state
+    fulltext_documents = prior_art_context_citation_documents(state.prior_art_context)
+    if fulltext_documents:
+        state.citation_evidence = merge_prior_art_citation_evidence(
+            state.citation_evidence,
+            fulltext_documents,
+            candidate_count=int(state.prior_art_context.get("candidate_count") or 0),
+        )
+        if state.kipris_api_data is not None:
+            state.kipris_api_data["citation_evidence"] = state.citation_evidence
+    return state
+
+
+def merge_prior_art_citation_evidence(
+    evidence: dict | None,
+    fulltext_documents: list[dict],
+    *,
+    candidate_count: int,
+) -> dict:
+    merged = dict(evidence or {})
+    by_number = {
+        prior_art_document_key(item): dict(item)
+        for item in merged.get("foreign_citation_documents") or []
+        if isinstance(item, dict)
+    }
+    for document in fulltext_documents:
+        key = prior_art_document_key(document)
+        existing = by_number.get(key, {})
+        by_number[key] = {
+            **existing,
+            **document,
+            "abstract": document.get("abstract") or existing.get("abstract"),
+            "representative_claims": document.get("representative_claims") or existing.get("representative_claims") or [],
+        }
+    documents = list(by_number.values())
+    for item in documents:
+        if item.get("representative_claims"):
+            item["comparison_status"] = "claim_comparison_ready"
+        elif item.get("comparison_status") in {None, "comparison_ready"} and item.get("abstract"):
+            item["comparison_status"] = "abstract_only"
+    claim_ready_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("comparison_status") == "claim_comparison_ready"
+    }
+    abstract_only_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("comparison_status") == "abstract_only"
+    }
+    claims_unparsed_numbers = {
+        prior_art_document_key(item)
+        for item in documents
+        if item.get("comparison_status") == "fulltext_claims_unparsed"
+    }
+    resolved_numbers = claim_ready_numbers | abstract_only_numbers | claims_unparsed_numbers
+    unresolved = [
+        item
+        for item in merged.get("foreign_claim_lookup_candidates") or []
+        if prior_art_document_key(item) not in resolved_numbers
+    ]
+    merged.update(
+        {
+            "foreign_citation_documents": documents,
+            "foreign_identifier_only_documents": unresolved,
+            "prior_art_collection": {
+                "candidate_count": candidate_count,
+                "comparison_ready_count": len(claim_ready_numbers),
+                "claim_comparison_ready_count": len(claim_ready_numbers),
+                "abstract_only_count": len(abstract_only_numbers),
+                "fulltext_claims_unparsed_count": len(claims_unparsed_numbers),
+                "identifier_only_count": max(0, candidate_count - len(resolved_numbers)),
+                "comparison_status": (
+                    "claim_comparison_ready"
+                    if claim_ready_numbers
+                    else "abstract_only"
+                    if abstract_only_numbers
+                    else "fulltext_claims_unparsed"
+                    if claims_unparsed_numbers
+                    else "unknown"
+                ),
+            },
+        }
+    )
+    return merged
+
+
+def prior_art_document_key(item: dict) -> str:
+    display_number = item.get("display_number")
+    if display_number:
+        return re.sub(r"[^0-9A-Z]", "", str(display_number).upper())
+    return "|".join(
+        str(item.get(key) or "").upper()
+        for key in ("country_code", "document_number", "kind_code")
+    )
+
+
+@trace(run_type="tool")
 def final_merge_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.final_report = {
         "summary": state.summary_result,
@@ -274,60 +413,81 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
 
     query_plan = state.query_plan or {}
     skip_news_evidence = bool(state.user_input.get("skip_news_evidence"))
-    result = collect_external_evidence(
-        preprocessed_patent=preprocessed,
-        patent_id=patent.get("id") or preprocessed.get("patent_id"),
-        application_number=patent.get("application_number"),
-        query_limit_per_axis=MAX_SEARCH_QUERIES,
-        include_naver=not skip_news_evidence,
-        include_gnews=not skip_news_evidence,
-        # EVID-02: 경쟁특허 근거(KIPRIS)를 기본 수집한다(application_number 있을 때만 실효).
-        # DART 재무근거는 corp_code 자동추출이 불가하므로 user_input로 주입될 때만(opt-in) 수집한다.
-        include_kipris=state.user_input.get("include_kipris_competitor", True),
-        dart_corp_code=state.user_input.get("dart_corp_code"),
-        dart_bgn_de=state.user_input.get("dart_bgn_de"),
-        dart_end_de=state.user_input.get("dart_end_de"),
-        ko_queries_override=query_plan.get("ko_queries", []),
-        en_queries_override=query_plan.get("en_queries", []),
-        output_dir=artifact_subdir(state, "api_evidence"),
-        save=not state.user_input.get("no_save", False),
-    )
+    patent_id = patent.get("id") or preprocessed.get("patent_id")
+    no_save = state.user_input.get("no_save", False)
+
+    # 뉴스 검색·Industry RAG·SK AX 검색은 서로 독립이므로 동시에 시작한다.
+    # 뉴스 필터는 뉴스 검색 결과에 의존하므로 뉴스 작업 안에서 체이닝하고,
+    # 세 작업이 모두 끝난 뒤 merge/save 한다.
+    def _news_task() -> tuple[dict, dict]:
+        result = collect_external_evidence(
+            preprocessed_patent=preprocessed,
+            patent_id=patent_id,
+            application_number=patent.get("application_number"),
+            query_limit_per_axis=MAX_SEARCH_QUERIES,
+            include_naver=not skip_news_evidence,
+            include_gnews=not skip_news_evidence,
+            # EVID-02: 경쟁특허 근거(KIPRIS)를 기본 수집한다(application_number 있을 때만 실효).
+            include_kipris=state.user_input.get("include_kipris_competitor", True),
+            ko_queries_override=query_plan.get("ko_queries", []),
+            en_queries_override=query_plan.get("en_queries", []),
+            output_dir=artifact_subdir(state, "api_evidence"),
+            save=not no_save,
+        )
+        if skip_news_evidence:
+            news_filter_result = {
+                "kept": [],
+                "output_path": None,
+                "stats": {"input_count": 0, "kept_count": 0, "rejected_count": 0},
+                "warning": None,
+            }
+        else:
+            news_filter_result = filter_news_safely(
+                items=[item for item in result.get("items", []) if item.get("source_type") == "news"],
+                preprocessed_patent=preprocessed,
+                patent_id=patent_id,
+                output_dir=artifact_subdir(state, "filtered_evidence") / "news",
+                save=not no_save,
+            )
+        return result, news_filter_result
+
+    def _industry_task() -> dict:
+        return search_industry_rag_safely(
+            preprocessed_patent=preprocessed,
+            patent_id=patent_id,
+            rag_queries=query_plan.get("industry_rag_queries", []),
+            # EVID-03: 특허 분야→산업 매핑 필터에 patent_structured 컨텍스트를 전달한다.
+            patent_context=patent,
+            output_dir=artifact_subdir(state, "industry_rag"),
+            save=not no_save,
+        )
+
+    def _skax_task() -> dict:
+        skax_context = build_skax_patent_context_from_state(state)
+        return collect_skax_site_evidence_safely(
+            skax_context,
+            queries_override=query_plan.get("skax_site_queries") or None,
+        )
+
+    # copy_context로 현재 LangSmith run tree를 워커 스레드에 전파해 트레이스가
+    # 워크플로우 노드 아래에 중첩되게 한다(흩어짐 방지).
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        news_future = executor.submit(contextvars.copy_context().run, _news_task)
+        industry_future = executor.submit(contextvars.copy_context().run, _industry_task)
+        skax_future = executor.submit(contextvars.copy_context().run, _skax_task)
+        result, news_filter_result = news_future.result()
+        industry_result = industry_future.result()
+        skax_result = skax_future.result()
+
+    # 세 작업이 모두 끝난 뒤 merge/save.
     state.search_queries = compact_workflow_queries(
         [*state.search_queries, *result.get("queries", []), *result.get("gnews_queries", [])]
     )
     raw_items = result.get("items", [])
-    if skip_news_evidence:
-        news_filter_result = {
-            "kept": [],
-            "output_path": None,
-            "stats": {"input_count": 0, "kept_count": 0, "rejected_count": 0},
-            "warning": None,
-        }
-    else:
-        news_filter_result = filter_news_safely(
-            items=[item for item in raw_items if item.get("source_type") == "news"],
-            preprocessed_patent=preprocessed,
-            patent_id=patent.get("id") or preprocessed.get("patent_id"),
-            output_dir=artifact_subdir(state, "filtered_evidence") / "news",
-            save=not state.user_input.get("no_save", False),
-        )
     non_news_items = [item for item in raw_items if item.get("source_type") != "news"]
     evidence_items = [*non_news_items, *news_filter_result.get("kept", [])]
-    industry_result = search_industry_rag_safely(
-        preprocessed_patent=preprocessed,
-        patent_id=patent.get("id") or preprocessed.get("patent_id"),
-        rag_queries=query_plan.get("industry_rag_queries", []),
-        patent_context=patent,
-        output_dir=artifact_subdir(state, "industry_rag"),
-        save=not state.user_input.get("no_save", False),
-    )
     if industry_result.get("items"):
         evidence_items = [*evidence_items, *industry_result["items"]]
-    skax_context = build_skax_patent_context_from_state(state)
-    skax_result = collect_skax_site_evidence_safely(
-        skax_context,
-        queries_override=query_plan.get("skax_site_queries") or None,
-    )
     skax_items = skax_result.get("items", [])
     if skax_items:
         evidence_items = merge_evidence_items(evidence_items, skax_items)
@@ -526,16 +686,16 @@ def compress_evidence_safely(
     output_dir: Path,
     save: bool,
 ) -> dict:
+    # SK AX 공식 근거(company_disclosure)도 이제 압축 단계를 함께 거친다(요약 + 관련성
+    # 판단). skax_items는 압축이 통째로 실패했을 때 원문을 보존하기 위한 폴백용이다.
     skax_items = [item for item in items if is_skax_official_evidence(item)]
-    compressible_items = [item for item in items if not is_skax_official_evidence(item)]
     try:
         result = compress_evidence_items(
-            compressible_items,
+            items,
             preprocessed_patent=preprocessed_patent,
             rag_score_threshold=DEFAULT_RAG_SCORE_THRESHOLD,
         )
-        merged_items = merge_evidence_items(result.get("items", []), skax_items)
-        merged_items = merge_evidence_items(merged_items, portfolio_items)
+        merged_items = merge_evidence_items(result.get("items", []), portfolio_items)
         result = {
             **result,
             "items": merged_items,
@@ -574,15 +734,12 @@ def compress_evidence_safely(
 
 
 def is_skax_official_evidence(item: dict) -> bool:
+    # SK AX 사이트 검색 근거는 source(sk_ax_official) 또는 evidence_id(skax_site_*)로
+    # 식별한다. 압축 후에도 두 필드는 보존되므로 related_axes 태그는 더 이상 쓰지 않는다.
     if first_non_empty_text(item.get("source")) == "sk_ax_official":
         return True
     evidence_id = first_non_empty_text(item.get("evidence_id"))
-    if evidence_id.startswith("skax_site_"):
-        return True
-    related_axes = item.get("related_axes") or []
-    if isinstance(related_axes, str):
-        related_axes = [related_axes]
-    return item.get("source_type") == "company_disclosure" and "business_fit" in related_axes
+    return evidence_id.startswith("skax_site_")
 
 
 def save_filtered_evidence_safely(
@@ -720,8 +877,20 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
         if missing_sections:
             issues.append(f"Final report missing required sections: {', '.join(missing_sections)}")
         total_score = valuation.get("total_score")
-        if isinstance(total_score, int) and f"{total_score}/400" not in markdown:
+        total_score_max = valuation.get("total_score_max", 300)
+        if isinstance(total_score, int) and f"{total_score}/{total_score_max}" not in markdown:
             issues.append(f"Final report total score does not match valuation total_score ({total_score})")
+        recommendation = str(valuation.get("recommendation") or "").strip()
+        if recommendation:
+            match = re.search(
+                r"(?m)^\|\s*종합 검토 의견\s*\|\s*([^|]+?)\s*\|$",
+                markdown,
+            )
+            report_recommendation = match.group(1).strip() if match else None
+            if report_recommendation != recommendation:
+                issues.append(
+                    f"Final report recommendation does not match valuation recommendation ({recommendation})"
+                )
     # Forbidden expressions / evaluator tone are judged by the LLM final check
     # (it reads the report body), not by brittle substring matching here.
     passed = not issues

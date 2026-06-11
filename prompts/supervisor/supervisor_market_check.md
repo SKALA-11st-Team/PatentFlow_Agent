@@ -9,7 +9,7 @@
 - marketability_metrics
 - industry_report evidence
 - naver_news evidence
-- gnews evidence
+- global_news evidence
 - evidence.samples
 
 ## 정상으로 볼 수 있는 상태
@@ -38,19 +38,20 @@
 
 ## 재평가가 필요한 신호
 - 시장성 고득점인데 근거가 넓은 산업 성장 기사뿐입니다.
-- GNews 또는 Naver 뉴스의 역할이 뒤섞여 있습니다.
+- 글로벌 뉴스 또는 Naver 뉴스의 역할이 뒤섞여 있습니다.
 - CPC 성장성 계산값과 subscore가 서로 맞지 않습니다.
 - SK AX 사업 연계성을 시장성 점수의 핵심 근거로 설명합니다.
 
-## 근거 재수집이 필요한 신호 (첫 평가에서만)
-- 산업 리포트, 국내 뉴스, GNews가 모두 부족합니다.
+## 근거 재수집이 필요한 신호
+- 산업 리포트, 국내 뉴스, 글로벌 뉴스가 모두 부족합니다.
 - evidence_id가 실제 evidence_bundle에 존재하지 않습니다.
 - 시장성 rationale이 참조하는 기사나 리포트가 evidence.samples에 없습니다.
 
-## 재수집 루프 방지
-- CPC 기반 시장 성장성(공개특허 수·CAGR·추세)은 KIPRIS에서 자동 계산되는 정량값이며 뉴스/산업 RAG 외부 검색으로는 채워지지 않습니다. **CPC 성장성 산정 불가는 query_rewriting 사유가 아닙니다**(missing_information/confidence로만 처리).
-- `retry_count`가 0(첫 평가)일 때만 외부 검색 근거(산업 리포트·국내 뉴스·GNews) 부족을 query_rewriting으로 보낼 수 있습니다.
-- `retry_count`가 1 이상인데도 외부 근거가 여전히 부족하면, 재검색으로 채워지지 않는 것으로 보고 query_rewriting을 다시 요청하지 마세요. 부족은 그대로 두고 `passed`로 판정하며, 시장성 점수가 낮은 것은 정상입니다.
+## query_rewriting은 "채울 수 있는 부족"에만
+- query_rewriting은 재검색으로 **채워질 수 있는** 외부 근거(산업 리포트 RAG, 국내 뉴스 Naver, 글로벌 뉴스)가 빈약할 때만 선택합니다.
+- 재검색으로 **채워지지 않는** 부족은 query_rewriting 사유가 아니라 missing_information/confidence로만 처리하세요:
+  - CPC 기반 시장 성장성(공개특허 수·CAGR·추세)은 KIPRIS에서 자동 계산되는 정량값이라 외부 검색으로 채워지지 않습니다.
+- 재수집 **횟수 제한은 시스템(코드)이 관리**합니다. 같은 부족이 반복되어 보이더라도 retry 횟수는 신경 쓰지 말고, 지금 주어진 근거의 품질만 보고 판정하세요. 한도를 넘으면 시스템이 알아서 진행시킵니다.
 
 ## 근거 존재·내용 판단 주의
 - evidence.samples에는 이 평가가 인용한 근거(evidence_ids)가 우선 포함되며, 전체 근거의 일부 미리보기입니다.
@@ -70,4 +71,4 @@ Return ONLY one JSON object.
 status 선택 기준:
 - `passed`: 시장성 평가가 자기 기준에 맞고, 산업 시장성·시장 성장성·글로벌 사업성 근거가 확인됨
 - `valuation_retry`: 근거는 있으나 시장성 평가 논리, 점수, 표현을 다시 써야 함
-- `query_rewriting`: 시장성 판단에 필요한 산업 리포트, 뉴스, GNews, CPC 근거가 부족함
+- `query_rewriting`: 시장성 판단에 필요한 산업 리포트, 뉴스, 글로벌 뉴스, CPC 근거가 부족함

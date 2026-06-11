@@ -24,6 +24,11 @@ from workflow.state import PatentWorkflowState
 
 VALUATION_AXES = list(AXIS_MODULES)
 AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
+# 종합 점수는 권리성·기술성·시장성 3축만 평균낸다(사업 연계성 제외).
+CORE_VALUATION_AXES = ("legal", "technology", "market")
+CORE_VALUATION_TOTAL_MAX = len(CORE_VALUATION_AXES) * 100
+# 사업 연계성 점수가 이 값 이상이면 3축 점수와 무관하게 종합 지표를 "유지"로 본다.
+BUSINESS_FIT_OVERRIDE_SCORE = 60
 
 
 @dataclass(frozen=True)
@@ -119,8 +124,17 @@ def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, An
 
 def run_axis_llm_once(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
     # 재현성: seed 지원 모델 + temperature=0 + 고정 seed로 동일 입력→동일 점수를 보장한다.
-    raw = call_llm(prompt, model=settings.valuation_model, temperature=0.0, seed=valuation_seed())
+    raw = call_llm(
+        prompt,
+        model=settings.openai_valuation_model or settings.valuation_model,
+        temperature=0.0,
+        seed=valuation_seed(),
+        reasoning_effort=settings.openai_valuation_reasoning_effort,
+    )
     parsed = parse_json_object(raw)
+    if not parsed:
+        raw = call_llm(build_json_repair_prompt(axis=axis, raw=raw))
+        parsed = parse_json_object(raw)
     if not parsed:
         raise RuntimeError(f"LLM valuation response for {axis} was not valid JSON.")
     return normalize_axis_llm_result(axis, parsed, evidence=evidence)
@@ -146,6 +160,18 @@ def combine_axis_ensemble(axis: str, results: list[dict[str, Any]]) -> dict[str,
         2,
     )
     return validate_axis_result(axis, selected)
+
+
+def build_json_repair_prompt(*, axis: str, raw: str) -> str:
+    return (
+        "아래 LLM 응답을 특허 가치평가 축 결과 JSON 객체 하나로만 다시 출력하세요.\n"
+        "설명, 마크다운 코드블록, 접두사, 접미사를 쓰지 말고 JSON만 출력하세요.\n"
+        "필수 필드: score, grade, rationale, confidence, evidence_ids, risk_factors, missing_information.\n"
+        "권리성 축이면 가능한 경우 prior_art_references도 포함하세요.\n"
+        f"평가축: {axis}\n\n"
+        "원본 응답:\n"
+        f"{raw}"
+    )
 
 
 def build_axis_prompt(
@@ -321,41 +347,61 @@ def build_final_valuation_result(
     # 운영 설정 컷오프로 축 등급을 재산정한다(앙상블/reconcile 단계는 기본 컷오프로 계산했을 수 있음).
     for axis_result in validated_axes.values():
         axis_result["grade"] = grade_for_score(int(axis_result.get("score") or 0), cutoffs)
-    total_score = sum(int(axis.get("score") or 0) for axis in validated_axes.values())
-    # total_score는 기존 의미(축 점수 단순 합, 0~400)를 유지하고, 가중치는 average_score에만 반영한다.
-    average_score = weighted_average_score(validated_axes, axis_weights)
+    # 종합 점수는 권리성·기술성·시장성 3축의 평균으로만 산정한다.
+    # 사업 연계성(business_fit)은 합산에 넣지 않고, 일정 점수 이상이면 종합 지표를
+    # 무조건 "유지"로 끌어올리는 오버라이드로만 작용한다.
+    core_axes = {name: validated_axes[name] for name in CORE_VALUATION_AXES if name in validated_axes}
+    total_score = sum(int(axis.get("score") or 0) for axis in core_axes.values())
+    # total_score는 3축 단순 합(0~300)을 유지하고, 운영 설정 가중치는 average_score에만 반영한다.
+    average_score = weighted_average_score(core_axes, axis_weights)
     final_grade = grade_for_score(average_score, cutoffs)
-    # `or 60`은 유효 설정값 0(항상 유지 권고)을 기본값 60으로 되돌리는 버그라 None 체크로 처리한다.
-    configured_threshold = applied_config.get("maintainThreshold")
-    final_indicator = score_to_final_recommendation(
-        average_score,
-        threshold=60.0 if configured_threshold is None else float(configured_threshold),
-    )
+
+    business_fit = validated_axes.get("business_fit") or {}
+    business_fit_score = int(business_fit.get("score") or 0)
+    business_fit_override = business_fit_score >= BUSINESS_FIT_OVERRIDE_SCORE
+
+    final_indicator = average_score_to_indicator(average_score)
+    if business_fit_override:
+        final_indicator = "유지"
+
     missing_information = unique_texts(
         item for axis in validated_axes.values() for item in axis.get("missing_information", [])
     )
-    if missing_information:
-        final_indicator = "추가 정보 필요"
     warnings = valuation_warnings(validated_axes)
     required_actions = []
-    business_fit = validated_axes.get("business_fit") or {}
     if business_fit.get("missing_information"):
         required_actions.append("사업부 적용 여부 및 향후 적용 계획 확인")
     if missing_information:
         required_actions.append("부족 정보 보완 후 최종 판단 재검토")
+    # `or 60`은 유효 설정값 0(항상 유지 권고)을 기본값 60으로 되돌리는 버그라 None 체크로 처리한다.
+    configured_threshold = applied_config.get("maintainThreshold")
+    recommendation = score_to_final_recommendation(
+        average_score,
+        threshold=60.0 if configured_threshold is None else float(configured_threshold),
+    )
+    if business_fit_override:
+        recommendation = "유지 권고"
+    if missing_information and recommendation == "유지 권고":
+        recommendation = "추가 정보 필요"
     result = {
         "axes": validated_axes,
         "total_score": total_score,
+        "total_score_max": CORE_VALUATION_TOTAL_MAX,
         "average_score": average_score,
+        "core_axes": list(core_axes.keys()),
+        "business_fit_score": business_fit_score,
+        "business_fit_override": business_fit_override,
         "final_grade": final_grade,
         "final_indicator": final_indicator,
-        "recommendation": final_indicator,
+        "recommendation": recommendation,
         "decision_rationale": build_decision_rationale(
-            validated_axes,
+            core_axes,
             total_score,
             average_score,
             final_grade,
             final_indicator,
+            business_fit_override=business_fit_override,
+            business_fit_score=business_fit_score,
             config=applied_config,
         ),
         "required_actions": unique_texts(required_actions),
@@ -402,6 +448,16 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
+def average_score_to_indicator(average_score: float) -> str:
+    if average_score >= 80:
+        return "유지"
+    if average_score >= 60:
+        return "조건부 유지"
+    if average_score >= 40:
+        return "포기 검토"
+    return "매각 후보"
+
+
 def score_to_final_recommendation(average_score: float, *, threshold: float = 60) -> str:
     if average_score >= threshold:
         return "유지 권고"
@@ -409,37 +465,45 @@ def score_to_final_recommendation(average_score: float, *, threshold: float = 60
 
 
 def build_decision_rationale(
-    axes: dict[str, dict[str, Any]],
+    core_axes: dict[str, dict[str, Any]],
     total_score: int,
     average_score: float,
     final_grade: str,
     final_indicator: str,
     *,
+    business_fit_override: bool = False,
+    business_fit_score: int = 0,
     config: dict[str, Any] | None = None,
 ) -> list[str]:
-    strongest = max(axes.values(), key=lambda axis: axis.get("score", 0))
-    weakest = min(axes.values(), key=lambda axis: axis.get("score", 0))
+    strongest = max(core_axes.values(), key=lambda axis: axis.get("score", 0))
+    weakest = min(core_axes.values(), key=lambda axis: axis.get("score", 0))
     if config and not is_default_valuation_config(config):
         weights = config.get("axisWeights") or {}
         weight_text = ", ".join(
-            f"{(axes.get(axis) or {}).get('label') or axis} {weights.get(axis, 0):g}"
-            for axis in ("legal", "technology", "market", "business_fit")
+            f"{(core_axes.get(axis) or {}).get('label') or axis} {weights.get(axis, 0):g}"
+            for axis in CORE_VALUATION_AXES
         )
         score_line = (
-            f"4개 평가축 합산 점수는 {total_score}/400점, "
-            f"가중 평균 점수는 {average_score:g}/100점(가중치 {weight_text}), 종합 등급은 {final_grade}이다."
+            f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
+            f"가중 평균 점수는 {average_score:g}/100점(가중치 {weight_text}), 종합 등급은 {final_grade}, "
+            f"최종 종합 지표는 {final_indicator}이다."
         )
     else:
         score_line = (
-            f"4개 평가축 합산 점수는 {total_score}/400점, 평균 점수는 {average_score:g}/100점, "
-            f"종합 등급은 {final_grade}이다."
+            f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
+            f"평균 점수는 {average_score:g}/100점이며 최종 종합 지표는 {final_indicator}이다."
         )
-    return [
+    rationale = [
         score_line,
-        f"AI 권고 라벨은 {final_indicator}이다.",
         f"가장 강한 축은 {strongest.get('label')}({strongest.get('score')}점)이다.",
         f"보완이 필요한 축은 {weakest.get('label')}({weakest.get('score')}점)이다.",
     ]
+    if business_fit_override:
+        rationale.append(
+            f"사업 연계성 점수가 {business_fit_score}점으로 기준({BUSINESS_FIT_OVERRIDE_SCORE}점) 이상이어서, "
+            f"3축 점수와 무관하게 종합 지표를 유지로 판정했다."
+        )
+    return rationale
 
 
 def valuation_warnings(axes: dict[str, dict[str, Any]]) -> list[str]:

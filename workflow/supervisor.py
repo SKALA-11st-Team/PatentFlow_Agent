@@ -17,6 +17,10 @@ from workflow.state import PatentWorkflowState
 VALUATION_SUPERVISOR_RETRY_LIMIT = 1
 AXIS_SUPERVISOR_RETRY_LIMIT = 1
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
+# Hard code-level bound on how many times the per-axis checks may trigger an
+# external-evidence re-collection (query_rewriting). The axis prompts only judge
+# evidence *quality*; this counter — not the prompt — stops the loop.
+AXIS_EVIDENCE_RECOLLECT_LIMIT = 1
 REQUIRED_VALUATION_AXES = ["legal", "technology", "market", "business_fit"]
 MAX_SUPERVISOR_EVIDENCE_SAMPLES = 5
 AXIS_SUPERVISOR_PROMPTS = {
@@ -182,6 +186,14 @@ def increment_axis_retry_count(state: PatentWorkflowState, axis: str) -> int:
     return counts[axis]
 
 
+def increment_evidence_recollect_count(state: PatentWorkflowState) -> int:
+    team_status = dict(state.team_status or {})
+    count = int(team_status.get("evidence_recollect_count") or 0) + 1
+    team_status["evidence_recollect_count"] = count
+    state.team_status = team_status
+    return count
+
+
 def reset_axis_retry_counts(state: PatentWorkflowState) -> None:
     if not state.team_status or "axis_retry_counts" not in state.team_status:
         return
@@ -222,9 +234,36 @@ def apply_axis_routing_targets(
       collection and are unchanged, so their prior results are reused.
     """
     if decision.next_action == "query_rewriting":
+        # The loop bound lives here, not in the prompt: honour the re-collection
+        # request only while the budget remains. Once exhausted, accept the
+        # structurally-valid result and continue instead of looping again.
+        if increment_evidence_recollect_count(state) <= AXIS_EVIDENCE_RECOLLECT_LIMIT:
+            reset_axis_retry_counts(state)
+            state.valuation_retry_axes = sorted(EXTERNAL_EVIDENCE_AXES)
+            merge_axis_evidence_gaps(state, axis_checks)
+            return decision
         reset_axis_retry_counts(state)
-        state.valuation_retry_axes = sorted(EXTERNAL_EVIDENCE_AXES)
-        merge_axis_evidence_gaps(state, axis_checks)
+        state.valuation_retry_axes = []
+        metadata = dict(decision.metadata)
+        metadata["evidence_recollect_budget"] = {
+            "limit": AXIS_EVIDENCE_RECOLLECT_LIMIT,
+            "exhausted": True,
+        }
+        decision.metadata = metadata
+        if check_valuation_result(state).passed:
+            decision.passed = True
+            decision.next_team = "writing"
+            decision.next_action = "writing_team"
+            decision.reason = (
+                "축 근거 재수집 한도에 도달해 더 재수집하지 않고, 현재 근거로 평가를 "
+                "확정하고 작성 단계로 진행합니다."
+            )
+        else:
+            decision.next_team = "valuation"
+            decision.next_action = "valuation_team"
+            decision.reason = (
+                "축 근거 재수집 한도에 도달했고 평가 구조가 불완전해 valuation을 재실행합니다."
+            )
         return decision
     if decision.next_action != "valuation_team":
         reset_axis_retry_counts(state)
@@ -325,6 +364,8 @@ def run_single_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         raw = call_llm(
             build_axis_supervisor_check_prompt(state, axis=axis),
             model=settings.openai_supervisor_model,
+            temperature=0,
+            reasoning_effort=settings.openai_supervisor_reasoning_effort,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -373,6 +414,11 @@ def axis_supervisor_payload(state: PatentWorkflowState, *, axis: str) -> dict[st
             ],
             "available_in_input": available_prior_art_identifiers(state),
         }
+    elif axis == "business_fit":
+        payload["business_fit_context"] = build_business_fit_supervisor_context(
+            state,
+            cited_ids=cited_ids,
+        )
     return payload
 
 
@@ -468,6 +514,9 @@ def build_rule_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         if not axis_payload["has_rationale"]:
             status = "valuation_retry"
             issues.append(f"{axis} missing rationale")
+        if axis == "business_fit" and status == "passed":
+            status, business_fit_issues = check_business_fit_axis_rules(state, axis_result)
+            issues.extend(business_fit_issues)
 
     return axis_supervisor_check_result(
         axis=axis,
@@ -476,6 +525,121 @@ def build_rule_axis_supervisor_check(state: PatentWorkflowState, axis: str) -> d
         reason="축별 평가 구조와 근거 연결을 rule 기반으로 확인했습니다.",
         source="rule",
     )
+
+
+def build_business_fit_supervisor_context(
+    state: PatentWorkflowState,
+    *,
+    cited_ids: list[str],
+) -> dict[str, Any]:
+    from agents.valuation_axes.business_fit import (
+        build_input_payload,
+        is_sk_ax_official_evidence,
+        is_sk_owned_media_evidence,
+        select_evidence,
+    )
+
+    selected = select_evidence(state.evidence_bundle or [], state)
+    context = build_input_payload(state=state, evidence=selected).get("business_fit_context") or {}
+    cited = []
+    cited_id_set = set(cited_ids)
+    for item in state.evidence_bundle or []:
+        evidence_id = str(item.get("evidence_id") or "")
+        if evidence_id not in cited_id_set:
+            continue
+        cited.append(
+            {
+                "evidence_id": evidence_id,
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "source": item.get("source"),
+                "source_type": item.get("source_type"),
+                "is_sk_ax_official": is_sk_ax_official_evidence(item),
+                "is_sk_owned_media": is_sk_owned_media_evidence(item),
+            }
+        )
+    return {
+        **context,
+        "cited_evidence": cited,
+    }
+
+
+def check_business_fit_axis_rules(
+    state: PatentWorkflowState,
+    axis_result: dict[str, Any],
+) -> tuple[str, list[str]]:
+    from agents.valuation_axes.business_fit import (
+        BUSINESS_FIT_SUBSCORE_MAX,
+        is_sk_ax_official_evidence,
+        is_sk_owned_media_evidence,
+    )
+
+    issues: list[str] = []
+    evidence_by_id = {
+        str(item.get("evidence_id")): item
+        for item in state.evidence_bundle or []
+        if item.get("evidence_id")
+    }
+    cited_items = [
+        evidence_by_id[str(evidence_id)]
+        for evidence_id in axis_result.get("evidence_ids") or []
+        if str(evidence_id) in evidence_by_id
+    ]
+    available_business_evidence = [
+        item
+        for item in state.evidence_bundle or []
+        if is_sk_ax_official_evidence(item) or is_sk_owned_media_evidence(item)
+    ]
+    cited_business_evidence = [
+        item
+        for item in cited_items
+        if is_sk_ax_official_evidence(item) or is_sk_owned_media_evidence(item)
+    ]
+    improper_citations = [
+        str(item.get("evidence_id"))
+        for item in cited_items
+        if not is_sk_ax_official_evidence(item)
+        and not is_sk_owned_media_evidence(item)
+        and item.get("source_type") != "portfolio_context"
+    ]
+
+    if not available_business_evidence:
+        return "query_rewriting", ["business_fit에 SK AX 공식 또는 SK 계열 운영 매체 근거가 없습니다."]
+    if not cited_business_evidence:
+        issues.append("business_fit이 수집된 SK AX 공식/계열 근거를 evidence_ids에 사용하지 않았습니다.")
+    if improper_citations:
+        issues.append(
+            "business_fit이 일반 뉴스/외부 자료를 직접 근거로 사용했습니다: "
+            + ", ".join(improper_citations)
+        )
+
+    subscores = axis_result.get("subscores") if isinstance(axis_result.get("subscores"), dict) else {}
+    subscore_total = 0
+    allowed_subscores = {
+        "official_business_evidence": {0, 8, 16, 24, 30},
+        "product_function_direct_match": {0, 12, 24, 36, 45},
+        "business_context_fit": {0, 4, 10, 18, 25},
+    }
+    for key, max_score in BUSINESS_FIT_SUBSCORE_MAX.items():
+        item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
+        score = item.get("score")
+        if not isinstance(score, int) or score not in allowed_subscores[key]:
+            issues.append(f"business_fit subscore 허용값이 아닙니다: {key}")
+            continue
+        subscore_total += score
+    if subscore_total != axis_result.get("score"):
+        issues.append("business_fit 총점이 세부 점수 합계와 일치하지 않습니다.")
+
+    forbidden_source_terms = ("청구항", "초록", "명세서", "원문 pdf", "원문 PDF")
+    source_status_text = " ".join(
+        str(item)
+        for field in ("risk_factors", "missing_information")
+        for item in (axis_result.get(field) or [])
+    )
+    if any(term in source_status_text for term in forbidden_source_terms):
+        issues.append("business_fit이 청구항·초록·명세서 제공 상태를 위험 또는 부족 정보로 사용했습니다.")
+
+    return ("valuation_retry" if issues else "passed"), issues
 
 
 def normalize_axis_supervisor_check(axis: str, parsed: dict[str, Any], *, fallback: dict[str, Any]) -> dict[str, Any]:
@@ -637,6 +801,8 @@ def run_writing_quality_check(state: PatentWorkflowState, key: str) -> dict[str,
         raw = call_llm(
             f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}",
             model=settings.openai_supervisor_model,
+            temperature=0,
+            reasoning_effort=settings.openai_supervisor_reasoning_effort,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -677,16 +843,34 @@ def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
         report_failed = True
 
     # Dedicated LLM content checks: summary and report each get their own judge.
+    # 선택적 재검증: 직전에 한쪽만 다시 생성됐다면(요약만/보고서만), 바뀌지 않은 쪽은
+    # 이전 LLM 검사 결과를 그대로 재사용해 불필요한 재검사를 막는다.
+    prior_action = (state.supervisor_decision or {}).get("next_action")
+    prior_checks = dict(state.writing_quality_checks or {})
+    reuse_summary = prior_action == "final_report" and "summary" in prior_checks
+    reuse_report = prior_action == "summary" and "report" in prior_checks
+    new_checks = dict(prior_checks)
+
     if summary_markdown and not summary_failed:
-        verdict = run_writing_quality_check(state, "summary")
+        if reuse_summary:
+            verdict = prior_checks["summary"]
+        else:
+            verdict = run_writing_quality_check(state, "summary")
+            new_checks["summary"] = verdict
         if not verdict["passed"]:
             summary_issues.extend(verdict["issues"] or ["요약 내용 품질 보완 필요"])
             summary_failed = True
     if report_markdown and not report_failed:
-        verdict = run_writing_quality_check(state, "report")
+        if reuse_report:
+            verdict = prior_checks["report"]
+        else:
+            verdict = run_writing_quality_check(state, "report")
+            new_checks["report"] = verdict
         if not verdict["passed"]:
             report_issues.extend(verdict["issues"] or ["보고서 내용 품질 보완 필요"])
             report_failed = True
+
+    state.writing_quality_checks = new_checks
 
     if summary_failed and report_failed:
         next_action = "writing_team"
@@ -803,6 +987,8 @@ def run_llm_supervisor_check(
         raw = call_llm(
             build_supervisor_judge_prompt(state, prompt_name=prompt_name),
             model=settings.openai_supervisor_model,
+            temperature=0,
+            reasoning_effort=settings.openai_supervisor_reasoning_effort,
         )
         parsed = parse_json_object(raw)
         if not parsed:
@@ -895,6 +1081,13 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
     valuation = state.valuation_result or {}
     final_report_markdown = valuation.get("final_report_markdown")
     summary_markdown = summary.get("summary_markdown")
+    from agents.writing.final_report import build_evidence_references
+
+    business_fit_references = [
+        reference
+        for reference in build_evidence_references(state, valuation)
+        if "business_fit" in (reference.get("cited_by_axes") or [])
+    ]
     return {
         "current_stage": state.current_stage,
         "patent": patent_metadata_payload(state),
@@ -934,6 +1127,7 @@ def final_supervisor_payload(state: PatentWorkflowState) -> dict[str, Any]:
             "missing_evidence": limit_list((state.validation_result or {}).get("missing_evidence"), 10),
         },
         "evidence": evidence_summary_payload(state, include_samples=False),
+        "business_fit_evidence_references": business_fit_references,
         "retry_count": state.retry_count,
     }
 
@@ -1010,6 +1204,7 @@ def evidence_summary_payload(
     payload = {
         "total_count": len(evidence_bundle),
         "source_type_counts": source_type_counts(evidence_bundle),
+        "source_counts": source_counts(evidence_bundle),
         "known_evidence_ids": sorted(known_evidence_ids(evidence_bundle)),
     }
     if include_samples:
@@ -1058,7 +1253,6 @@ def evidence_sample(evidence: dict[str, Any]) -> dict[str, Any]:
             evidence.get("compressed_summary") or evidence.get("summary") or evidence.get("title"),
             250,
         ),
-        "related_axes": limit_list(evidence.get("related_axes"), 6),
     }
 
 
@@ -1085,6 +1279,16 @@ def source_type_counts(evidence_bundle: list[dict[str, Any]]) -> dict[str, int]:
     for evidence in evidence_bundle:
         source_type = str(evidence.get("source_type") or "unknown")
         counts[source_type] = counts.get(source_type, 0) + 1
+    return counts
+
+
+def source_counts(evidence_bundle: list[dict[str, Any]]) -> dict[str, int]:
+    """source별(naver_news/gnews/...) 개수. supervisor가 국내(naver) vs 글로벌(gnews)
+    근거 유무를 source_type만으로는 구분할 수 없어 별도로 제공한다."""
+    counts: dict[str, int] = {}
+    for evidence in evidence_bundle:
+        source = str(evidence.get("source") or "unknown")
+        counts[source] = counts.get(source, 0) + 1
     return counts
 
 
@@ -1296,4 +1500,3 @@ def check_valuation_result(state: PatentWorkflowState) -> SupervisorDecision:
         issues=issues,
         reason="Valuation structure and evidence-id check completed.",
     )
-

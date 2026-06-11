@@ -52,28 +52,31 @@ def test_score_to_final_recommendation_60_cutoff(average, expected):
     assert score_to_final_recommendation(average) == expected
 
 
+# 종합 점수는 권리성·기술성·시장성 3축 합산(0~300)·평균이며, 사업 연계성(≥60)은
+# 종합 지표를 "유지"로 끌어올리는 오버라이드로만 작용한다.
 @pytest.mark.parametrize(
-    "scores,total,avg,grade,indicator",
+    "scores,total,avg,grade,indicator,recommendation",
     [
-        ((90, 90, 90, 90), 360, 90.0, "A", "유지 권고"),
-        ((50, 50, 50, 50), 200, 50.0, "C", "포기 검토"),
-        ((70, 75, 65, 70), 280, 70.0, "B", "유지 권고"),
+        ((90, 90, 90, 90), 270, 90.0, "A", "유지", "유지 권고"),
+        ((50, 50, 50, 50), 150, 50.0, "C", "포기 검토", "포기 검토"),
+        # 평균 70은 본래 "조건부 유지"지만 business_fit 70(≥60) 오버라이드로 "유지".
+        ((70, 75, 65, 70), 210, 70.0, "B", "유지", "유지 권고"),
     ],
 )
-def test_build_final_valuation_result_golden_table(scores, total, avg, grade, indicator):
+def test_build_final_valuation_result_golden_table(scores, total, avg, grade, indicator, recommendation):
     result = build_final_valuation_result(_axes(*scores))
     assert result["total_score"] == total
+    assert result["total_score_max"] == 300
     assert result["average_score"] == avg
     assert result["final_grade"] == grade
     assert result["final_indicator"] == indicator
-    assert result["recommendation"] == indicator
+    assert result["recommendation"] == recommendation
 
 
 def test_missing_information_overrides_recommendation_to_additional_info():
-    # 평균 70(원래 '유지 권고')이라도 한 축에 missing_information이 있으면 '추가 정보 필요'로 오버라이드.
+    # 평균 70(원래 '유지 권고')이라도 한 축에 missing_information이 있으면 recommendation을 '추가 정보 필요'로 오버라이드.
     result = build_final_valuation_result(_axes(70, 70, 70, 70, market_missing=["시장 규모 자료"]))
     assert result["average_score"] == 70.0
-    assert result["final_indicator"] == "추가 정보 필요"
     assert result["recommendation"] == "추가 정보 필요"
     assert "시장 규모 자료" in result["missing_information"]
     assert "부족 정보 보완 후 최종 판단 재검토" in result["required_actions"]

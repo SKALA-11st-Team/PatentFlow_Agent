@@ -80,18 +80,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of search queries to run for each news API.",
     )
     parser.add_argument(
-        "--dart-corp-code",
-        help="Optional DART corp_code (8 digits) to collect disclosure evidence.",
-    )
-    parser.add_argument(
-        "--dart-bgn-de",
-        help="Optional DART start date YYYYMMDD.",
-    )
-    parser.add_argument(
-        "--dart-end-de",
-        help="Optional DART end date YYYYMMDD.",
-    )
-    parser.add_argument(
         "--use-llm-valuation",
         action="store_true",
         help="Deprecated: LLM valuation is enabled by default.",
@@ -166,9 +154,6 @@ def build_user_input(args: argparse.Namespace) -> dict[str, Any]:
         user_input["registration_number"] = args.registration_number
     if args.management_number:
         user_input["management_number"] = args.management_number
-    if args.dart_corp_code:
-        # EVID-02: DART 재무근거(opt-in) — corp_code가 주어지면 워크플로우 근거 수집에 전달.
-        user_input["dart_corp_code"] = args.dart_corp_code
     return user_input
 
 
@@ -369,9 +354,6 @@ def main() -> None:
                 application_number=patent.get("application_number"),
                 api_base_url=args.api_base_url,
                 query_limit_per_axis=args.api_query_limit,
-                dart_corp_code=args.dart_corp_code,
-                dart_bgn_de=args.dart_bgn_de,
-                dart_end_de=args.dart_end_de,
                 output_dir=artifact_subdir(final_state, "api_evidence"),
                 save=not args.no_save,
             )

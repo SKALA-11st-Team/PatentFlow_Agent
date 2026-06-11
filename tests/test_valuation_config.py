@@ -102,7 +102,8 @@ def test_score_to_final_recommendation_uses_threshold():
 def test_build_final_valuation_result_defaults_match_legacy_equal_average():
     result = build_final_valuation_result(four_axes(70, 70, 70, 70))
 
-    assert result["total_score"] == 280
+    # 종합 점수는 권리성·기술성·시장성 3축 합산(0~300)·평균이다.
+    assert result["total_score"] == 210
     assert result["average_score"] == 70.0
     assert result["final_grade"] == "B"
     assert result["recommendation"] == "유지 권고"
@@ -122,12 +123,12 @@ def test_build_final_valuation_result_applies_weighted_average_and_cutoffs():
 
     result = build_final_valuation_result(four_axes(80, 60, 40, 20), config=config)
 
-    # 가중 평균 = (70*80 + 10*60 + 10*40 + 10*20) / 100 = 68.0 (균등 평균이면 50.0)
-    assert result["average_score"] == 68.0
-    # total_score는 가중치와 무관하게 단순 합을 유지한다.
-    assert result["total_score"] == 200
+    # 가중 평균은 core 3축만 반영 = (70*80 + 10*60 + 10*40) / 90 = 73.3 (균등 평균이면 60.0)
+    assert result["average_score"] == 73.3
+    # total_score는 가중치와 무관하게 core 3축 단순 합을 유지한다.
+    assert result["total_score"] == 180
     assert result["final_grade"] == "B"
-    assert result["recommendation"] == "유지 권고"  # 68 >= 65
+    assert result["recommendation"] == "유지 권고"  # 73.3 >= 65
     assert result["applied_config"]["source"] == "request"
     assert "가중 평균" in result["decision_rationale"][0]
     # 축 등급도 설정 컷오프로 재산정된다(80점, A컷 75 → A).
@@ -137,10 +138,22 @@ def test_build_final_valuation_result_applies_weighted_average_and_cutoffs():
 def test_build_final_valuation_result_threshold_flips_recommendation():
     config = resolve_valuation_config({"maintainThreshold": 75})
 
-    result = build_final_valuation_result(four_axes(70, 70, 70, 70), config=config)
+    # business_fit < 60(오버라이드 없음)에서 임계만으로 권고가 뒤집히는지 본다.
+    result = build_final_valuation_result(four_axes(70, 70, 70, 50), config=config)
 
     assert result["average_score"] == 70.0
     assert result["recommendation"] == "포기 검토"
+
+
+def test_build_final_valuation_result_business_fit_override_wins_over_threshold():
+    config = resolve_valuation_config({"maintainThreshold": 75})
+
+    # business_fit ≥ 60이면 임계 미달이어도 종합 지표·권고를 유지로 본다(제품 정책 오버라이드).
+    result = build_final_valuation_result(four_axes(70, 70, 70, 70), config=config)
+
+    assert result["business_fit_override"] is True
+    assert result["final_indicator"] == "유지"
+    assert result["recommendation"] == "유지 권고"
 
 
 def test_legal_subscore_max_map_reads_state_config():
@@ -163,13 +176,16 @@ def test_legal_subscore_max_map_reads_state_config():
 def test_legal_detail_max_scales_with_right_stability_weight():
     scaled = legal_detail_max_map({"right_stability": 50})
 
-    # 25/35 비율 유지 + 합계가 정확히 right_stability 만점.
+    # 25/35 비율 유지 + right_stability 하위 두 지표의 합계가 정확히 만점.
+    # follow_on_right_signal은 portfolio_defensive_value 하위라 스케일하지 않는다.
     assert scaled["prior_art_overlap"] == 36
     assert scaled["claim_structure_stability"] == 14
-    assert sum(scaled.values()) == 50
+    assert scaled["prior_art_overlap"] + scaled["claim_structure_stability"] == 50
+    assert scaled["follow_on_right_signal"] == 4
     assert legal_detail_max_map({"right_stability": 35}) == {
         "prior_art_overlap": 25,
         "claim_structure_stability": 10,
+        "follow_on_right_signal": 4,
     }
 
 

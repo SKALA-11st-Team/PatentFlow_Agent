@@ -37,7 +37,6 @@ BE 레포에 이미 있는 값들을 **에이전트 레포에도** 등록해야 
 
 | Secret | 서비스 |
 |---|---|
-| `DART_KEY` | DART 재무공시 |
 | `GNEWS_API_KEY` | GNews 뉴스 검색 |
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | Naver 검색 |
 | `GOOGLE_CUSTOM_SEARCH_API_KEY`, `GOOGLE_CUSTOM_SEARCH_CX` | Google CSE (SK AX 사이트 검색) |

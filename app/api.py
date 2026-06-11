@@ -100,6 +100,21 @@ class EvidenceDetail(BaseModel):
     source: SourceRef | None = None
 
 
+class ValuationPromptResponse(BaseModel):
+    axis: str
+    label: str
+    path: str
+    markdown: str
+    checksum: str
+    updatedAt: datetime | None = None
+
+
+class ValuationPromptUpdateRequest(BaseModel):
+    markdown: str
+    reason: str | None = None
+    expectedChecksum: str | None = None
+
+
 class PatentEvaluationScore(BaseModel):
     category: str
     score: int | None = None

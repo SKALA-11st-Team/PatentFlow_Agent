@@ -100,8 +100,8 @@ External integrations and reusable domain services.
 - `patent/kipris_patent_service.py`: 로컬 `data/patents.sqlite3`에서 특허를 선택하고, KIPRIS API/PDF 데이터를 수집한다.
 - `patent/markdown_preprocess_service.py`: OpenDataLoader markdown과 KIPRIS API 결과를 Agent 입력용 구조화 객체로 만든다.
 - `patent/portfolio_service.py`: 동일 제품군 sibling 특허를 로컬 DB에서 찾고, KIPRIS API만으로 보강해 포트폴리오 evidence를 생성한다.
-- `evidence/external_search_service.py`: query rewriting 결과를 받아 Naver/GNews/DART/KIPRIS 검색을 실행하고 evidence로 병합한다.
-- `evidence/api_normalizers.py`: Naver News, GNews, DART, KIPRIS 검색 결과처럼 서로 다른 API 응답을 공통 evidence shape로 변환한다.
+- `evidence/external_search_service.py`: query rewriting 결과를 받아 Naver/GNews/KIPRIS 검색을 실행하고 evidence로 병합한다.
+- `evidence/api_normalizers.py`: Naver News, GNews, KIPRIS 검색 결과처럼 서로 다른 API 응답을 공통 evidence shape로 변환한다.
 - `evidence/news_article_extraction_service.py`: 뉴스 URL 본문을 가져와 snippet evidence를 가능한 경우 full text evidence로 보강한다.
 - `evidence/news_filter_service.py`: 뉴스 evidence를 관련성, 최신성, 길이 기준으로 LLM 처리 전에 rule-based 필터링한다.
 - `evidence/store_service.py`: evidence_id 부여, 중복 제거, API별 JSON 저장, filtered evidence 저장을 담당한다.
@@ -143,7 +143,7 @@ Industry report RAG pipeline.
 External API clients and specs.
 
 - `kipris_client.py`: KIPRIS API 호출 client.
-- `*_open_api.yaml`: KIPRIS, Naver, GNews, DART 등 API 명세/참고 파일.
+- `*_open_api.yaml`: KIPRIS, Naver, GNews 등 API 명세/참고 파일.
 
 ### schemas/
 

@@ -1,16 +1,14 @@
-# Unified API Backend (KIPRIS + DART + NAVER + GNews)
+# Unified API Backend (KIPRIS + NAVER + GNews)
 
-하나의 `main.py`에서 아래 4개 API를 통합 제공하는 FastAPI 백엔드입니다.
+하나의 `main.py`에서 아래 3개 API를 통합 제공하는 FastAPI 백엔드입니다.
 
 - KIPRISPlus
-- OpenDART
 - NAVER News Search
 - GNews Search
 
-OpenAPI 문서도 아래 4개 YAML을 합쳐 `/docs`에서 한 번에 확인할 수 있습니다.
+OpenAPI 문서도 아래 3개 YAML을 합쳐 `/docs`에서 한 번에 확인할 수 있습니다.
 
 - `kipris_all_open_api.yaml`
-- `dart_open_api.yaml`
 - `naver_open_api.yaml`
 - `gnews_open_api.yaml`
 
@@ -28,7 +26,6 @@ pip install -r requirements.txt
 
 ```env
 KIPRIS_SERVICE_KEY=YOUR_KIPRIS_KEY
-DART_KEY=YOUR_DART_KEY
 NAVER_CLIENT_ID=YOUR_NAVER_CLIENT_ID
 NAVER_CLIENT_SECRET=YOUR_NAVER_CLIENT_SECRET
 GNEWS_API_KEY=YOUR_GNEWS_API_KEY
@@ -48,11 +45,6 @@ python -m uvicorn main:app --reload
 - 헬스체크: `http://127.0.0.1:8000/`
 
 ## 4) 주요 엔드포인트
-
-### DART
-
-- `GET /dart/company`
-- `GET /dart/financial-account`
 
 ### NAVER News
 

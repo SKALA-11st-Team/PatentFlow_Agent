@@ -5,6 +5,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 ValuationAxis = Literal["legal", "technology", "market", "business_fit"]
 VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market", "business_fit")
+# 종합 점수(total_score/average_score)는 권리성·기술성·시장성 3축으로만 산정한다.
+# 사업 연계성(business_fit)은 합산 대신 종합 지표 오버라이드로만 작용한다.
+CORE_VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market")
+FinalIndicator = Literal["유지", "조건부 유지", "포기 검토", "매각 후보"]
 FinalRecommendation = Literal["유지 권고", "포기 검토", "추가 정보 필요"]
 FinalGrade = Literal["A", "B", "C", "D"]
 
@@ -147,10 +151,10 @@ class ValuationResult(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     axes: dict[ValuationAxis, AxisValuationResult]
-    total_score: int = Field(ge=0, le=400)
+    total_score: int = Field(ge=0, le=300)
     average_score: float = Field(ge=0, le=100)
     final_grade: FinalGrade
-    final_indicator: FinalRecommendation
+    final_indicator: FinalIndicator
     recommendation: FinalRecommendation
     decision_rationale: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
@@ -166,15 +170,15 @@ class ValuationResult(BaseModel):
             raise ValueError(f"missing valuation axes: {', '.join(missing)}")
         if extra:
             raise ValueError(f"unsupported valuation axes: {', '.join(extra)}")
-        total = sum(axis.score for axis in self.axes.values())
+        total = sum(self.axes[axis].score for axis in CORE_VALUATION_AXES if axis in self.axes)
         if self.total_score != total:
-            raise ValueError(f"total_score {self.total_score} does not match axis sum {total}")
-        # average_score는 적용된 축 가중치 기준의 가중 평균이다(설정 미적용 시 균등 가중 = 기존 동작).
+            raise ValueError(f"total_score {self.total_score} does not match core axis sum {total}")
+        # average_score는 적용된 축 가중치 기준의 3축(core) 가중 평균이다(설정 미적용 시 균등 가중).
         weights = (self.applied_config or {}).get("axisWeights") or DEFAULT_AXIS_WEIGHTS
-        weight_sum = sum(float(weights.get(axis, DEFAULT_AXIS_WEIGHTS[axis])) for axis in VALUATION_AXES)
+        weight_sum = sum(float(weights.get(axis, DEFAULT_AXIS_WEIGHTS[axis])) for axis in CORE_VALUATION_AXES)
         weighted = sum(
             float(weights.get(axis, DEFAULT_AXIS_WEIGHTS[axis])) * self.axes[axis].score
-            for axis in VALUATION_AXES
+            for axis in CORE_VALUATION_AXES
         )
         expected_average = round(weighted / weight_sum, 1) if weight_sum > 0 else 0.0
         if round(float(self.average_score), 1) != expected_average:

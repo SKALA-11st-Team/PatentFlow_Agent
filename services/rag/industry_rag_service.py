@@ -192,7 +192,6 @@ def search_industry_evidence(
             "page": result.metadata.get("page"),
             "heading": result.metadata.get("heading"),
             "context": result.text,
-            "related_axis": ["market"],
             "confidence": None,
             "score": result.score,
             "metadata": result.metadata,

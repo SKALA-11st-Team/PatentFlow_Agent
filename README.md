@@ -144,12 +144,6 @@ venv/bin/python -m app.main --patent-id 1
 
 `--collect-api-evidence`는 이전 CLI 호환용 옵션입니다. 현재 workflow evidence가 이미 생성된 경우 중복 수집을 건너뜁니다.
 
-DART 공시까지 별도로 수집하려면 `corp_code`를 추가합니다.
-
-```bash
-venv/bin/python -m app.main --patent-id 1 --collect-api-evidence --dart-corp-code 00126380
-```
-
 API evidence 저장 위치:
 
 ```text
