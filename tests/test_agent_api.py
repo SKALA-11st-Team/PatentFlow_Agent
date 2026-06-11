@@ -17,6 +17,58 @@ def test_root_and_health_endpoints():
     assert health_response.json() == {"status": "UP"}
 
 
+def test_valuation_prompt_admin_endpoints_read_and_update_md(monkeypatch, tmp_path):
+    prompt_dir = tmp_path / "prompts" / "valuation"
+    prompt_dir.mkdir(parents=True)
+    prompt_path = prompt_dir / "valuation_legal.md"
+    prompt_path.write_text(
+        "# Valuation Legal Axis Prompt\n\n권리성 축입니다.\n총점은 100점입니다.\nscore grade confidence missing_information\n",
+        encoding="utf-8",
+    )
+    for name in ("valuation_technology.md", "valuation_market.md", "valuation_business_fit.md"):
+        (prompt_dir / name).write_text(
+            "# Prompt\n\n기술성 시장성 사업 연계성\n총점은 100점입니다.\nscore grade confidence missing_information\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr("app.api.settings.project_root", tmp_path)
+
+    response = client.get("/api/v1/admin/valuation-criteria/prompts/legal")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["axis"] == "legal"
+    assert body["path"] == "prompts/valuation/valuation_legal.md"
+
+    updated = body["markdown"] + "\n평가 목적을 보강합니다."
+    update_response = client.put(
+        "/api/v1/admin/valuation-criteria/prompts/legal",
+        json={"markdown": updated, "expectedChecksum": body["checksum"], "reason": "테스트"},
+    )
+
+    assert update_response.status_code == 200
+    assert "평가 목적을 보강합니다." in prompt_path.read_text(encoding="utf-8")
+
+
+def test_valuation_prompt_admin_update_rejects_stale_checksum(monkeypatch, tmp_path):
+    prompt_dir = tmp_path / "prompts" / "valuation"
+    prompt_dir.mkdir(parents=True)
+    (prompt_dir / "valuation_legal.md").write_text(
+        "# Prompt\n\n권리성\n총점은 100점입니다.\nscore grade confidence missing_information\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("app.api.settings.project_root", tmp_path)
+
+    response = client.put(
+        "/api/v1/admin/valuation-criteria/prompts/legal",
+        json={
+            "markdown": "# Prompt\n\n권리성\n총점은 100점입니다.\nscore grade confidence missing_information\n",
+            "expectedChecksum": "stale",
+        },
+    )
+
+    assert response.status_code == 409
+
+
 def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     def fake_run_workflow(state):
         state.summary_result = {

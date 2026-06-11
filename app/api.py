@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -20,6 +22,19 @@ app = FastAPI(
     description="AI workflow serving API for PatentFlow.",
 )
 
+VALUATION_PROMPT_PATHS = {
+    "legal": "valuation/valuation_legal.md",
+    "technology": "valuation/valuation_technology.md",
+    "market": "valuation/valuation_market.md",
+    "business_fit": "valuation/valuation_business_fit.md",
+}
+VALUATION_PROMPT_LABELS = {
+    "legal": "권리성",
+    "technology": "기술성",
+    "market": "시장성",
+    "business_fit": "사업 연계성",
+}
+
 
 class PatentEvaluationRequest(BaseModel):
     managementNumber: str | None = None
@@ -29,6 +44,21 @@ class PatentEvaluationRequest(BaseModel):
     noSave: bool = False
     useLlmSupervisor: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValuationPromptResponse(BaseModel):
+    axis: str
+    label: str
+    path: str
+    markdown: str
+    checksum: str
+    updatedAt: datetime | None = None
+
+
+class ValuationPromptUpdateRequest(BaseModel):
+    markdown: str
+    reason: str | None = None
+    expectedChecksum: str | None = None
 
 
 class PatentEvaluationScore(BaseModel):
@@ -105,6 +135,79 @@ def root() -> dict[str, str]:
         "docs": "/docs",
         "health": "/health",
     }
+
+
+@app.get("/api/v1/admin/valuation-criteria/prompts")
+def list_valuation_prompts() -> list[ValuationPromptResponse]:
+    return [read_valuation_prompt(axis) for axis in VALUATION_PROMPT_PATHS]
+
+
+@app.get("/api/v1/admin/valuation-criteria/prompts/{axis}")
+def get_valuation_prompt(axis: str) -> ValuationPromptResponse:
+    return read_valuation_prompt(axis)
+
+
+@app.put("/api/v1/admin/valuation-criteria/prompts/{axis}")
+def update_valuation_prompt(axis: str, request: ValuationPromptUpdateRequest) -> ValuationPromptResponse:
+    path = valuation_prompt_path(axis)
+    current = path.read_text(encoding="utf-8")
+    current_checksum = checksum_text(current)
+    if request.expectedChecksum and request.expectedChecksum != current_checksum:
+        raise HTTPException(status_code=409, detail="평가 기준 md가 이미 변경되었습니다. 새로고침 후 다시 저장해 주세요.")
+    markdown = request.markdown.strip()
+    validate_valuation_prompt_markdown(axis, markdown)
+    path.write_text(markdown + "\n", encoding="utf-8")
+    return read_valuation_prompt(axis)
+
+
+def read_valuation_prompt(axis: str) -> ValuationPromptResponse:
+    path = valuation_prompt_path(axis)
+    markdown = path.read_text(encoding="utf-8")
+    stat = path.stat()
+    return ValuationPromptResponse(
+        axis=axis,
+        label=VALUATION_PROMPT_LABELS[axis],
+        path=str(path.relative_to(settings.project_root)),
+        markdown=markdown,
+        checksum=checksum_text(markdown),
+        updatedAt=datetime.fromtimestamp(stat.st_mtime, timezone.utc),
+    )
+
+
+def valuation_prompt_path(axis: str) -> Path:
+    if axis not in VALUATION_PROMPT_PATHS:
+        raise HTTPException(status_code=404, detail="지원하지 않는 가치평가 축입니다.")
+    path = (settings.project_root / "prompts" / VALUATION_PROMPT_PATHS[axis]).resolve()
+    prompt_root = (settings.project_root / "prompts" / "valuation").resolve()
+    if prompt_root not in path.parents:
+        raise HTTPException(status_code=400, detail="평가 기준 md 경로가 허용 범위를 벗어났습니다.")
+    return path
+
+
+def checksum_text(markdown: str) -> str:
+    return hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+
+def validate_valuation_prompt_markdown(axis: str, markdown: str) -> None:
+    if not markdown:
+        raise HTTPException(status_code=400, detail="평가 기준 md는 비워둘 수 없습니다.")
+    if len(markdown) > 120_000:
+        raise HTTPException(status_code=400, detail="평가 기준 md가 너무 깁니다.")
+    label = VALUATION_PROMPT_LABELS[axis]
+    required_fragments = [
+        label,
+        "총점",
+        "100점",
+        "score",
+        "grade",
+        "confidence",
+        "missing_information",
+    ]
+    missing = [fragment for fragment in required_fragments if fragment not in markdown]
+    if missing:
+        raise HTTPException(status_code=400, detail=f"평가 기준 md 필수 항목 누락: {', '.join(missing)}")
+    if "라이프사이클 경제성" in markdown:
+        raise HTTPException(status_code=400, detail="미지원 평가축(라이프사이클 경제성)은 사용할 수 없습니다.")
 
 
 @app.post("/api/v1/ai/patents/{patent_id}/evaluate")
