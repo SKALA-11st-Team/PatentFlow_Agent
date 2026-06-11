@@ -1323,7 +1323,9 @@ def test_markdown_headings_captures_all_report_sections():
         "## 1. 한눈에 보는 검토 결과", "## 2. 평가대상 및 범위", "## 3. 판단 근거",
         "## 4. 평가축별 상세 근거", "### 4.1 권리성", "### 4.2 기술성",
         "### 4.3 시장성", "### 4.4 사업 연계성",
-        "## 5. 사업부 확인 필요 사항", "## 6. 최종 검토 의견",
+        "## 5. 역할별 확인 사항", "### 5.1 사업부 확인 사항",
+        "### 5.2 법무팀 검토 사항", "### 5.3 기술 검토 사항",
+        "## 6. 최종 검토 의견",
     ])
     headings = markdown_headings(md)
 
@@ -1341,3 +1343,4 @@ def test_final_check_prompt_checks_format_and_content():
     # Content: faithfulness to scores + no fabricated facts are now checked.
     assert "axis_scores의 점수·등급과 모순되지 않는가" in text
     assert "입력에 없는 사실을 단정하지 않았는가" in text
+    assert "특허 전문 검토를 사업부 확인 사항에 배치하면 passed=false" in text
