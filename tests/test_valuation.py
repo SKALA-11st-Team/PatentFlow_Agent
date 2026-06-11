@@ -1800,7 +1800,7 @@ def test_collect_similar_patent_candidates_filters_foreign_country_and_uses_ipc(
     assert calls[0][0] == "G06F 40/30"
 
 
-def test_technology_candidate_subscores_use_60_40_structure_with_implementation_midpoints():
+def test_technology_candidate_subscores_use_50_50_structure():
     from agents.valuation_axes.technology import apply_technology_scores
 
     result = apply_technology_scores(
@@ -1816,22 +1816,22 @@ def test_technology_candidate_subscores_use_60_40_structure_with_implementation_
                 "technical_differentiation": {
                     "label": "기술 차별성",
                     "score": 47,
-                    "max_score": 60,
+                    "max_score": 50,
                     "details": {
-                        "configuration_differentiation": 16,
-                        "operation_differentiation": 20,
-                        "effect_differentiation": 12,
+                        "configuration_operation_differentiation": 17,
+                        "effect_differentiation": 10,
+                        "imitation_avoidance_difficulty": 7,
                     },
                     "rationale": "차별 요소가 확인됨",
                 },
                 "implementation_specificity": {
                     "label": "구현 구체성",
                     "score": 30,
-                    "max_score": 40,
+                    "max_score": 50,
                     "details": {
-                        "component_specificity": 10,
-                        "procedure_specificity": 15,
-                        "implementation_specificity_detail": 5,
+                        "component_specificity": 14,
+                        "procedure_specificity": 20,
+                        "implementation_utilization_specificity": 7,
                     },
                     "rationale": "구성 요소와 처리 절차는 구체적이나 구현 설명은 제한적임",
                 },
@@ -1840,20 +1840,20 @@ def test_technology_candidate_subscores_use_60_40_structure_with_implementation_
         {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
     )
 
-    assert result["score"] == 78
+    assert result["score"] == 75
     assert result["grade"] == "B"
-    assert result["subscores"]["technical_differentiation"]["score"] == 48
-    assert result["subscores"]["implementation_specificity"]["score"] == 30
+    assert result["subscores"]["technical_differentiation"]["score"] == 34
+    assert result["subscores"]["implementation_specificity"]["score"] == 41
     assert "technical_substantiality" not in result["subscores"]
     assert result["subscores"]["technical_differentiation"]["details"] == {
-        "configuration_differentiation": 16,
-        "operation_differentiation": 20,
-        "effect_differentiation": 12,
+        "configuration_operation_differentiation": 17,
+        "effect_differentiation": 10,
+        "imitation_avoidance_difficulty": 7,
     }
     assert result["subscores"]["implementation_specificity"]["details"] == {
-        "component_specificity": 10,
-        "procedure_specificity": 15,
-        "implementation_specificity_detail": 5,
+        "component_specificity": 14,
+        "procedure_specificity": 20,
+        "implementation_utilization_specificity": 7,
     }
 
 
@@ -2045,7 +2045,7 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
                 "missing_information": [],
                 "confidence": 0.7,
                 "subscores": {
-                    "technical_differentiation": {"score": 35, "max_score": 60},
+                    "technical_differentiation": {"score": 35, "max_score": 50},
                 },
                 "technology_metrics": {
                     "representative_cpc": "G06F 40/00",

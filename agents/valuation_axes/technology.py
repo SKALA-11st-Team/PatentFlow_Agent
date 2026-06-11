@@ -15,9 +15,17 @@ AXIS = "technology"
 LABEL = "기술성"
 PROMPT_PATH = "valuation/valuation_technology.md"
 TECHNOLOGY_COMPARISON_TARGET_COUNT = 5
-TECHNOLOGY_SUBSCORE_CANDIDATES = {
-    "technical_differentiation": (4, 8, 12, 16, 20, 5, 10, 15, 20, 25, 3, 6, 9, 12, 15),
-    "implementation_specificity": (0, 5, 10, 15, 20, 25, 30, 35, 40),
+TECHNOLOGY_DETAIL_SCORE_CANDIDATES = {
+    "technical_differentiation": {
+        "configuration_operation_differentiation": (0, 8, 17, 25),
+        "effect_differentiation": (0, 5, 10, 15),
+        "imitation_avoidance_difficulty": (0, 3, 7, 10),
+    },
+    "implementation_specificity": {
+        "component_specificity": (0, 7, 14, 20),
+        "procedure_specificity": (0, 7, 14, 20),
+        "implementation_utilization_specificity": (0, 3, 7, 10),
+    },
 }
 
 
@@ -259,44 +267,25 @@ def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> 
 
 def normalize_candidate_subscores(subscores: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
-    for key, candidates in TECHNOLOGY_SUBSCORE_CANDIDATES.items():
+    for key in TECHNOLOGY_DETAIL_SCORE_CANDIDATES:
         item = dict(subscores.get(key) or {})
-        if key == "technical_differentiation":
-            item["score"] = normalize_technology_differentiation_candidate_score(item)
-        elif key == "implementation_specificity":
-            item["score"] = normalize_implementation_specificity_candidate_score(item)
+        item["score"] = normalize_technology_detail_scores(item, key=key)
+        item["max_score"] = 50
         normalized[key] = item
     return normalized
 
 
-def normalize_technology_differentiation_candidate_score(item: dict[str, Any]) -> int:
+def normalize_technology_detail_scores(item: dict[str, Any], *, key: str) -> int:
     details = item.get("details")
-    if isinstance(details, dict):
-        configuration = nearest_candidate_score(details.get("configuration_differentiation"), (4, 8, 12, 16, 20))
-        operation = nearest_candidate_score(details.get("operation_differentiation"), (5, 10, 15, 20, 25))
-        effect = nearest_candidate_score(details.get("effect_differentiation"), (3, 6, 9, 12, 15))
-        item["details"] = {
-            "configuration_differentiation": configuration,
-            "operation_differentiation": operation,
-            "effect_differentiation": effect,
-        }
-        return configuration + operation + effect
-    return clamp_int(item.get("score"), default=0, max_value=60)
-
-
-def normalize_implementation_specificity_candidate_score(item: dict[str, Any]) -> int:
-    details = item.get("details")
-    if isinstance(details, dict):
-        component = nearest_candidate_score(details.get("component_specificity"), (0, 5, 10, 15))
-        procedure = nearest_candidate_score(details.get("procedure_specificity"), (0, 5, 10, 15))
-        implementation = nearest_candidate_score(details.get("implementation_specificity_detail"), (0, 5, 10))
-        item["details"] = {
-            "component_specificity": component,
-            "procedure_specificity": procedure,
-            "implementation_specificity_detail": implementation,
-        }
-        return component + procedure + implementation
-    return clamp_int(item.get("score"), default=0, max_value=40)
+    candidates_by_detail = TECHNOLOGY_DETAIL_SCORE_CANDIDATES[key]
+    if not isinstance(details, dict):
+        return clamp_int(item.get("score"), default=0, max_value=50)
+    normalized_details = {
+        detail_key: nearest_candidate_score(details.get(detail_key), candidates)
+        for detail_key, candidates in candidates_by_detail.items()
+    }
+    item["details"] = normalized_details
+    return sum(normalized_details.values())
 
 
 def nearest_candidate_score(value: Any, candidates: tuple[int, ...]) -> int:
