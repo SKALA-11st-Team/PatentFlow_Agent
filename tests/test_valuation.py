@@ -1201,6 +1201,17 @@ def test_technology_prompt_supports_foreign_ipc_country_comparison_group():
     assert "해외특허의 추가 유사 특허는 대표 IPC 기반 해당 국가 문헌으로 수집된 것으로 간주한다." in prompt
 
 
+def test_technology_prompt_defines_evidence_comparison_and_zero_score_rules():
+    prompt = Path("prompts/valuation/valuation_technology.md").read_text(encoding="utf-8")
+
+    assert "핵심 해결수단과 가장 가까운 비교문헌을 기준으로 선택한다" in prompt
+    assert "대상 특허와 가장 가까운 비교문헌을 같은 비교 단위끼리 대조한다" in prompt
+    assert "차이를 제거해도 핵심 해결 구조와 주요 결과가 대체로 유지된다" in prompt
+    assert "어떤 구성 또는 처리 차이가 어떤 효과를 발생시키는지 인과관계를 확인한다" in prompt
+    assert "법적 권리범위, 침해 성립 또는 청구항 회피 가능성을 판단하지 않는다" in prompt
+    assert "0점이 자료 부족 때문이면 rationale에 기술 열위처럼 쓰지 않고" in prompt
+
+
 def test_final_report_prompt_uses_gnews_for_global_business():
     prompt = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
