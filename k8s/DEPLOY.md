@@ -29,7 +29,7 @@ BE 레포에 이미 있는 값들을 **에이전트 레포에도** 등록해야 
 | `KIPRIS_SERVICE_KEY` | (대안) 단일 KIPRIS 키. KEYS가 있으면 불필요 | 값 동일, 이름 다름 |
 | `LANGSMITH_API_KEY` | (선택) 트레이싱 | 신규(선택) |
 
-> `OPENAI_SUPERVISOR_MODEL`은 자격증명이 아니라 모델명이라 **Secret이 아닌 Variable**로 둔다(아래 Variables 표). 비우면 `OPENAI_CHAT_MODEL`로 폴백한다.
+> `OPENAI_SUPERVISOR_MODEL`·`OPENAI_WRITING_MODEL`·`VALUATION_MODEL`은 자격증명이 아니라 모델명이라 **Secret이 아닌 Variable**로 둔다(아래 Variables 표). Variable 미설정 시 워크플로 기본값(gpt-5)이 들어간다.
 
 ### 평가(evaluate) 워크플로 전용 — 분류(recommend-fields)에는 불필요
 근거수집(시장성/뉴스/재무) 단계에서 쓰인다. 미등록 시 빈 값으로 들어가 **해당 근거만 degrade**되고
@@ -49,8 +49,10 @@ BE 레포에 이미 있는 값들을 **에이전트 레포에도** 등록해야 
 | Variable | 기본값 |
 |---|---|
 | `KUBE_NAMESPACE` | `patentflow` → 실제는 `skala3-finalproj-class3-team11` 로 설정 권장 |
-| `OPENAI_CHAT_MODEL` | `gpt-5-mini` (축별 평가·요약·분류 등 기본 모델) |
-| `OPENAI_SUPERVISOR_MODEL` | (비움) → 비우면 `OPENAI_CHAT_MODEL` 사용. supervisor 전용 모델 지정 시에만 |
+| `OPENAI_CHAT_MODEL` | `gpt-5-mini` (분류·압축 등 기본 모델) |
+| `OPENAI_SUPERVISOR_MODEL` | `gpt-5` (.env.example과 동일 — supervisor 품질 우선) |
+| `VALUATION_MODEL` | `gpt-5` (채점 축 전용. 점수 재현성 필요 시 `gpt-4o` + `VALUATION_SEED_SUPPORTED=true`) |
+| `OPENAI_WRITING_MODEL` | `gpt-5` (최종 보고서·요약 작성 전용. 비우면 `OPENAI_CHAT_MODEL` 폴백) |
 | `ENABLE_SHARED_DB_FALLBACK` | `true` (evaluate가 patent_id로 공유 DB 식별자 조회) |
 | `UNIFIED_API_BASE_URL` | `http://team11-patentflow-be-svc:80` |
 | `PGVECTOR_HOST/DB/USER` | `team11-patentflow-postgres-svc` / `patentflow` / `patentflow` |
