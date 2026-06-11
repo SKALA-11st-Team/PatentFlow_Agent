@@ -18,6 +18,12 @@ class PatentWorkflowState(BaseModel):
     pdf_paths: list[str] = Field(default_factory=list)
     parsed_pdf: dict[str, Any] | None = None
     prior_art_context: dict[str, Any] | None = None
+    # 비교 특허군 조립 결과(prior-art-first-then-similar). 구조화 노드가 한 번 조립하고
+    # 기술성 축이 재사용한다(중복 조립 방지).
+    comparison_group: dict[str, Any] | None = None
+    # 구성요소 구조화 결과(타깃 + 비교 특허군). 권리성·기술성 축이 element 단위 비교에 사용.
+    target_structure: dict[str, Any] | None = None
+    comparison_structures: list[dict[str, Any]] = Field(default_factory=list)
 
     # Patent markdown/preprocessed content
     preprocessed_patent: dict[str, Any] | None = None

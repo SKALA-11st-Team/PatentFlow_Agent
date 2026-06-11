@@ -51,6 +51,8 @@
 - claim_stats
 - 발명의 효과
 - summary_result
+- `element_structure.target`: 대상 특허의 구조화 결과(key_elements/key_flow/claims). 핵심 구성요소의 독립항 반영(in_independent_claim)·명확성(claim_clarity)·청구항 분해(claim_elements/category)가 담겨 있다.
+- `element_structure.comparisons`: 선행문헌의 구조화 결과(보조 참고용). CPC유사 특허는 포함하지 않으며 선행문헌만 들어간다.
 - prior_art_candidates
 - citation_evidence.kr_citation_documents
 - citation_evidence.foreign_citation_documents
@@ -156,6 +158,14 @@
 - 관련 특허군은 포트폴리오·해외 권리 가치에서만 반영한다.
 - 단순 개수보다 핵심 구성의 중요도와 청구항 내 역할을 우선한다.
 - 근거가 부족하면 유리하거나 불리하게 추정하지 말고 unknown을 선택한다.
+
+구성요소(element) 단위 판단 (`element_structure.target` 제공 시 우선 사용):
+- core_solution_coverage: `element_structure.target.key_elements` 중 `core_role=essential`인 핵심 구성요소가 `in_independent_claim=true`로 독립항에 반영된 비율로 판단한다. essential 구성요소 대부분이 독립항에 반영되면 높은 점수, 핵심이 종속항에만 있거나 빠져 있으면 낮은 점수.
+- independent_claim_scope: 독립항 `claim_elements`의 `impl_lock`(특정 구현 묶임 태그)과 `role=limiter` 비중을 본다. impl_lock·limiter가 많으면 보호범위가 좁아질 가능성으로 본다.
+- dependent_claim_support: 종속항 `claims[].added_limitation`이 보완하는 유형(구현 방식·예외·대체 구성 등)의 다양성으로 판단한다.
+- claim_type_diversity: `claims[].category`(방법/장치/시스템/기록매체 등)의 종류 수로 판단한다.
+- claim_clarity가 unresolved인 핵심 구성요소가 있으면 보호력의 한계로 보되, 자료 부족이 아니라 청구항 형식 근거로만 반영한다.
+- `element_structure.target`이 비어 있으면 기존 claim_context·청구항 원문으로 판단한다.
 
 점수화 기준:
 - core_solution_coverage:

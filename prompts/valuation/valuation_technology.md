@@ -55,6 +55,8 @@
 - `technology_metrics.country_code`
 - `technology_metrics.similar_patents`
 - `technology_metrics.warnings`
+- `element_structure.target`: 대상 특허의 구조화 결과(key_elements/key_flow/claims)
+- `element_structure.comparisons`: 비교군 특허의 구조화 결과
 - citation_evidence
 - prior_art_candidates
 - 국내특허는 CPC 기반, 해외특허는 IPC 기반 해당 국가 유사 특허 검색 결과
@@ -68,9 +70,9 @@
 기존 기술과 비교했을 때 기술적으로 어떤 차별 요소가 존재하는지 평가한다.
 
 사용 데이터:
-- 대상 특허 PDF 원문
-- 선행기술조사문헌 PDF 원문
-- 유사 특허 PDF 원문
+- 대상 특허: `element_structure.target`(구조화 결과) + 청구항 원문 + summary_result
+- 비교군 특허: `element_structure.comparisons`(구조화 결과). 비교군의 원문 전문은 제공되지 않으며, 구조화 결과로 비교한다.
+- `technology_metrics.similar_patents`: 비교군 식별자·CPC/IPC·출원인·출원일 등 메타데이터(원문 전문 제외)
 - KIPRIS 메타데이터
   - IPC/CPC
   - 출원인
@@ -86,8 +88,17 @@
 평가 방식:
 - 대상 특허와 비교군 특허를 비교하여 기술 구성 차이, 기술 동작 방식 차이, 기술 효과 차이를 분석한다.
 - 비교군 특허는 대상 특허 출원일 이전에 공개 또는 등록된 특허로 제한된 것으로 간주한다.
-- PDF 원문이 있는 비교 문헌은 원문 수준 비교를 우선한다.
-- PDF 원문이 없고 제목/초록/metadata만 있으면 비교 한계를 `missing_information`과 `confidence`에 반영한다.
+- 비교는 `element_structure`(대상·비교군 구조화 결과)를 기준으로 구성요소 단위로 수행한다.
+- 특정 비교군의 구조화 결과가 비어 있으면(구조화 실패) 해당 비교군은 비교에서 제외하고, 한계를 `missing_information`과 `confidence`에 반영한다.
+
+구성요소(element) 단위 비교 (제공된 경우 우선 사용):
+- `element_structure.target.key_elements`(대상 특허의 핵심 구성요소)와 각 `element_structure.comparisons[].key_elements`(비교군 특허의 핵심 구성요소)를 **구성요소 대 구성요소**로 대조한다.
+- 기술 구성 차별성: 대상 key_element가 비교군 특허에 대응 구성요소가 없거나 역할이 다르면 그 비교군과 "구성 차이 있음"으로 본다.
+- 기술 동작 방식 차별성: `element_structure.target.key_flow`(구성요소 간 결합·흐름)가 비교군과 다른지 본다. coupling_strength=strong인 흐름이 비교군에 없으면 동작 방식 차별성이 크다.
+- 기술 효과 차별성: 대상 key_element의 `why_essential`(해결 과제·효과)이 비교군 대비 차별적인지 본다.
+- 비교군 특허별로 "구성 차이/동작 차이/효과 차이가 확인된 비교군 수"를 세어 아래 점수 밴드에 반영한다.
+- `element_structure`가 비어 있거나 일부만 있으면 PDF 원문·metadata 기반 비교로 보완하고, 한계를 `missing_information`·`confidence`에 반영한다.
+- comparisons에만 존재하는 구성요소를 대상 특허의 차별점이나 구현으로 서술하지 않는다.
 
 점수화 기준:
 

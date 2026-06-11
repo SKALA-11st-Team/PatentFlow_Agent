@@ -16,6 +16,11 @@ from services.patent.prior_art_patent_service import (
     build_prior_art_patent_context,
     prior_art_context_citation_documents,
 )
+from services.patent.patent_structuring_service import (
+    COMPARISON_TARGET_COUNT,
+    structure_target_and_comparisons,
+)
+from agents.valuation_axes.technology import build_technology_metrics
 from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
 from services.evidence.compression_service import (
     DEFAULT_RAG_SCORE_THRESHOLD,
@@ -259,6 +264,96 @@ def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
         if state.kipris_api_data is not None:
             state.kipris_api_data["citation_evidence"] = state.citation_evidence
     return state
+
+
+@trace(run_type="tool")
+def patent_structuring_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    """비교군을 한 번 조립하고, 타깃 + 비교 특허군을 동일 schema로 구조화한다.
+
+    조립 결과(state.comparison_group)는 기술성 축이 재사용해 중복 조립을 막는다.
+    구조화 결과(target_structure/comparison_structures)는 권리성·기술성이
+    element 단위 비교에 쓴다.
+    """
+    if state.target_structure is not None or state.comparison_structures:
+        return state
+
+    # 비교군(prior-art-first-then-similar)을 여기서 한 번만 조립한다.
+    if state.comparison_group is None:
+        state.comparison_group = build_technology_metrics(state)
+
+    target_input = build_target_structuring_input(state)
+    comparison_inputs = build_comparison_structuring_inputs(state)
+    if not target_input and not comparison_inputs:
+        return state
+
+    target_structure, comparison_structures = structure_target_and_comparisons(
+        target_input=target_input or {},
+        comparison_inputs=comparison_inputs,
+    )
+    state.target_structure = target_structure
+    state.comparison_structures = comparison_structures
+    return state
+
+
+def build_target_structuring_input(state: PatentWorkflowState) -> dict | None:
+    preprocessed = state.preprocessed_patent or {}
+    sections = preprocessed.get("sections") if isinstance(preprocessed.get("sections"), dict) else {}
+    specification_text = "\n\n".join(
+        str(sections.get(key) or "").strip()
+        for key in ("solution", "detailed_description", "effect")
+        if str(sections.get(key) or "").strip()
+    )
+    claims_text = str(sections.get("claims_text") or "").strip()
+    if not claims_text:
+        claims_text = "\n".join(
+            str((claim or {}).get("text") or "").strip()
+            for claim in (preprocessed.get("claims") or [])
+            if str((claim or {}).get("text") or "").strip()
+        )
+    if not specification_text and not claims_text:
+        return None
+    structured = state.patent_structured or {}
+    doc_id = str(
+        structured.get("application_number")
+        or structured.get("registration_number")
+        or (preprocessed.get("metadata") or {}).get("application_number")
+        or ""
+    )
+    return {
+        "doc_id": doc_id,
+        "specification_text": specification_text,
+        "claims_text": claims_text,
+        "drawings_text": str(sections.get("drawings") or "").strip(),
+    }
+
+
+def build_comparison_structuring_inputs(state: PatentWorkflowState) -> list[dict]:
+    # 기술성과 동일한 비교군(조립 결과)을 구조화 대상으로 삼는다. 조립 전이면
+    # prior_art_context로 폴백(이 경우 모두 선행문헌).
+    use_comparison_group = state.comparison_group is not None
+    context = state.comparison_group or state.prior_art_context or {}
+    items = context.get("similar_patents") or context.get("prior_art_patents") or []
+    inputs: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        specification_text = str(item.get("pdf_text") or item.get("pdf_text_excerpt") or "").strip()
+        if not specification_text:
+            continue
+        doc_id = str(item.get("display_number") or item.get("application_number") or item.get("title") or "")
+        comparison_source = item.get("comparison_source") or ("similar" if use_comparison_group else "prior_art")
+        inputs.append(
+            {
+                "doc_id": doc_id,
+                "specification_text": specification_text,
+                "claims_text": "",
+                "drawings_text": "",
+                "comparison_source": comparison_source,
+            }
+        )
+        if len(inputs) >= COMPARISON_TARGET_COUNT:
+            break
+    return inputs
 
 
 def merge_prior_art_citation_evidence(

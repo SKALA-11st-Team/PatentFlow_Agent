@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_source_types
-from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context, unique_texts
+from agents.valuation_axes.payload_common import (
+    build_base_input_payload,
+    build_claim_context,
+    build_element_structure_payload,
+    unique_texts,
+)
 from workflow.state import PatentWorkflowState
 
 
@@ -190,6 +195,8 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
         payload["patent"]["claim_stats"] = preprocessed_claim_stats
         payload["patent"]["claim_availability"]["claim_stats_provided"] = True
     payload["legal_context"] = build_legal_context(payload=payload, state=state, labels={})
+    # 권리성은 선행문헌만 비교문헌으로 사용한다(CPC유사 제외).
+    payload["element_structure"] = build_element_structure_payload(state, prior_art_only=True)
     return payload
 
 
