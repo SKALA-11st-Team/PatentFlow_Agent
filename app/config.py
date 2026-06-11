@@ -49,6 +49,18 @@ class Settings(BaseModel):
     openai_writing_timeout_seconds: float = float(getenv("OPENAI_WRITING_TIMEOUT_SECONDS", "240"))
     # 수집 후 뉴스 recency 필터의 최대 기간(일). naver·글로벌 뉴스 공통. 기본 5년.
     news_max_age_days: int = int(getenv("NEWS_MAX_AGE_DAYS", str(365 * 5)))
+    # EVID-12: 출처 신뢰도 1티어 도메인(콤마 구분). 해당 도메인 근거는 source 가중치 1.0,
+    # 그 외는 EVIDENCE_DEFAULT_SOURCE_WEIGHT를 적용한다.
+    evidence_trusted_domains: tuple[str, ...] = tuple(
+        domain.strip().lower()
+        for domain in getenv(
+            "EVIDENCE_TRUSTED_DOMAINS",
+            "yna.co.kr,hankyung.com,mk.co.kr,etnews.com,zdnet.co.kr,reuters.com,bloomberg.com",
+        ).split(",")
+        if domain.strip()
+    )
+    # EVID-12: 1티어 외 출처의 기본 source 가중치.
+    evidence_default_source_weight: float = float(getenv("EVIDENCE_DEFAULT_SOURCE_WEIGHT", "0.7"))
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     # EVID-08: 임베딩 호출 타임아웃·재시도·쿼리 캐시. 일시 장애로 인덱싱/검색이 통째로 중단되지 않게 한다.
     openai_embedding_timeout: float = float(getenv("OPENAI_EMBEDDING_TIMEOUT", "30"))

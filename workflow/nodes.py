@@ -24,6 +24,7 @@ from services.evidence.compression_service import (
 )
 from services.evidence.external_search_service import MAX_SEARCH_QUERIES, collect_external_evidence, rewrite_search_queries
 from services.evidence.news_filter_service import filter_news_evidence, save_filtered_news_result
+from services.evidence.quality_service import score_and_rank_evidence_items
 from services.evidence.skax_site_search_service import collect_skax_site_evidence
 from services.evidence.store_service import save_filtered_evidence_bundle
 from services.rag.industry_rag_service import (
@@ -491,6 +492,10 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     skax_items = skax_result.get("items", [])
     if skax_items:
         evidence_items = merge_evidence_items(evidence_items, skax_items)
+    # EVID-12: 출처 신뢰도·최신성 가중치(quality_weight)를 부여하고 가중치 내림차순으로
+    # 정렬 + 제목 근사중복 제거. 이후 압축/선택 절단에서 고품질 근거가 먼저 살아남는다.
+    quality_result = score_and_rank_evidence_items(evidence_items)
+    evidence_items = quality_result["items"]
     filtered_evidence_path = save_filtered_evidence_safely(
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
         news_items=news_filter_result.get("kept", []),
@@ -538,6 +543,8 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             "industry_report_count": len(industry_result.get("items", [])),
             "other_count": len(non_news_items) + len(skax_items),
         },
+        # EVID-12: 품질 가중치 적용·근사중복 제거 통계.
+        "evidence_quality": quality_result["stats"],
     }
     state.retry_count += 1
     state.current_stage = "evidence_check"
