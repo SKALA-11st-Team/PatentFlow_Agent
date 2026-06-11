@@ -92,6 +92,26 @@ def test_final_report_prompt_does_not_require_benchmark_data():
     assert "정량 성능 검증, benchmark, 학습 데이터 세부 부재를 기술성 약점처럼 쓰지 않습니다." in final_report
 
 
+def test_final_report_prompt_requires_detailed_technology_reasoning_without_detail_scores():
+    final_report = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
+    technology_section = final_report.split("### 7.6 기술성 작성 규칙", 1)[1]
+
+    assert "`valuation_result.axes.technology.subscores`의 상세 근거를 반드시 사용" in technology_section
+    for heading in (
+        "기존 방식과의 공통점 및 차이",
+        "차별적 해결수단과 기술 효과",
+        "모방·대체 구현 관점",
+        "구현 구조와 처리 절차",
+        "유지 판단에 주는 기술적 의미",
+    ):
+        assert heading in technology_section
+    assert "가장 가까운 비교문헌의 식별값 또는 제목" in technology_section
+    assert "어떤 구성 또는 처리 차이가 어떤 기술적 효과로 이어지는지" in technology_section
+    assert "동일 효과를 재현하기 위해 다시 설계해야 하는 요소" in technology_section
+    assert "기술성만으로 최종 유지·포기 결론을 새로 만들지 마세요." in technology_section
+    assert "세부 점수 합계나 `25/25`, `기술 차별성 47/50` 같은 점수 표기는 금지" in technology_section
+
+
 def test_final_report_prompt_uses_rights_scope_explanation_for_legal_axis():
     final_report = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
