@@ -24,7 +24,10 @@
 - 모든 출력 값은 반드시 한국어로 작성한다.
 - 입력에 없는 성능 수치, 제품 구현, 실제 도입 사례를 만들지 않는다.
 - `patent.document_role=target_patent`의 청구항·요약·명세서 내용만 대상 특허 기술로 서술한다.
+- 대상 특허의 구성·절차·구현 구체성은 `patent.claim_context`와 `patent.technical_context`를 우선 사용한다.
+- 독립항은 핵심 해결수단과 처리 흐름 판단에 사용하고, 종속항은 대체 구성·예외 조건·구현 변형·세부 제어 조건 판단에 사용한다.
 - `technology_metrics.similar_patents`는 선행기술 또는 유사 비교문헌이다. 여기에만 존재하는 구성, 알고리즘, 효과를 대상 특허가 포함한다고 서술하지 않는다.
+- 비교문헌에 `representative_claims`와 `technical_content`가 있으면 구성·동작·효과 비교에 우선 사용하고, 없으면 초록 또는 PDF 원문 범위에서만 판단한다.
 - 대상 특허의 차별 요소는 대상 문헌에서 확인된 구성과 비교문헌에서 확인된 구성을 명시적으로 대조하여 작성한다.
 - 예를 들어 비교문헌에만 퍼지 회귀가 있고 대상 청구항에 없다면, 퍼지 회귀를 대상 특허의 구현 또는 차별점으로 설명해서는 안 된다.
 - 자료 부족은 특허의 약점처럼 단정하지 말고 `missing_information`과 `confidence`에 반영한다.
@@ -48,6 +51,7 @@
 - 대상 특허 대표 청구항
 - 대상 특허 전체 청구항
 - 대상 특허 sections
+- `patent.technical_context`
 - 발명을 실시하기 위한 구체적인 내용
 - 실시예
 - 도면 설명
@@ -58,6 +62,11 @@
 - `technology_metrics.representative_ipc`
 - `technology_metrics.country_code`
 - `technology_metrics.similar_patents`
+  - `representative_claims`
+  - `technical_content.problem`
+  - `technical_content.solution`
+  - `technical_content.effect`
+  - `technical_content.detailed_description`
 - `technology_metrics.warnings`
 - citation_evidence
 - prior_art_candidates

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from agents.valuation_axes.common import grade_for_score, select_by_source_types
+from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_source_types
 from agents.valuation_axes.market import clamp_int, extract_patent_country, extract_representative_cpc, extract_representative_ipc
 from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
 from services.patent.prior_art_patent_service import build_prior_art_patent_context
@@ -54,11 +54,35 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    return build_base_input_payload(
+    payload = build_base_input_payload(
         state=state,
         evidence=evidence,
-        claim_context=build_claim_context(state, include_dependent_claims=False),
+        claim_context=build_claim_context(state, include_dependent_claims=True),
     )
+    payload["patent"]["technical_context"] = build_target_technical_context(state)
+    return payload
+
+
+def build_target_technical_context(state: PatentWorkflowState) -> dict[str, Any]:
+    preprocessed = state.preprocessed_patent or {}
+    sections = preprocessed.get("sections") if isinstance(preprocessed.get("sections"), dict) else {}
+    drawing_context = (
+        preprocessed.get("drawing_context")
+        if isinstance(preprocessed.get("drawing_context"), dict)
+        else {}
+    )
+    return {
+        "technical_field": normalize_text(sections.get("technical_field")),
+        "background_art": normalize_text(sections.get("background_art")),
+        "problem": normalize_text(sections.get("problem")),
+        "solution": normalize_text(sections.get("solution")),
+        "effect": normalize_text(sections.get("effect")),
+        "detailed_description": normalize_text(sections.get("detailed_description")),
+        "figure_description": normalize_text(drawing_context.get("figure_description")),
+        "representative_figure_detail": normalize_text(
+            drawing_context.get("representative_figure_detail")
+        ),
+    }
 
 
 def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:

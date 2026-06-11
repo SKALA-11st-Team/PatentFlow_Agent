@@ -31,6 +31,29 @@ def test_prior_art_fulltext_without_parsed_claims_has_separate_status():
     assert result["representative_claims"] == []
 
 
+def test_prior_art_fulltext_exposes_technical_content():
+    result = prior_art_legal_content_from_markdown(
+        """
+## 해결하려는 과제
+처리 지연을 줄인다.
+## 과제의 해결 수단
+입력을 분할하여 병렬 처리한다.
+## 발명의 효과
+처리 시간이 감소한다.
+## 발명을 실시하기 위한 구체적인 내용
+프로세서는 분할된 입력을 복수 작업기에 전달한다.
+""",
+        country_code="KR",
+    )
+
+    assert result["technical_content"] == {
+        "problem": "처리 지연을 줄인다.",
+        "solution": "입력을 분할하여 병렬 처리한다.",
+        "effect": "처리 시간이 감소한다.",
+        "detailed_description": "프로세서는 분할된 입력을 복수 작업기에 전달한다.",
+    }
+
+
 def test_collect_prior_art_candidates_excludes_kind_code_digits_from_kr_document_number():
     candidates = collect_prior_art_candidates(
         target_metadata={

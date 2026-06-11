@@ -2434,7 +2434,7 @@ def test_legal_axis_input_includes_full_claim_context_without_representative_dup
     assert market_payload["patent"]["claim_availability"]["full_claims_provided"] is False
 
 
-def test_technology_axis_input_includes_all_independent_claims_only(tmp_path):
+def test_technology_axis_input_includes_all_claims_and_technical_context(tmp_path):
     state = PatentWorkflowState(
         user_input={"artifact_dir": str(tmp_path), "no_save": True},
         preprocessed_patent={
@@ -2444,7 +2444,18 @@ def test_technology_axis_input_includes_all_independent_claims_only(tmp_path):
                 {"claim_no": 5, "text": "독립항 5 전문", "is_independent": True, "dependency": None},
                 {"claim_no": 9, "text": "독립항 9 전문", "is_independent": True, "dependency": None},
                 {"claim_no": 11, "text": "독립항 11 전문", "is_independent": True, "dependency": None},
-            ]
+            ],
+            "sections": {
+                "technical_field": "문서 분석 기술",
+                "problem": "연관관계 설명 부족",
+                "solution": "요인 추출 및 관계 분석",
+                "effect": "설명 가능성 향상",
+                "detailed_description": "입력 데이터를 전처리한 뒤 관계를 계산한다.",
+            },
+            "drawing_context": {
+                "figure_description": "도 1은 전체 처리 흐름이다.",
+                "representative_figure_detail": "S110 입력 후 S120에서 관계를 계산한다.",
+            },
         },
     )
 
@@ -2460,9 +2471,19 @@ def test_technology_axis_input_includes_all_independent_claims_only(tmp_path):
         "독립항 9 전문",
         "독립항 11 전문",
     ]
-    assert "dependent_claims" not in claim_context
+    assert [claim["claim_no"] for claim in claim_context["dependent_claims"]] == [2]
     assert technology_payload["patent"]["claim_availability"]["claim_context_provided"] is True
-    assert technology_payload["patent"]["claim_availability"]["full_claims_provided"] is False
+    assert technology_payload["patent"]["claim_availability"]["full_claims_provided"] is True
+    assert technology_payload["patent"]["technical_context"] == {
+        "technical_field": "문서 분석 기술",
+        "background_art": "",
+        "problem": "연관관계 설명 부족",
+        "solution": "요인 추출 및 관계 분석",
+        "effect": "설명 가능성 향상",
+        "detailed_description": "입력 데이터를 전처리한 뒤 관계를 계산한다.",
+        "figure_description": "도 1은 전체 처리 흐름이다.",
+        "representative_figure_detail": "S110 입력 후 S120에서 관계를 계산한다.",
+    }
 
 
 def test_legal_axis_input_includes_prior_art_candidates(tmp_path):

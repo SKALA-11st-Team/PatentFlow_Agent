@@ -8,7 +8,11 @@ from typing import Any
 from open_api.kipris_client import KiprisClient
 from services.evidence.api_normalizers import extract_kipris_items
 from services.patent.kipris_patent_service import download_and_parse_patent_pdf
-from services.patent.markdown_preprocess_service import extract_sections, preprocess_patent_markdown
+from services.patent.markdown_preprocess_service import (
+    build_preprocessed_patent,
+    extract_sections,
+    preprocess_patent_markdown,
+)
 
 
 def build_similar_patent_context(
@@ -137,6 +141,9 @@ def collect_similar_patent_pdfs(
             )
             markdown_text = preprocess_patent_markdown(str(parsed.get("markdown_text") or ""))
             pdf_text = markdown_text if text_limit is None else markdown_text[:text_limit]
+            preprocessed = build_preprocessed_patent(markdown_text)
+            sections = preprocessed.get("sections") or {}
+            claims = list(preprocessed.get("claims") or [])
             enriched.append(
                 {
                     **patent,
@@ -148,6 +155,27 @@ def collect_similar_patent_pdfs(
                     "pdf_text_truncated": text_limit is not None and len(markdown_text) > text_limit,
                     "pdf_drawings_removed": True,
                     "pdf_collected": True,
+                    "representative_claims": [
+                        {
+                            "claim_no": claim.get("claim_no"),
+                            "is_independent": claim.get("is_independent"),
+                            "dependency": claim.get("dependency"),
+                            "text": normalize_text(claim.get("text")),
+                        }
+                        for claim in [
+                            *[item for item in claims if item.get("is_independent")],
+                            *[item for item in claims if not item.get("is_independent")],
+                        ][:5]
+                        if normalize_text(claim.get("text"))
+                    ],
+                    "technical_content": {
+                        "problem": normalize_text(sections.get("problem")),
+                        "solution": normalize_text(sections.get("solution")),
+                        "effect": normalize_text(sections.get("effect")),
+                        "detailed_description": normalize_text(
+                            sections.get("detailed_description")
+                        ),
+                    },
                     "similarity_text": patent_similarity_text_from_markdown(
                         markdown_text,
                         title=patent.get("title"),
