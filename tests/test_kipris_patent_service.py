@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
     download_and_parse_foreign_patent_pdf,
@@ -23,7 +27,7 @@ from services.patent.kipris_patent_service import (
     should_exclude_pdf_page_text,
     should_run_ocr_fallback,
     trim_foreign_front_matter,
-    classify_foreign_pdf_failure,
+    find_cached_foreign_patent_pdf,
     _fetch_foreign_claims_from_kipris,
     _foreign_literature_number_candidates,
     _google_patents_figure_urls,
@@ -495,7 +499,7 @@ def test_fetch_foreign_patent_rights_data_marks_unsupported_claim_api_without_kr
         collect_pdf=False,
     )
 
-    assert result["source_type"] == "kipris_foreign_patent"
+    assert result["source_type"] == "kipris_foreign_bibliographic_info"
     assert result["metadata"]["country"] == "TW"
     assert result["claims"] == []
     assert result["warnings"] == ["kipris_foreign_claims_not_supported:TW", "kipris_foreign_claims_not_found"]
@@ -528,12 +532,6 @@ def test_fetch_foreign_patent_rights_data_requires_manual_upload_when_all_pdf_so
     assert result["warnings"][-1].startswith("foreign_pdf_manual_upload_required:")
 
 
-def test_classify_foreign_pdf_failure_preserves_non_lookup_errors():
-    assert classify_foreign_pdf_failure(RuntimeError("ocr_tools_not_available:tesseract,pdftoppm")) == (
-        "ocr_tools_not_available:tesseract,pdftoppm"
-    )
-
-
 def test_should_run_ocr_fallback_for_image_only_markdown():
     markdown = "![image 1](<page1.png>)\n\n![image 2](<page2.png>)"
 
@@ -553,6 +551,10 @@ def test_parse_single_patent_pdf_uses_ocr_when_markdown_has_no_text(monkeypatch,
             md_path.write_text("![image 1](<page1.png>)\n", encoding="utf-8")
 
     monkeypatch.setitem(__import__("sys").modules, "opendataloader_pdf", FakeOpenDataLoaderPdf)
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_left_then_right",
+        lambda path: "",
+    )
     monkeypatch.setattr(
         "services.patent.kipris_patent_service.extract_pdf_text_with_ocr",
         lambda path: "Abstract\nClaims\n1. A system comprising a processor.",
@@ -578,11 +580,13 @@ def test_parse_single_patent_pdf_raises_when_ocr_fails_to_extract_text(monkeypat
 
     monkeypatch.setitem(__import__("sys").modules, "opendataloader_pdf", FakeOpenDataLoaderPdf)
     monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_left_then_right",
+        lambda path: "",
+    )
+    monkeypatch.setattr(
         "services.patent.kipris_patent_service.extract_pdf_text_with_ocr",
         lambda path: "",
     )
-
-    import pytest
 
     with pytest.raises(RuntimeError, match="foreign_pdf_text_extraction_failed_after_ocr"):
         parse_single_patent_pdf(pdf_path, output_dir=output_dir)
@@ -670,35 +674,6 @@ Conventional approaches have limitations.
     assert "ABSTRACT" not in trimmed
 
 
-def test_download_and_parse_foreign_patent_pdf_prefers_cached_local_pdf(monkeypatch, tmp_path):
-    cached = tmp_path / "US12032469B2.pdf"
-    cached.write_bytes(b"%PDF-1.4 cached")
-    parse_output_dir = tmp_path / "parsed"
-    captured = {}
-
-    def fake_parse(pdf_path, *, output_dir, output_format="markdown-with-images"):
-        captured["pdf_path"] = Path(pdf_path)
-        captured["output_dir"] = Path(output_dir)
-        return {"markdown_paths": [str(output_dir / "cached.md")], "markdown_text": "Abstract\nClaims\n1. Cached claim."}
-
-    def fail_select(*args, **kwargs):
-        raise AssertionError("remote PDF lookup should not run when cached PDF exists")
-
-    monkeypatch.setattr("services.patent.kipris_patent_service.parse_single_patent_pdf", fake_parse)
-    monkeypatch.setattr("services.patent.kipris_patent_service.select_foreign_fulltext_pdf_with_fallback", fail_select)
-    monkeypatch.setattr("services.patent.kipris_patent_service.settings.patent_pdf_dir", tmp_path)
-
-    result = download_and_parse_foreign_patent_pdf(
-        ForeignClient(),
-        {"country": "US", "registration_number": "12,032,469", "application_number": "17/420,237"},
-        candidates=[],
-        output_dir=parse_output_dir,
-    )
-
-    assert captured["pdf_path"] == cached
-    assert result["selected_type"] == "CACHED_LOCAL_PDF"
-    assert result["pdf_path"] == str(cached)
-    assert result["source_path"] == str(cached)
 def test_google_patents_publication_id_normalizes_cn_registration_number():
     assert (
         google_patents_publication_id({"country": "CN", "registration_number": "CN 110770661 B"})

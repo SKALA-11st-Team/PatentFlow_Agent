@@ -995,10 +995,10 @@ def extract_us_patent_sections(raw_text: str, *, cleaned_text: str = "") -> dict
     return {
         "abstract": postprocess_agent_text(_extract_uspto_abstract(text)),
         "claims_text": postprocess_claims_text(_extract_uspto_claims_text(text)),
-        "technical_field": postprocess_agent_text(_extract_uspto_section(text, "TECHNICAL FIELD")),
+        "technical_field": postprocess_agent_text(_extract_uspto_section(text, "TECHNICAL FIELD", "FIELD OF THE INVENTION")),
         "background_art": postprocess_agent_text(_extract_uspto_section(text, "BACKGROUND ART", "BACKGROUND")),
         "problem": postprocess_agent_text(_extract_uspto_section(text, "DISCLOSURE", "Technical Problem")),
-        "solution": postprocess_agent_text(_extract_uspto_section(text, "Technical Solution")),
+        "solution": postprocess_agent_text(_extract_uspto_section(text, "Technical Solution", "SUMMARY OF THE INVENTION", "SUMMARY")),
         "effect": postprocess_agent_text(_extract_uspto_section(text, "Advantageous Effects")),
         "detailed_description": postprocess_agent_text(
             _extract_uspto_section(text, "DETAILED DESCRIPTION", "DESCRIPTION", "BEST MODE")
@@ -1022,7 +1022,7 @@ def normalize_uspto_ocr_text(text: str) -> str:
 
 def _extract_uspto_abstract(text: str) -> str:
     match = re.search(
-        r"(?is)\b(?:\(\s*(?:57|67)\s*\)\s*)?ABSTRACT\b[:\s]*(.+?)(?=^\s*(?:TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|BRIEF DESCRIPTION OF DRAWINGS|DESCRIPTION|DETAILED DESCRIPTION|BEST MODE)\b|\Z)",
+        r"(?is)\b(?:\(\s*(?:57|67)\s*\)\s*)?ABSTRACT\b[:\s]*(.+?)(?=^\s*(?:TECHNICAL FIELD|FIELD OF THE INVENTION|BACKGROUND ART|BACKGROUND|DISCLOSURE|SUMMARY OF THE INVENTION|SUMMARY|BRIEF DESCRIPTION OF DRAWINGS|DESCRIPTION|DETAILED DESCRIPTION|BEST MODE)\b|\Z)",
         text,
         re.M,
     )
@@ -1041,9 +1041,13 @@ def _extract_uspto_claims_text(text: str) -> str:
 def _extract_uspto_section(text: str, *labels: str) -> str:
     stop_labels = (
         "TECHNICAL FIELD",
+        "FIELD OF THE INVENTION",
         "BACKGROUND ART",
         "BACKGROUND",
         "DISCLOSURE",
+        "SUMMARY OF THE INVENTION",
+        "SUMMARY",
+        "BRIEF DESCRIPTION OF THE DRAWINGS",
         "BRIEF DESCRIPTION OF DRAWINGS",
         "DESCRIPTION OF DRAWINGS",
         "DESCRIPTION",
