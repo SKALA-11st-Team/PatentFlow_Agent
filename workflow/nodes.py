@@ -412,6 +412,8 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     skip_news_evidence = bool(state.user_input.get("skip_news_evidence"))
     patent_id = patent.get("id") or preprocessed.get("patent_id")
     no_save = state.user_input.get("no_save", False)
+    ko_queries_override = query_plan.get("ko_queries") or None
+    en_queries_override = query_plan.get("en_queries") or None
 
     # 뉴스 검색·Industry RAG·SK AX 검색은 서로 독립이므로 동시에 시작한다.
     # 뉴스 필터는 뉴스 검색 결과에 의존하므로 뉴스 작업 안에서 체이닝하고,
@@ -424,9 +426,10 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             query_limit_per_axis=MAX_SEARCH_QUERIES,
             include_naver=not skip_news_evidence,
             include_gnews=not skip_news_evidence,
-            include_kipris=False,
-            ko_queries_override=query_plan.get("ko_queries", []),
-            en_queries_override=query_plan.get("en_queries", []),
+            # EVID-02: 경쟁특허 근거(KIPRIS)를 기본 수집한다(application_number 있을 때만 실효).
+            include_kipris=state.user_input.get("include_kipris_competitor", True),
+            ko_queries_override=ko_queries_override,
+            en_queries_override=en_queries_override,
             output_dir=artifact_subdir(state, "api_evidence"),
             save=not no_save,
         )

@@ -621,6 +621,22 @@ def parse_single_patent_pdf(
     output_dir: str | Path,
     output_format: str = "markdown-with-images",
 ) -> dict[str, Any]:
+    java_path = shutil.which("java")
+    if not java_path:
+        raise RuntimeError(
+            "java_runtime_missing: install Java or configure JAVA_HOME before PDF parsing"
+        )
+    java_check = subprocess.run(
+        [java_path, "-version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if java_check.returncode != 0:
+        raise RuntimeError(
+            "java_runtime_unavailable: install Java or configure JAVA_HOME before PDF parsing"
+        )
+
     import opendataloader_pdf
 
     pdf_path = Path(pdf_path)

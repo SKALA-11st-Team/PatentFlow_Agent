@@ -797,6 +797,61 @@ def test_report_validation_flags_missing_sections_and_score_mismatch():
     assert any("missing required sections" in i for i in result["issues"])
     assert any("total score" in i for i in result["issues"])
 
+def _capture_collect_external_evidence(monkeypatch):
+    configure_evidence_search_mocks(monkeypatch, external_items=[], news_kept=[])
+    captured = {}
+
+    def capturing(**kwargs):
+        captured.update(kwargs)
+        return {"items": [], "queries": ["q"], "gnews_queries": [], "warnings": []}
+
+    monkeypatch.setattr("workflow.nodes.collect_external_evidence", capturing)
+    return captured
+
+
+def test_evidence_search_node_enables_kipris_by_default(monkeypatch):
+    # EVID-02: KIPRIS 경쟁근거 기본 ON.
+    captured = _capture_collect_external_evidence(monkeypatch)
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"application_number": "10-2024-0000001"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={},
+    )
+
+    evidence_search_node(state)
+
+    assert captured["include_kipris"] is True
+
+
+def test_evidence_search_node_kipris_can_be_disabled(monkeypatch):
+    captured = _capture_collect_external_evidence(monkeypatch)
+    state = PatentWorkflowState(
+        user_input={"no_save": True, "include_kipris_competitor": False},
+        patent_structured={"application_number": "10-2024-0000001"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={},
+    )
+
+    evidence_search_node(state)
+
+    assert captured["include_kipris"] is False
+
+
+def test_evidence_search_node_uses_llm_rewrite_when_query_plan_lists_are_empty(monkeypatch):
+    captured = _capture_collect_external_evidence(monkeypatch)
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"application_number": "10-2024-0000001"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={"ko_queries": [], "en_queries": []},
+    )
+
+    evidence_search_node(state)
+
+    assert captured["ko_queries_override"] is None
+    assert captured["en_queries_override"] is None
+
 
 def test_report_validation_flags_recommendation_mismatch():
     from workflow.nodes import report_validation_node

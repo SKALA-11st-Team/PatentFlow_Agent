@@ -13,6 +13,7 @@ from services.patent.kipris_patent_service import (
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
     normalize_foreign_reference_documents,
+    parse_single_patent_pdf,
     foreign_reference_candidate_from_text,
     resolve_foreign_prior_art_evidence,
     resolve_citation_evidence,
@@ -317,6 +318,26 @@ def test_fetch_foreign_claims_falls_back_to_google_patents_pdf(monkeypatch, tmp_
     assert documents[0]["lookup_source"] == "google_patents_pdf"
     assert documents[0]["comparison_status"] == "claim_comparison_ready"
     assert documents[0]["representative_claims"][0]["text"].startswith("A method")
+
+
+def test_parse_single_patent_pdf_requires_java_runtime(monkeypatch, tmp_path):
+    monkeypatch.setattr("services.patent.kipris_patent_service.shutil.which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="java_runtime_missing"):
+        parse_single_patent_pdf(tmp_path / "sample.pdf", output_dir=tmp_path / "out")
+
+
+def test_parse_single_patent_pdf_rejects_broken_java_stub(monkeypatch, tmp_path):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "Unable to locate a Java Runtime."
+
+    monkeypatch.setattr("services.patent.kipris_patent_service.shutil.which", lambda name: "/usr/bin/java")
+    monkeypatch.setattr("services.patent.kipris_patent_service.subprocess.run", lambda *args, **kwargs: Result())
+
+    with pytest.raises(RuntimeError, match="java_runtime_unavailable"):
+        parse_single_patent_pdf(tmp_path / "sample.pdf", output_dir=tmp_path / "out")
 
 
 def test_fetch_foreign_claims_uses_google_patents_html_when_pdf_has_no_claims(monkeypatch):

@@ -8,6 +8,12 @@ from agents.valuation_axes.payload_common import build_base_input_payload
 from services.evidence.api_normalizers import extract_kipris_items
 from workflow.state import PatentWorkflowState
 
+try:
+    from open_api.secret_scrub import scrub_secrets
+except ImportError:
+    def scrub_secrets(text: Any) -> str:
+        return str(text or "")
+
 
 AXIS = "market"
 LABEL = "시장성"
@@ -60,13 +66,11 @@ def build_marketability_metrics(state: PatentWorkflowState, *, evidence: list[di
         use_ipc=foreign_patent,
         country_code=extract_patent_country(state) if foreign_patent else None,
     )
-    global_business = build_global_business_metrics(evidence or [], patent_country=extract_patent_country(state))
     return {
         "representative_cpc": representative_cpc,
         "representative_ipc": representative_ipc,
         "market_growth_code_type": "ipc" if foreign_patent else "cpc",
         **growth,
-        **global_business,
     }
 
 
@@ -74,7 +78,8 @@ def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, li
     groups = {
         "industry_report_evidence_ids": [],
         "naver_news_evidence_ids": [],
-        "gnews_evidence_ids": [],
+        "global_news_evidence_ids": [],
+        "competition_evidence_ids": [],
     }
     for item in evidence:
         evidence_id = normalize_text(item.get("evidence_id"))
@@ -86,8 +91,10 @@ def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, li
             groups["industry_report_evidence_ids"].append(evidence_id)
         elif source == "naver_news":
             groups["naver_news_evidence_ids"].append(evidence_id)
+            groups["competition_evidence_ids"].append(evidence_id)
         elif source == "global_news":
-            groups["gnews_evidence_ids"].append(evidence_id)
+            groups["global_news_evidence_ids"].append(evidence_id)
+            groups["competition_evidence_ids"].append(evidence_id)
     return groups
 
 
@@ -158,7 +165,11 @@ def build_market_growth_metrics(
             country_code=country_code,
         )
     except Exception as exc:
-        return missing_market_growth(f"kipris_search_failed:{exc.__class__.__name__}", windows)
+        detail = scrub_secrets(normalize_text(exc))
+        reason = f"kipris_search_failed:{exc.__class__.__name__}"
+        if detail:
+            reason = f"{reason}:{detail}"
+        return missing_market_growth(reason, windows)
 
     if len(counts) < 3 or any(item.get("count") is None for item in counts):
         return missing_market_growth("window_counts_incomplete", windows)
@@ -391,22 +402,10 @@ def build_global_business_metrics(evidence: list[dict[str, Any]], *, patent_coun
         quality_items = [item for item in gnews_items if has_foreign_global_business_signal(item, patent_country=patent_country)]
     else:
         quality_items = [item for item in gnews_items if has_global_market_signal_content(item)]
-    quality_count = len(quality_items)
-    if quality_count >= 3:
-        score = 20
-        status = "strong_gnews_global_signal"
-    elif quality_count >= 1:
-        score = 10
-        status = "limited_gnews_global_signal"
-    else:
-        score = 0
-        status = "no_gnews_global_signal"
     return {
         "gnews_evidence_count": len(gnews_items),
-        "gnews_quality_evidence_count": quality_count,
+        "gnews_quality_evidence_count": len(quality_items),
         "gnews_evidence_ids": [item.get("evidence_id") for item in quality_items if item.get("evidence_id")],
-        "global_business_status": status,
-        "global_business_score": score,
         "global_business_excluded_country": patent_country if patent_country and patent_country != "KR" else None,
     }
 
@@ -513,20 +512,15 @@ def has_other_country_or_global_signal(item: dict[str, Any], patent_country: str
 
 
 def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
-    industry_breakdown = normalize_industry_marketability_breakdown(
-        result.get("industry_marketability_breakdown")
-        or (((result.get("subscores") or {}).get("industry_marketability") or {}).get("details"))
-    )
-    if industry_breakdown:
-        industry_score = sum(industry_breakdown.values())
-    else:
-        industry_score = normalize_industry_score(
-            result.get("industry_marketability_score")
-            or ((result.get("subscores") or {}).get("industry_marketability") or {}).get("score")
-        )
+    subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
+    industry = subscores.get("industry_marketability") if isinstance(subscores.get("industry_marketability"), dict) else {}
+    global_business = subscores.get("global_business") if isinstance(subscores.get("global_business"), dict) else {}
+    competitiveness = subscores.get("competitiveness") if isinstance(subscores.get("competitiveness"), dict) else {}
+    industry_score = clamp_market_subscore(industry.get("score"), max_value=20)
     market_growth_score = metrics.get("market_growth_score")
-    global_business_score = int(metrics.get("global_business_score") or 0)
-    score = industry_score + global_business_score
+    global_business_score = clamp_market_subscore(global_business.get("score"), max_value=20)
+    competitiveness_score = clamp_market_subscore(competitiveness.get("score"), max_value=20)
+    score = industry_score + global_business_score + competitiveness_score
     if market_growth_score is not None:
         score += int(market_growth_score)
     metrics = dict(metrics)
@@ -556,6 +550,7 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
             industry_score=industry_score,
             market_growth_score=market_growth_score,
             global_business_score=global_business_score,
+            competitiveness_score=competitiveness_score,
         ),
         "marketability_metrics": metrics,
         "missing_information": missing_information,
@@ -570,17 +565,18 @@ def build_market_subscores(
     industry_score: int,
     market_growth_score: int | None,
     global_business_score: int,
+    competitiveness_score: int,
 ) -> dict[str, dict[str, Any]]:
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     industry = subscores.get("industry_marketability") if isinstance(subscores.get("industry_marketability"), dict) else {}
     market_growth = subscores.get("market_growth") if isinstance(subscores.get("market_growth"), dict) else {}
     global_business = subscores.get("global_business") if isinstance(subscores.get("global_business"), dict) else {}
+    competitiveness = subscores.get("competitiveness") if isinstance(subscores.get("competitiveness"), dict) else {}
     return {
         "industry_marketability": {
             "label": "산업 시장성",
             "score": industry_score,
-            "max_score": 40,
-            **({"details": normalize_industry_marketability_breakdown(industry.get("details"))} if isinstance(industry.get("details"), dict) else {}),
+            "max_score": 20,
             "rationale": normalize_text(industry.get("rationale")),
         },
         "market_growth": {
@@ -598,13 +594,13 @@ def build_market_subscores(
             "label": "글로벌 사업성",
             "score": global_business_score,
             "max_score": 20,
-            "details": {
-                "gnews_evidence_count": clamp_int(metrics.get("gnews_evidence_count"), default=0, max_value=9999),
-                "gnews_quality_evidence_count": clamp_int(metrics.get("gnews_quality_evidence_count"), default=0, max_value=9999),
-                "global_business_status": normalize_text(metrics.get("global_business_status")),
-            },
-            "rationale": normalize_text(global_business.get("rationale"))
-            or "글로벌 해외 뉴스 근거로 산정된 코드 계산값입니다.",
+            "rationale": normalize_text(global_business.get("rationale")),
+        },
+        "competitiveness": {
+            "label": "경쟁성",
+            "score": competitiveness_score,
+            "max_score": 20,
+            "rationale": normalize_text(competitiveness.get("rationale")),
         },
     }
 
@@ -616,39 +612,8 @@ def nullable_int(value: Any) -> int | None:
         return None
 
 
-def normalize_industry_marketability_breakdown(value: Any) -> dict[str, int]:
-    if not isinstance(value, dict):
-        return {}
-    return {
-        "industry_growth_evidence": nearest_score(
-            first_present(value, "industry_growth_evidence_score", "industry_growth_evidence"),
-            (0, 15),
-        ),
-        "corporate_investment_entry": nearest_score(
-            first_present(value, "corporate_investment_entry_score", "corporate_investment_entry"),
-            (0, 10),
-        ),
-        "news_market_diffusion": nearest_score(
-            first_present(value, "news_market_diffusion_score", "news_market_diffusion"),
-            (0, 10),
-        ),
-        "source_reliability": nearest_score(
-            first_present(value, "source_reliability_score", "source_reliability"),
-            (0, 5),
-        ),
-    }
-
-
-def normalize_industry_score(value: Any) -> int:
-    return clamp_int(value, default=0, max_value=40)
-
-
-def nearest_score(value: Any, candidates: tuple[int, ...]) -> int:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return 0
-    return min(candidates, key=lambda candidate: (abs(candidate - score), -candidate))
+def clamp_market_subscore(value: Any, *, max_value: int) -> int:
+    return clamp_int(value, default=0, max_value=max_value)
 
 
 def clamp_int(value: Any, default: int, max_value: int, min_value: int = 0) -> int:
