@@ -730,6 +730,34 @@ def test_business_fit_quantitative_metrics_limits_match_when_core_terms_are_miss
     assert metrics["product_function_direct_match"]["strong_core_match_ratio"] == 0.0
 
 
+def test_extract_business_fit_core_terms_drops_applicant_boilerplate_and_full_title_noise():
+    from agents.valuation_axes.business_fit import extract_business_fit_core_terms
+
+    # 실제 AccuInsight 케이스에서 strong_core_terms를 오염시키던 입력을 재현한다:
+    # 통문장(제목), 출원인 법인명(에스케이 주식회사/SK Inc), 명세서 boilerplate(발명/실시예).
+    description = {
+        "related_product": "AccuInsight Runtime",
+        "key_terms": [
+            "AI 모델 서빙 시스템 및 방법",   # 통문장(제목)
+            "에스케이 주식회사",             # 출원인 법인명(KR)
+            "SK Inc",                       # 출원인 법인명(EN)
+            "모델 서빙",                    # 살아남아야 할 진짜 기능어
+        ],
+        "solution_or_core_technology": "본 발명의 실시예에 따른 모델 배포 구성을 설명한다",
+    }
+
+    result = extract_business_fit_core_terms(description)
+    strong = result["strong_core_terms"]
+
+    # noise는 strong_core_terms에서 제외된다.
+    assert "AI 모델 서빙 시스템 및 방법" not in strong  # 통문장
+    assert "에스케이 주식회사" not in strong
+    assert "SK Inc" not in strong
+    assert not any(term in strong for term in ("발명", "실시예에", "실시예"))
+    # 진짜 기능어는 남는다.
+    assert "모델 서빙" in strong
+
+
 def test_business_fit_run_uses_llm_for_final_axis_json():
     from agents.valuation import AxisRuntime
     from agents.valuation_axes import business_fit

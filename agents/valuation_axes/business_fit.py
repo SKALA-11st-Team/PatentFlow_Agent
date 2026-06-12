@@ -34,6 +34,21 @@ STOPWORDS = {
     "위한",
     "통한",
     "과정",
+    # 명세서·청구항에 흔한 연결어/지시어. 단독 핵심어로 잡히면 매칭 분모만 오염시킨다.
+    "따른",
+    "따라",
+    "대한",
+    "관한",
+    "의한",
+    "위해",
+    "통해",
+    "대해",
+    "관해",
+    "이용한",
+    "이용하여",
+    "수행",
+    "포함",
+    "포함하는",
 }
 BROAD_TERMS = {"ai", "data", "cloud", "제조", "솔루션", "서비스", "플랫폼", "데이터"}
 WEAK_TERMS = {"예측", "분석", "관리", "서비스", "플랫폼", "솔루션"}
@@ -505,6 +520,39 @@ def evidence_refs_for_terms(items: list[dict[str, Any]], terms: list[str]) -> li
     return refs[:5]
 
 
+# 핵심어 매칭(분모)을 오염시키는 noise. evidence 본문에 제품·기능어가 들어있나를 보는
+# substring 매칭이라, 아래 유형은 분모만 늘리고 매칭은 불가능해 ratio를 0쪽으로 끌어내린다.
+#  - 출원인 법인명(주식회사/Inc 등): 특허의 "핵심 기능"이 아니다.
+#  - 명세서 boilerplate(발명/실시예/도면 등): 의미 없는 상투어다.
+#  - 통문장(제목 등 여러 어절): evidence 본문에 그대로 박힐 일이 없어 영영 매칭되지 않는다.
+COMPANY_NAME_MARKERS = (
+    "주식회사", "(주)", "㈜", "유한회사",
+    " inc", " inc.", " corp", " corp.", " ltd", " ltd.", " co.", " co.,", " llc", " gmbh", " ag",
+)
+PATENT_BOILERPLATE_TERMS = {
+    "발명", "본발명", "실시예", "실시 예", "도면", "도면부호", "청구항", "명세서",
+    "출원", "특허", "기재", "수단", "단계", "구성", "구성요소",
+}
+MAX_CORE_TERM_WORDS = 3
+
+
+def is_noise_core_term(text: str, *, related_product: str = "") -> bool:
+    """핵심어로 부적절한 noise(법인명·boilerplate·통문장)면 True. 제품명 자체는 면제한다."""
+    if related_product and text == related_product:
+        return False
+    lowered = text.lower()
+    if any(marker in lowered for marker in COMPANY_NAME_MARKERS):
+        return True
+    base = strip_korean_particle(text)
+    if text in PATENT_BOILERPLATE_TERMS or base in PATENT_BOILERPLATE_TERMS:
+        return True
+    if base.startswith("실시예") or base.startswith("발명"):
+        return True
+    if len(text.split()) > MAX_CORE_TERM_WORDS:
+        return True
+    return False
+
+
 def extract_business_fit_core_terms(description: dict[str, Any]) -> dict[str, Any]:
     related_product = normalize_text(description.get("related_product"))
     raw_terms = [
@@ -520,6 +568,8 @@ def extract_business_fit_core_terms(description: dict[str, Any]) -> dict[str, An
     for value in raw_terms:
         text = normalize_core_term(value)
         if not text or text in core_terms or is_stopword(text):
+            continue
+        if is_noise_core_term(text, related_product=related_product):
             continue
         if text.lower() in BROAD_TERMS or text in WEAK_TERMS:
             weak_terms.append(text)
