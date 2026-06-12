@@ -24,9 +24,9 @@ DEFAULT_GRADE_CUTOFFS: dict[str, float] = {"A": 80.0, "B": 60.0, "C": 40.0}
 DEFAULT_MAINTAIN_THRESHOLD: float = 60.0
 DEFAULT_SUBSCORE_WEIGHTS: dict[str, dict[str, int]] = {
     "legal": {
-        "right_stability": 35,
+        "right_stability": 40,
         "claim_protection": 40,
-        "portfolio_defensive_value": 25,
+        "portfolio_defensive_value": 20,
     },
     "business_fit": {
         "official_business_evidence": 30,

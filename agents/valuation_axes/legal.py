@@ -46,13 +46,30 @@ LEGAL_DETAIL_MAX = {
 }
 
 
+def legal_subscore_max_map(state: PatentWorkflowState) -> dict[str, int]:
+    """운영 설정(valuation_config.subscoreWeights.legal)이 있으면 그 배점을, 없으면 기본 배점을 쓴다.
+
+    BE가 권리성 하위 배점을 코드 수정 없이 조정할 수 있게 한다(business_fit과 동일 계약).
+    세부지표(details)는 프롬프트 본문의 기본 배점(40/40/20 스케일)으로 보고되므로,
+    reconcile에서 설정 배점으로 비례 변환한다.
+    """
+    config = state.user_input.get("valuation_config") if isinstance(state.user_input, dict) else None
+    configured = ((config or {}).get("subscoreWeights") or {}).get("legal") or {}
+    return {
+        key: int(configured.get(key, default_value))
+        for key, default_value in LEGAL_SUBSCORE_MAX.items()
+    }
+
+
 def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState) -> dict[str, Any]:
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     reconciled: dict[str, Any] = {}
     total = 0
     exclude_prior_art_metric = is_foreign_patent(state) and not has_comparison_ready_prior_art(state)
     exclude_citing_metric = is_foreign_patent(state) and not has_available_citing_signal(state)
-    for key, max_score in LEGAL_SUBSCORE_MAX.items():
+    subscore_max_map = legal_subscore_max_map(state)
+    for key, default_max in LEGAL_SUBSCORE_MAX.items():
+        configured_max = subscore_max_map[key]
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
         excluded_detail_keys: set[str] = set()
@@ -68,13 +85,22 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
         )
         raw_score = coerce_int(item.get("score"))
         score = detail_sum if detail_sum is not None else raw_score
-        available_max_score = max_score - sum(
+        # 기본 배점 스케일에서 캡(자료 미확보로 제외된 세부지표만큼 만점 축소).
+        default_available = default_max - sum(
             LEGAL_DETAIL_MAX.get(detail_key, 0) for detail_key in excluded_detail_keys
         )
-        score = max(0, min(available_max_score, score or 0))
-        reconciled[key] = {**item, "score": score, "max_score": max_score, "details": details}
+        score = max(0, min(default_available, score or 0))
+        # 설정 배점으로 비례 변환(기본 배점이면 항등). max_score는 설정 만점으로 보고한다.
+        if configured_max != default_max and default_max > 0:
+            score = round(score * configured_max / default_max)
+        configured_available = (
+            round(default_available * configured_max / default_max) if default_max > 0 else 0
+        )
+        cap = configured_available if excluded_detail_keys else configured_max
+        score = max(0, min(cap, score))
+        reconciled[key] = {**item, "score": score, "max_score": configured_max, "details": details}
         total += score
-    total = normalize_score_to_100(total, sum(LEGAL_SUBSCORE_MAX.values()))
+    total = normalize_score_to_100(total, sum(subscore_max_map.values()))
     reconciled_result = {
         **result,
         "subscores": {**subscores, **reconciled},

@@ -79,7 +79,7 @@ def test_resolve_valuation_config_rejects_invalid_values():
     assert "unknown_axis" not in resolved["axisWeights"]
     assert resolved["gradeCutoffs"] == DEFAULT_GRADE_CUTOFFS
     assert resolved["maintainThreshold"] == 100.0
-    assert resolved["subscoreWeights"]["legal"]["right_stability"] == 35
+    assert resolved["subscoreWeights"]["legal"]["right_stability"] == 40
 
 
 def test_grade_for_score_uses_custom_cutoffs():
@@ -161,6 +161,64 @@ def test_build_final_valuation_result_honors_zero_maintain_threshold():
     assert result["recommendation"] == "유지 권고"
 
 
+def test_reconcile_legal_scores_uses_configured_subscore_max():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(
+        user_input={
+            "valuation_config": resolve_valuation_config(
+                {"subscoreWeights": {"legal": {"right_stability": 50, "claim_protection": 30, "portfolio_defensive_value": 20}}}
+            )
+        },
+        patent_structured={"country": "KR"},
+    )
+    # 세부지표(details)는 프롬프트 본문 기본 배점(40/40/20) 스케일로 보고된다.
+    perfect = {
+        "subscores": {
+            "right_stability": {
+                "score": 40,
+                "details": {
+                    "prior_art_overlap": {"score": 20},
+                    "independent_claim_clarity": {"score": 20},
+                },
+            },
+            "claim_protection": {
+                "score": 40,
+                "details": {
+                    "core_solution_coverage": {"score": 15},
+                    "independent_claim_scope": {"score": 15},
+                    "dependent_claim_support": {"score": 7},
+                    "infringement_detectability": {"score": 3},
+                },
+            },
+            "portfolio_defensive_value": {
+                "score": 20,
+                "details": {
+                    "portfolio_connection_coverage": {"score": 12},
+                    "follow_on_right_signal": {"score": 4},
+                    "overseas_right_coverage": {"score": 4},
+                },
+            },
+        }
+    }
+
+    reconciled = reconcile_legal_scores(perfect, state=state)
+
+    # 만점 특허는 설정 배점으로 비례 변환되어 50+30+20=100점이어야 한다.
+    assert reconciled["subscores"]["right_stability"]["score"] == 50
+    assert reconciled["subscores"]["right_stability"]["max_score"] == 50
+    assert reconciled["subscores"]["claim_protection"]["score"] == 30
+    assert reconciled["subscores"]["portfolio_defensive_value"]["score"] == 20
+    assert reconciled["score"] == 100
+
+    # 기본 배점(40/40/20)에서는 변환이 일어나지 않는다.
+    default_reconciled = reconcile_legal_scores(
+        perfect, state=PatentWorkflowState(patent_structured={"country": "KR"})
+    )
+    assert default_reconciled["subscores"]["right_stability"]["score"] == 40
+    assert default_reconciled["score"] == 100
+
+
 def test_reconcile_business_fit_scores_uses_configured_subscore_max():
     state = PatentWorkflowState(
         user_input={
@@ -225,7 +283,7 @@ def test_build_axis_prompt_appends_override_block_only_when_config_differs(tmp_p
 
     assert "배점 재정의" not in default_prompt
     assert "배점 재정의" in configured_prompt
-    assert "권리안정성(right_stability): 35점 → 50점" in configured_prompt
+    assert "권리안정성(right_stability): 40점 → 50점" in configured_prompt
     assert "subscore 만점 합계: 100점" in configured_prompt
 
 
