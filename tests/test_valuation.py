@@ -140,15 +140,16 @@ def test_final_report_prompt_uses_rights_scope_explanation_for_legal_axis():
     assert "아이디어 자체보다" not in final_report
 
 
-def test_market_prompt_uses_40_40_20_market_structure():
+def test_market_prompt_uses_20_40_20_20_market_structure():
     prompt = Path("prompts/valuation/valuation_market.md").read_text(encoding="utf-8")
 
-    assert "시장성 점수(100) = 산업 시장성(40) + 시장 성장성(40) + 글로벌 사업성(20)" in prompt
-    assert "- `industry_growth_evidence`: 0 또는 15" in prompt
-    assert "- `corporate_investment_entry`: 0 또는 10" in prompt
-    assert "- `news_market_diffusion`: 0 또는 10" in prompt
-    assert "직접 기능 시장성(60)" not in prompt
-    assert "specific_function_demand" not in prompt
+    assert "시장성 점수(100) = 산업 시장성(20) + 시장 성장성(40) + 글로벌 사업성(20) + 경쟁성(20)" in prompt
+    assert "`subscores.industry_marketability.score`는 0, 8, 20 중 하나" in prompt
+    assert "`subscores.global_business.score`는 0, 8, 20 중 하나" in prompt
+    assert "`subscores.competitiveness.score`는 0, 7, 13, 20 중 하나" in prompt
+    assert "적용 분야 자체에 대한 시장 수요 또는 상용화 흐름이 확인되지만, 세부 기능 직접성은 약한 경우에는 0점보다 8점을 우선 검토" in prompt
+    assert '"로보어드바이저", "자동화 서비스", "AI 솔루션"처럼 상위 서비스 범주의 존재만으로는 0점을 줄 수 없다.' in prompt
+    assert "세부 기능 대체 여부가 기사만으로 명확하지 않으면 기본적으로 7점 또는 13점을 우선 검토" in prompt
 
 
 def test_run_valuation_agent_sets_result():
@@ -978,7 +979,7 @@ def test_business_fit_rubric_is_externalized_to_prompt_md():
     assert result["subscores"]["official_business_evidence"]["score"] == 24
 
 
-def test_market_score_helpers_apply_40_40_20_structure():
+def test_market_score_helpers_apply_20_40_20_20_structure():
     from datetime import date, datetime
 
     from agents.valuation_axes.market import (
@@ -1008,25 +1009,28 @@ def test_market_score_helpers_apply_40_40_20_structure():
     result = apply_marketability_scores(
         {
             "score": 70,
-            "industry_marketability_score": 40,
+            "subscores": {
+                "industry_marketability": {"score": 20, "rationale": "산업 수요가 직접 연결된다."},
+                "global_business": {"score": 20, "rationale": "해외 적용 흐름이 직접 연결된다."},
+                "competitiveness": {"score": 13, "rationale": "부분 대체재만 확인된다."},
+            },
             "grade": "B",
             "missing_information": [],
             "confidence": 0.8,
         },
         {
             "market_growth_score": 32,
-            "global_business_score": 20,
         },
     )
 
-    assert result["score"] == 92
+    assert result["score"] == 85
     assert result["grade"] == "A"
     assert result["subscores"] == {
         "industry_marketability": {
             "label": "산업 시장성",
-            "score": 40,
-            "max_score": 40,
-            "rationale": "",
+            "score": 20,
+            "max_score": 20,
+            "rationale": "산업 수요가 직접 연결된다.",
         },
         "market_growth": {
             "label": "시장 성장성",
@@ -1042,12 +1046,13 @@ def test_market_score_helpers_apply_40_40_20_structure():
             "label": "글로벌 사업성",
             "score": 20,
             "max_score": 20,
-            "details": {
-                "gnews_evidence_count": 0,
-                "gnews_quality_evidence_count": 0,
-                "global_business_status": "",
-            },
-            "rationale": "글로벌 해외 뉴스 근거로 산정된 코드 계산값입니다.",
+            "rationale": "해외 적용 흐름이 직접 연결된다.",
+        },
+        "competitiveness": {
+            "label": "경쟁성",
+            "score": 13,
+            "max_score": 20,
+            "rationale": "부분 대체재만 확인된다.",
         },
     }
 
@@ -1056,13 +1061,11 @@ def test_market_score_helpers_apply_40_40_20_structure():
             "score": 70,
             "subscores": {
                 "industry_marketability": {
-                    "details": {
-                        "industry_growth_evidence": 15,
-                        "corporate_investment_entry": 10,
-                        "news_market_diffusion": 10,
-                        "source_reliability": 5,
-                    },
+                    "score": 8,
+                    "rationale": "상위 산업 성장만 확인된다.",
                 },
+                "global_business": {"score": 8, "rationale": "해외 직접 연결성은 약하다."},
+                "competitiveness": {"score": 20, "rationale": "대체재가 거의 없다."},
             },
             "grade": "B",
             "missing_information": [],
@@ -1070,25 +1073,19 @@ def test_market_score_helpers_apply_40_40_20_structure():
         },
         {
             "market_growth_score": 40,
-            "global_business_score": 20,
         },
     )
 
-    assert result["subscores"]["industry_marketability"]["score"] == 40
-    assert result["subscores"]["industry_marketability"]["max_score"] == 40
-    assert result["subscores"]["industry_marketability"]["details"] == {
-        "industry_growth_evidence": 15,
-        "corporate_investment_entry": 10,
-        "news_market_diffusion": 10,
-        "source_reliability": 5,
-    }
+    assert result["subscores"]["industry_marketability"]["score"] == 8
+    assert result["subscores"]["industry_marketability"]["max_score"] == 20
     assert result["subscores"]["market_growth"]["details"] == {
         "cagr_score": None,
         "trend_score": None,
     }
-    assert result["subscores"]["global_business"]["details"]["global_business_status"] == ""
+    assert result["subscores"]["global_business"]["score"] == 8
+    assert result["subscores"]["competitiveness"]["score"] == 20
     assert "industry_marketability_breakdown" not in result
-    assert result["score"] == 100
+    assert result["score"] == 76
     assert "market_score_cap_reason" not in result["marketability_metrics"]
 
     assert build_global_business_metrics(
@@ -1102,8 +1099,6 @@ def test_market_score_helpers_apply_40_40_20_structure():
         "gnews_evidence_count": 3,
         "gnews_quality_evidence_count": 2,
         "gnews_evidence_ids": ["g1", "g2"],
-        "global_business_status": "limited_gnews_global_signal",
-        "global_business_score": 10,
         "global_business_excluded_country": None,
     }
 
@@ -1142,7 +1137,6 @@ def test_foreign_global_business_keeps_same_country_article_when_other_market_si
     assert metrics["gnews_quality_evidence_count"] == 3
     assert metrics["gnews_evidence_ids"] == ["us_1", "eu_1", "jp_1"]
     assert metrics["global_business_excluded_country"] == "US"
-    assert metrics["global_business_score"] == 20
 
 
 def test_foreign_global_business_excludes_same_country_only_signal():
@@ -1171,7 +1165,6 @@ def test_foreign_global_business_excludes_same_country_only_signal():
     assert metrics["gnews_evidence_count"] == 2
     assert metrics["gnews_quality_evidence_count"] == 1
     assert metrics["gnews_evidence_ids"] == ["eu_1"]
-    assert metrics["global_business_score"] == 10
 
 
 def test_market_prompt_uses_18_month_lagged_three_window_activity():
@@ -1179,9 +1172,9 @@ def test_market_prompt_uses_18_month_lagged_three_window_activity():
 
     assert "18개월 전을 마지막 시점으로 하는 3개 1년 구간" in prompt
     assert "최근 3개년 공개 활동성" not in prompt
-    assert "`source`가 `global_news`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로만 사용한다." in prompt
+    assert "`source`가 `global_news`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로 우선 사용한다." in prompt
     assert "해당 국가를 제외한 해외 시장의 진출, 도입, 활용, 확산 흐름" in prompt
-    assert "시장성 점수(100) = 산업 시장성(40) + 시장 성장성(40) + 글로벌 사업성(20)" in prompt
+    assert "시장성 점수(100) = 산업 시장성(20) + 시장 성장성(40) + 글로벌 사업성(20) + 경쟁성(20)" in prompt
     assert "시장성 총점은 원칙적으로 55점을 넘기지 않는다" not in prompt
 
 
@@ -1218,14 +1211,17 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
     result = apply_marketability_scores(
         {
             "score": 70,
-            "industry_marketability_score": 60,
+            "subscores": {
+                "industry_marketability": {"score": 20, "rationale": "r"},
+                "global_business": {"score": 20, "rationale": "r"},
+                "competitiveness": {"score": 20, "rationale": "r"},
+            },
             "grade": "B",
             "missing_information": [],
             "confidence": 0.8,
         },
         {
             "market_growth_score": None,
-            "global_business_score": 20,
         },
     )
 
@@ -1257,6 +1253,23 @@ def test_market_growth_with_zero_start_count_is_unavailable(monkeypatch):
     assert metrics["trend_score"] is None
     assert metrics["market_growth_score"] is None
     assert metrics["missing_reason"] == "cagr_start_count_zero"
+
+
+def test_market_growth_failure_keeps_scrubbed_error_detail(monkeypatch):
+    import agents.valuation_axes.market as market
+    from open_api.kipris_client import KiprisError
+
+    def fail_counts(representative_code, windows, use_ipc=False, country_code=None):
+        raise KiprisError("KIPRIS 응답 오류(resultCode=30): accessKey=SECRET quota exceeded")
+
+    monkeypatch.setattr(market, "collect_classification_window_application_counts", fail_counts)
+    monkeypatch.setenv("KIPRIS_SERVICE_KEY", "SECRET")
+
+    metrics = market.build_market_growth_metrics("G06Q 40/06")
+
+    assert metrics["market_growth_available"] is False
+    assert metrics["market_growth_score"] is None
+    assert metrics["missing_reason"] == "kipris_search_failed:KiprisError:KIPRIS 응답 오류(resultCode=30): accessKey=*** quota exceeded"
 
 
 def test_collect_cpc_window_counts_does_not_make_extra_validation_call(monkeypatch):
@@ -3305,7 +3318,11 @@ def test_foreign_market_growth_rationale_and_missing_message_use_ipc_country():
     result = apply_marketability_scores(
         {
             "score": 70,
-            "industry_marketability_score": 20,
+            "subscores": {
+                "industry_marketability": {"score": 20, "rationale": "r"},
+                "global_business": {"score": 8, "rationale": "r"},
+                "competitiveness": {"score": 7, "rationale": "r"},
+            },
             "grade": "B",
             "missing_information": [],
             "confidence": 0.8,
@@ -3314,7 +3331,6 @@ def test_foreign_market_growth_rationale_and_missing_message_use_ipc_country():
             "market_growth_code_type": "ipc",
             "market_growth_country_code": "US",
             "market_growth_score": None,
-            "global_business_score": 10,
         },
     )
 

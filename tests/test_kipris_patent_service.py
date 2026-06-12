@@ -1,3 +1,7 @@
+from pathlib import Path
+
+import pytest
+
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
     apply_foreign_pdf_ocr_fallback,
@@ -15,10 +19,17 @@ from services.patent.kipris_patent_service import (
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
     normalize_foreign_reference_documents,
+    parse_single_patent_pdf,
     foreign_reference_candidate_from_text,
     resolve_foreign_prior_art_evidence,
     resolve_citation_evidence,
     _fetch_foreign_claims,
+    has_meaningful_pdf_text,
+    parse_single_patent_pdf,
+    should_exclude_pdf_page_text,
+    should_run_ocr_fallback,
+    trim_foreign_front_matter,
+    find_cached_foreign_patent_pdf,
     _fetch_foreign_claims_from_kipris,
     _foreign_literature_number_candidates,
     _google_patents_figure_urls,
@@ -78,6 +89,32 @@ class Session:
 class ForeignClient:
     def __init__(self):
         self.claim_calls = []
+        self.bibliography_calls = []
+        self.session = Session()
+        self.timeout = 30.0
+
+    def overseas_bibliographic_info(self, literature_number, country_code):
+        self.bibliography_calls.append((literature_number, country_code))
+        if literature_number == "000012417849B2":
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "applicationNumber": "18/020,829",
+                            "registerNumber": "12,417,849",
+                            "inventionTitle": "Method for Identifying Association between Disease-related Factors",
+                            "applicationDate": "20210401",
+                            "registerDate": "20250610",
+                            "claimCount": "1",
+                            "astrtCont": "An association identification method using document data.",
+                            "ipcNumber": ["G16H 50/20", "G06F 16/2457"],
+                            "applicantName": "SK HOLDINGS CO., LTD.",
+                            "inventorName": "Hong Gil Dong",
+                        }
+                    }
+                }
+            }
+        return {"response": {"body": {"items": {}}}}
 
     def overseas_demand_paragraph(self, literature_number, country_code):
         self.claim_calls.append((literature_number, country_code))
@@ -160,6 +197,20 @@ def test_overseas_demand_paragraph_uses_foreign_bibliographic_access_key():
 
     call = client.session.calls[0]
     assert call["url"].endswith("/openapi/rest/ForeignPatentBibliographicService/demandParagraphInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["literatureNumber"] == "000004002589B2"
+    assert call["params"]["countryCode"] == "JP"
+
+
+def test_overseas_bibliographic_info_uses_foreign_bibliographic_access_key():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.overseas_bibliographic_info("000004002589B2", "JP")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/ForeignPatentBibliographicService/bibliographicInfo")
     assert call["params"]["accessKey"] == "test-key"
     assert "ServiceKey" not in call["params"]
     assert call["params"]["literatureNumber"] == "000004002589B2"
@@ -274,6 +325,26 @@ def test_fetch_foreign_claims_falls_back_to_google_patents_pdf(monkeypatch, tmp_
     assert documents[0]["lookup_source"] == "google_patents_pdf"
     assert documents[0]["comparison_status"] == "claim_comparison_ready"
     assert documents[0]["representative_claims"][0]["text"].startswith("A method")
+
+
+def test_parse_single_patent_pdf_requires_java_runtime(monkeypatch, tmp_path):
+    monkeypatch.setattr("services.patent.kipris_patent_service.shutil.which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="java_runtime_missing"):
+        parse_single_patent_pdf(tmp_path / "sample.pdf", output_dir=tmp_path / "out")
+
+
+def test_parse_single_patent_pdf_rejects_broken_java_stub(monkeypatch, tmp_path):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "Unable to locate a Java Runtime."
+
+    monkeypatch.setattr("services.patent.kipris_patent_service.shutil.which", lambda name: "/usr/bin/java")
+    monkeypatch.setattr("services.patent.kipris_patent_service.subprocess.run", lambda *args, **kwargs: Result())
+
+    with pytest.raises(RuntimeError, match="java_runtime_unavailable"):
+        parse_single_patent_pdf(tmp_path / "sample.pdf", output_dir=tmp_path / "out")
 
 
 def test_fetch_foreign_claims_uses_google_patents_html_when_pdf_has_no_claims(monkeypatch):
@@ -408,8 +479,12 @@ def test_fetch_foreign_patent_rights_data_uses_overseas_claims_for_us(monkeypatc
     )
 
     assert result["metadata"]["country"] == "US"
+    assert result["metadata"]["ipc"] == ["G16H 50/20", "G06F 16/2457"]
+    assert result["sections"]["abstract"] == "An association identification method using document data."
     assert result["claims"][0]["source"] == "kipris_foreign_bibliographic_claims"
     assert result["foreign_claim_literature_number"] == "000012417849B2"
+    assert result["foreign_bibliography_literature_number"] == "000012417849B2"
+    assert ("000012417849B2", "US") in client.bibliography_calls
     assert ("000012417849B2", "US") in client.claim_calls
 
 
@@ -427,7 +502,7 @@ def test_fetch_foreign_patent_rights_data_marks_unsupported_claim_api_without_kr
         collect_pdf=False,
     )
 
-    assert result["source_type"] == "kipris_foreign_patent"
+    assert result["source_type"] == "kipris_foreign_bibliographic_info"
     assert result["metadata"]["country"] == "TW"
     assert result["claims"] == []
     assert result["warnings"] == ["kipris_foreign_claims_not_supported:TW", "kipris_foreign_claims_not_found"]
@@ -458,6 +533,148 @@ def test_fetch_foreign_patent_rights_data_requires_manual_upload_when_all_pdf_so
         "missing_reason": "kipris_and_google_patents_pdf_not_found",
     }
     assert result["warnings"][-1].startswith("foreign_pdf_manual_upload_required:")
+
+
+def test_should_run_ocr_fallback_for_image_only_markdown():
+    markdown = "![image 1](<page1.png>)\n\n![image 2](<page2.png>)"
+
+    assert should_run_ocr_fallback(markdown) is True
+    assert has_meaningful_pdf_text(markdown) is False
+
+
+def test_parse_single_patent_pdf_uses_ocr_when_markdown_has_no_text(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    output_dir = tmp_path / "out"
+
+    class FakeOpenDataLoaderPdf:
+        @staticmethod
+        def convert(*, input_path, output_dir, format):
+            md_path = Path(output_dir) / "sample.md"
+            md_path.write_text("![image 1](<page1.png>)\n", encoding="utf-8")
+
+    monkeypatch.setitem(__import__("sys").modules, "opendataloader_pdf", FakeOpenDataLoaderPdf)
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_left_then_right",
+        lambda path: "",
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_with_ocr",
+        lambda path: "Abstract\nClaims\n1. A system comprising a processor.",
+    )
+
+    result = parse_single_patent_pdf(pdf_path, output_dir=output_dir)
+
+    assert result["markdown_paths"]
+    assert "Abstract" in result["markdown_text"]
+    assert "1. A system comprising a processor." in result["markdown_text"]
+
+
+def test_parse_single_patent_pdf_raises_when_ocr_fails_to_extract_text(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    output_dir = tmp_path / "out"
+
+    class FakeOpenDataLoaderPdf:
+        @staticmethod
+        def convert(*, input_path, output_dir, format):
+            md_path = Path(output_dir) / "sample.md"
+            md_path.write_text("![image 1](<page1.png>)\n", encoding="utf-8")
+
+    monkeypatch.setitem(__import__("sys").modules, "opendataloader_pdf", FakeOpenDataLoaderPdf)
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_left_then_right",
+        lambda path: "",
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_with_ocr",
+        lambda path: "",
+    )
+
+    with pytest.raises(RuntimeError, match="foreign_pdf_text_extraction_failed_after_ocr"):
+        parse_single_patent_pdf(pdf_path, output_dir=output_dir)
+
+
+def test_find_cached_foreign_patent_pdf_uses_publication_id(tmp_path):
+    cached = tmp_path / "US12032469B2.pdf"
+    cached.write_bytes(b"%PDF-1.4 cached")
+
+    result = find_cached_foreign_patent_pdf(
+        {"country": "US", "registration_number": "12,032,469", "application_number": "17/420,237"},
+        pdf_dir=tmp_path,
+    )
+
+    assert result == cached
+
+
+def test_extract_foreign_claims_from_text_ignores_description_and_keeps_real_claims():
+    text = """
+Explainable AI Modeling and Simulation Method
+Embodiments of the present disclosure provide a system and a method.
+
+AI Workflow Model Designing
+FIG. 2 is a view provided to explain a process of designing an AI workflow model.
+
+What is claimed is:
+1. An explainable artificial intelligence (AI) modeling and simulation method comprising the steps of: designing an AI workflow model.
+2. The method of claim 1, wherein the AI workflow model is provided by visualizing a workflow.
+9. An explainable artificial intelligence (AI) modeling and simulation system, comprising: a storage unit and a processor.
+
+Description
+This description explains embodiments in detail.
+"""
+
+    claims = extract_foreign_claims_from_text(text)
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2, 9]
+    assert claims[0]["text"].startswith("An explainable artificial intelligence")
+    assert claims[-1]["text"].startswith("An explainable artificial intelligence")
+    assert all("FIG. 2" not in claim["text"] for claim in claims)
+
+
+def test_should_exclude_pdf_page_text_for_drawing_sheet_noise():
+    text = """
+U.S. Patent Jul. 9, 2024 Sheet 8 of 16 US 12,032,469 B2
+
+Workflow Modeling
+Simulation
+Registration/performance
+FIG. 8
+Real-time classification result
+Real-time distribution/performance
+"""
+
+    assert should_exclude_pdf_page_text(text) is True
+
+
+def test_should_exclude_pdf_page_text_keeps_body_text():
+    text = """
+The present disclosure relates to explainable artificial intelligence technology.
+Embodiments of the present disclosure provide a system and method for modelling workflows.
+The system conducts a simulation and compares performance across candidate models.
+"""
+
+    assert should_exclude_pdf_page_text(text) is False
+
+
+def test_trim_foreign_front_matter_starts_at_body_heading():
+    text = """
+United States Patent
+(57) ABSTRACT
+Provided is a system and method.
+
+TECHNICAL FIELD
+The present disclosure relates to explainable artificial intelligence technology.
+
+BACKGROUND ART
+Conventional approaches have limitations.
+"""
+
+    trimmed = trim_foreign_front_matter(text)
+
+    assert trimmed.startswith("TECHNICAL FIELD")
+    assert "United States Patent" not in trimmed
+    assert "ABSTRACT" not in trimmed
 
 
 def test_google_patents_publication_id_normalizes_cn_registration_number():

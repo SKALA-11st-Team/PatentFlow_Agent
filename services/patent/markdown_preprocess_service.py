@@ -399,6 +399,15 @@ def build_preprocessed_patent(
 ) -> dict[str, Any]:
     cleaned_text = preprocess_patent_markdown(raw_text)
     sections = extract_sections(cleaned_text)
+    country = str((db_metadata or {}).get("country") or ((api_data or {}).get("metadata") or {}).get("country") or "").upper()
+    if country and country != "KR":
+        sections = merge_foreign_sections(
+            sections,
+            extract_us_patent_sections(cleaned_text, cleaned_text=cleaned_text),
+        )
+    drawing_below_full_text = extract_text_after_drawings(cleaned_text, country=country)
+    if drawing_below_full_text:
+        sections["full_text_after_drawings"] = drawing_below_full_text
     drawing_context = build_drawing_context(raw_text, sections, source=source)
 
     if api_data:
@@ -420,6 +429,7 @@ def build_preprocessed_patent(
                 }
                 for claim in api_claims
             ]
+            claims = _repair_foreign_api_claims_if_needed(claims, sections.get("claims_text", ""))
         else:
             claims = extract_claims(sections.get("claims_text", ""))
         claim_stats = {
@@ -623,6 +633,16 @@ def extract_sections(text: str) -> dict[str, str]:
     return sections
 
 
+def merge_foreign_sections(base: dict[str, str], foreign: dict[str, str]) -> dict[str, str]:
+    merged = dict(base)
+    for key, value in foreign.items():
+        if key == "abstract" and value:
+            merged[key] = value
+        elif value and not merged.get(key):
+            merged[key] = value
+    return merged
+
+
 def extract_claims(claims_text: str) -> list[dict[str, Any]]:
     claims_text = truncate_at_next_major_section(claims_text)
     matches = list(re.finditer(r"(?m)^-?\s*청구항\s+(\d+)\s*(.*)$", claims_text))
@@ -662,6 +682,78 @@ _CLAIM_DEPENDENCY_PATTERN = (
     r"\s*(?:중\s*)?(?:어느\s*(?:한|하나의?)\s*항)?"
     r"\s*(?:에\s*있어서|에\s*기재된|에\s*따른|에\s*의한|에\s*있어|에서|의\s|에\s)"
 )
+
+
+def extract_english_claims(claims_text: str) -> list[dict[str, Any]]:
+    claims_text = truncate_at_next_major_section(claims_text)
+    matches = list(re.finditer(r"(?:^|(?<=\s))(\d+)\.\s+(?=[A-Z])", claims_text, re.M))
+    claims: list[dict[str, Any]] = []
+    for index, match in enumerate(matches):
+        claim_no = int(match.group(1))
+        end = matches[index + 1].start(1) - 1 if index + 1 < len(matches) else len(claims_text)
+        text = postprocess_agent_text(claims_text[match.end() : end].strip())
+        dependency = _extract_english_claim_dependency(text)
+        claims.append(
+            {
+                "claim_no": claim_no,
+                "text": text,
+                "is_independent": dependency is None,
+                "dependency": dependency,
+            }
+        )
+    return claims
+
+
+def _repair_foreign_api_claims_if_needed(
+    claims: list[dict[str, Any]],
+    claims_text: str,
+) -> list[dict[str, Any]]:
+    if len(claims) != 1:
+        return claims
+    only_claim = claims[0] if claims else {}
+    only_text = str(only_claim.get("text") or "")
+    if not only_text:
+        return claims
+
+    # Some foreign bibliographic APIs return every claim concatenated into a
+    # single claimText entry. In that case the trailing "claim 1" references in
+    # later claims incorrectly mark the whole blob as dependent. Re-split from
+    # the richer claims_text section when numbered English claims are visible.
+    split_source = claims_text or only_text
+    reparsed = extract_english_claims(split_source)
+    if len(reparsed) <= 1:
+        return claims
+    if not any(claim.get("is_independent") for claim in reparsed):
+        return claims
+    return reparsed
+
+
+def _extract_english_claim_dependency(text: str) -> int | None:
+    dependency = _extract_int(
+        r"\bclaim\s+(\d+)\b(?:\s*(?:,|and|or)\s*claim\s+\d+\b)*",
+        text,
+    )
+    if dependency is not None:
+        return dependency
+    dependency = _extract_int(
+        r"\baccording to claim\s+(\d+)\b",
+        text,
+    )
+    if dependency is not None:
+        return dependency
+    return None
+
+
+def extract_text_after_drawings(text: str, *, country: str = "") -> str:
+    normalized_country = str(country or "").upper()
+    if normalized_country and normalized_country != "KR":
+        extracted = _extract_foreign_text_after_figure_pages(text)
+        if extracted:
+            return extracted
+
+    start_labels = ["도면의 간단한 설명", "도면"]
+    end_labels = ["발명을 실시하기 위한 구체적인 내용", "발명의 설명", "기술분야", "배경기술"]
+    return _extract_after_heading_block(text, start_labels=start_labels, end_labels=end_labels)
 
 
 def _extract_claim_dependency(text: str) -> int | None:
@@ -857,6 +949,49 @@ def _find_section_headings(text: str) -> list[tuple[str, int]]:
     return [(match.group(1), match.start()) for match in pattern.finditer(text)]
 
 
+def _extract_after_heading_block(text: str, *, start_labels: list[str], end_labels: list[str]) -> str:
+    if not text.strip():
+        return ""
+    start_pattern = re.compile(
+        r"(?im)^#?\s*(?:"
+        + "|".join(re.escape(label) for label in start_labels)
+        + r")\s*$"
+    )
+    end_pattern = re.compile(
+        r"(?im)^#?\s*(?:"
+        + "|".join(re.escape(label) for label in end_labels)
+        + r")\b[:\s]*$"
+    )
+    start_match = start_pattern.search(text)
+    if not start_match:
+        return ""
+
+    search_start = start_match.end()
+    end_match = end_pattern.search(text, search_start)
+    if end_match:
+        content_start = _line_end(text, end_match.start())
+        return postprocess_agent_text(text[content_start:].strip())
+
+    return postprocess_agent_text(text[search_start:].strip())
+
+
+def _extract_foreign_text_after_figure_pages(text: str) -> str:
+    figure_matches = list(re.finditer(r"(?im)^\s*FIG(?:S)?\s*\.\s*[\d\s,toand]+", text))
+    if not figure_matches:
+        return ""
+
+    last_figure = figure_matches[-1]
+    after_figure = text[last_figure.end() :]
+    page_break = re.search(r"(?m)^\s*(?:US\s+\d[\d,\s]*[A-Z]?\d?\s*$|[\d,]+\s+[A-Z]\d?\s*$|\d+\s*$)\s*$", after_figure)
+    if not page_break:
+        page_break = re.search(r"(?m)^\s*[\d,]+\s+[A-Z]\d?\s+\d+\s*$", after_figure)
+    if not page_break:
+        return ""
+
+    content_start = last_figure.end() + page_break.end()
+    return postprocess_agent_text(text[content_start:].strip())
+
+
 def _extract_abstract(text: str) -> str:
     patterns = [
         r"\(57\)\s*요\s*약\s*(.+?)(?=\n#{0,6}\s*명세서|\n청구범위|\n####|\n명세서)",
@@ -865,6 +1000,83 @@ def _extract_abstract(text: str) -> str:
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.S | re.M | re.I)
+        if match:
+            return normalize_blank_lines(match.group(1))
+    return ""
+
+
+def extract_us_patent_sections(raw_text: str, *, cleaned_text: str = "") -> dict[str, str]:
+    text = normalize_uspto_ocr_text(raw_text or cleaned_text or "")
+    return {
+        "abstract": postprocess_agent_text(_extract_uspto_abstract(text)),
+        "claims_text": postprocess_claims_text(_extract_uspto_claims_text(text)),
+        "technical_field": postprocess_agent_text(_extract_uspto_section(text, "TECHNICAL FIELD", "FIELD OF THE INVENTION")),
+        "background_art": postprocess_agent_text(_extract_uspto_section(text, "BACKGROUND ART", "BACKGROUND")),
+        "problem": postprocess_agent_text(_extract_uspto_section(text, "DISCLOSURE", "Technical Problem")),
+        "solution": postprocess_agent_text(_extract_uspto_section(text, "Technical Solution", "SUMMARY OF THE INVENTION", "SUMMARY")),
+        "effect": postprocess_agent_text(_extract_uspto_section(text, "Advantageous Effects")),
+        "detailed_description": postprocess_agent_text(
+            _extract_uspto_section(text, "DETAILED DESCRIPTION", "DESCRIPTION", "BEST MODE")
+        ),
+    }
+
+
+def normalize_uspto_ocr_text(text: str) -> str:
+    if not text:
+        return ""
+    text = remove_image_markdown(text)
+    text = re.sub(r"(?im)^\s*US\s+\d[\d,]*\s*[A-Z]\d?\s*$", "", text)
+    text = re.sub(r"(?im)^\s*U\.S\.\s+Patent(?:ed)?\b.*$", "", text)
+    text = re.sub(r"(?im)^\s*(?:Sheet|heet)\s+\d+\s+of\s+\d+\s*$", "", text)
+    text = re.sub(r"(?im)^\s*Page\s+\d+\s*$", "", text)
+    text = re.sub(r"(?im)^\s*\d+\s*$", "", text)
+    text = re.sub(r"\bAl\b", "AI", text)
+    text = re.sub(r"\bleaming\b", "learning", text, flags=re.I)
+    return normalize_blank_lines(text)
+
+
+def _extract_uspto_abstract(text: str) -> str:
+    match = re.search(
+        r"(?is)\b(?:\(\s*(?:57|67)\s*\)\s*)?ABSTRACT\b[:\s]*(.+?)(?=^\s*(?:TECHNICAL FIELD|FIELD OF THE INVENTION|BACKGROUND ART|BACKGROUND|DISCLOSURE|SUMMARY OF THE INVENTION|SUMMARY|BRIEF DESCRIPTION OF DRAWINGS|DESCRIPTION|DETAILED DESCRIPTION|BEST MODE)\b|\Z)",
+        text,
+        re.M,
+    )
+    return normalize_blank_lines(match.group(1)) if match else ""
+
+
+def _extract_uspto_claims_text(text: str) -> str:
+    match = re.search(
+        r"(?is)\b(?:What is claimed is|The invention claimed is)\s*:?\s*(.+?)(?=^\s*(?:TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|BRIEF DESCRIPTION OF DRAWINGS|DESCRIPTION|DETAILED DESCRIPTION|BEST MODE)\b|\Z)",
+        text,
+        re.M,
+    )
+    return normalize_blank_lines(match.group(1)) if match else ""
+
+
+def _extract_uspto_section(text: str, *labels: str) -> str:
+    stop_labels = (
+        "TECHNICAL FIELD",
+        "FIELD OF THE INVENTION",
+        "BACKGROUND ART",
+        "BACKGROUND",
+        "DISCLOSURE",
+        "SUMMARY OF THE INVENTION",
+        "SUMMARY",
+        "BRIEF DESCRIPTION OF THE DRAWINGS",
+        "BRIEF DESCRIPTION OF DRAWINGS",
+        "DESCRIPTION OF DRAWINGS",
+        "DESCRIPTION",
+        "DETAILED DESCRIPTION",
+        "BEST MODE",
+        "What is claimed is",
+        "The invention claimed is",
+    )
+    for label in labels:
+        pattern = re.compile(
+            rf"(?is)^\s*{re.escape(label)}\b[:\s]*(.+?)(?=^\s*(?:{'|'.join(re.escape(item) for item in stop_labels)})\b|\Z)",
+            re.M,
+        )
+        match = pattern.search(text)
         if match:
             return normalize_blank_lines(match.group(1))
     return ""
