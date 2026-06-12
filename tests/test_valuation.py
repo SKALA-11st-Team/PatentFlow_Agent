@@ -3464,3 +3464,47 @@ def test_legal_prompt_grounds_and_surfaces_prior_art_references():
     assert '"prior_art_references": []' in text
     assert "입력에 없는 문헌 번호를 새로 만들지 않는다" in text
     assert "prior_art_references에 모두 나열한다" in text
+
+
+def test_build_input_payload_includes_patent_structure():
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    state = PatentWorkflowState(
+        patent_structured={"title_final": "AI 모델 서빙 시스템", "related_product": "AccuInsight+ Runtime"},
+        target_structure={
+            "key_elements": [
+                {
+                    "key_element_id": "K1",
+                    "key_element_name": "모델 서빙부",
+                    "why_essential": "추론 요청을 처리한다",
+                    "core_role": "essential",
+                    "spec_support": [{"section": "효과"}],
+                }
+            ],
+            "key_flow": [
+                {
+                    "key_element_id": "K1",
+                    "next_key_element_id": "K2",
+                    "relation_summary": "K1 결과를 K2가 사용",
+                    "coupling_strength": "strong",
+                }
+            ],
+        },
+    )
+
+    payload = build_input_payload(state=state, evidence=[])
+    ps = payload["business_fit_context"]["patent_structure"]
+
+    assert ps["key_elements"][0]["key_element_name"] == "모델 서빙부"
+    assert ps["key_elements"][0]["core_role"] == "essential"
+    assert "spec_support" not in ps["key_elements"][0]
+    assert ps["key_flow"][0]["coupling_strength"] == "strong"
+
+
+def test_build_input_payload_patent_structure_empty_when_absent():
+    from agents.valuation_axes.business_fit import build_input_payload
+
+    state = PatentWorkflowState(patent_structured={"title_final": "AI 모델 서빙 시스템"})
+    payload = build_input_payload(state=state, evidence=[])
+
+    assert payload["business_fit_context"]["patent_structure"] == {"key_elements": [], "key_flow": []}

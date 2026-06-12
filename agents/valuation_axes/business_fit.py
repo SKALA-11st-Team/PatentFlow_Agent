@@ -127,6 +127,35 @@ def coerce_int(value: Any) -> int | None:
         return None
 
 
+def build_patent_structure_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    """구조화 결과(target_structure)에서 제품·기능 매칭 판단에 필요한 부분만 경량화해 전달한다.
+
+    key_elements는 식별·역할 정보만, key_flow는 구성요소 간 관계만 남긴다(명세서 위치·도면 등 제외).
+    """
+    structure = state.target_structure if isinstance(state.target_structure, dict) else {}
+    key_elements = [
+        {
+            "key_element_id": element.get("key_element_id"),
+            "key_element_name": element.get("key_element_name"),
+            "why_essential": element.get("why_essential"),
+            "core_role": element.get("core_role"),
+        }
+        for element in (structure.get("key_elements") or [])
+        if isinstance(element, dict)
+    ]
+    key_flow = [
+        {
+            "key_element_id": flow.get("key_element_id"),
+            "next_key_element_id": flow.get("next_key_element_id"),
+            "relation_summary": flow.get("relation_summary"),
+            "coupling_strength": flow.get("coupling_strength"),
+        }
+        for flow in (structure.get("key_flow") or [])
+        if isinstance(flow, dict)
+    ]
+    return {"key_elements": key_elements, "key_flow": key_flow}
+
+
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
     payload = build_base_input_payload(state=state, evidence=evidence)
     patent_description = build_business_fit_patent_description(state)
@@ -135,6 +164,7 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
     sk_ax_relevant_news_evidence = build_sk_ax_relevant_news_evidence_summary(evidence, state=state)
     payload["business_fit_context"] = {
         "patent_description": patent_description,
+        "patent_structure": build_patent_structure_payload(state),
         "target_source_status": build_target_source_status(state),
         "skax_official_evidence": skax_evidence,
         "sk_owned_media_evidence": sk_owned_media_evidence,
