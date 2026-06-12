@@ -460,6 +460,8 @@ def build_preprocessed_patent(
         "sections": sections,
         "claims": claims,
         "claim_stats": claim_stats,
+        "citing_documents": (api_data or {}).get("citing_document_records", []),
+        "citing_stats": (api_data or {}).get("citing_stats", {}),
         "agent_inputs": build_agent_inputs(metadata, sections, claims),
         "validation": validation,
         "debug": {

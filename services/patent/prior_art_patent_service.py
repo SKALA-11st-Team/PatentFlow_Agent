@@ -626,10 +626,17 @@ def prior_art_legal_content_from_markdown(
         if normalize_text(claim.get("text"))
     ]
     abstract = normalize_text((preprocessed.get("sections") or {}).get("abstract"))
+    sections = preprocessed.get("sections") or {}
     return {
         "abstract": abstract,
         "claim_stats": preprocessed.get("claim_stats") or {},
         "representative_claims": representative_claims,
+        "technical_content": {
+            "problem": normalize_text(sections.get("problem")),
+            "solution": normalize_text(sections.get("solution")),
+            "effect": normalize_text(sections.get("effect")),
+            "detailed_description": normalize_text(sections.get("detailed_description")),
+        },
         "lookup_status": "resolved",
         "lookup_source": "prior_art_pdf_fulltext",
         "comparison_status": (

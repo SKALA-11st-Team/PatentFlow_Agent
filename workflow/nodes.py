@@ -21,7 +21,6 @@ from services.patent.patent_structuring_service import (
     COMPARISON_TARGET_COUNT,
     structure_target_and_comparisons,
 )
-from agents.valuation_axes.technology import build_technology_metrics
 from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
 from services.evidence.compression_service import (
     DEFAULT_RAG_SCORE_THRESHOLD,
@@ -77,6 +76,7 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 "family_patents": state.kipris_family_patents,
                 "citation_stats": state.kipris_api_data.get("citation_stats", {}),
                 "citing_stats": state.kipris_api_data.get("citing_stats", {}),
+                "citing_documents": state.kipris_api_data.get("citing_document_records", []),
             },
         }
     patent_country = str((patent or {}).get("country") or "").strip().upper()
@@ -272,18 +272,14 @@ def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
 
 @trace(run_type="tool")
 def patent_structuring_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    """비교군을 한 번 조립하고, 타깃 + 비교 특허군을 동일 schema로 구조화한다.
+    """타깃 + 비교 특허군(선행문헌)을 동일 schema로 구조화한다.
 
-    조립 결과(state.comparison_group)는 기술성 축이 재사용해 중복 조립을 막는다.
     구조화 결과(target_structure/comparison_structures)는 권리성·기술성이
-    element 단위 비교에 쓴다.
+    element 단위 비교에 쓴다. 비교 특허는 prior_art_context(선행문헌, pdf_text 보유)에서
+    직접 가져온다 — 기술성 비교군 조립과는 분리한다.
     """
     if state.target_structure is not None or state.comparison_structures:
         return state
-
-    # 비교군(prior-art-first-then-similar)을 여기서 한 번만 조립한다.
-    if state.comparison_group is None:
-        state.comparison_group = build_technology_metrics(state)
 
     target_input = build_target_structuring_input(state)
     comparison_inputs = build_comparison_structuring_inputs(state)
@@ -387,11 +383,9 @@ def build_target_structuring_input(state: PatentWorkflowState) -> dict | None:
 
 
 def build_comparison_structuring_inputs(state: PatentWorkflowState) -> list[dict]:
-    # 기술성과 동일한 비교군(조립 결과)을 구조화 대상으로 삼는다. 조립 전이면
-    # prior_art_context로 폴백(이 경우 모두 선행문헌).
-    use_comparison_group = state.comparison_group is not None
-    context = state.comparison_group or state.prior_art_context or {}
-    items = context.get("similar_patents") or context.get("prior_art_patents") or []
+    # 비교 특허는 prior_art_context(선행문헌, pdf_text 보유)에서 직접 가져온다.
+    context = state.prior_art_context or {}
+    items = context.get("prior_art_patents") or context.get("similar_patents") or []
     inputs: list[dict] = []
     for item in items:
         if not isinstance(item, dict):
@@ -400,14 +394,13 @@ def build_comparison_structuring_inputs(state: PatentWorkflowState) -> list[dict
         if not specification_text:
             continue
         doc_id = str(item.get("display_number") or item.get("application_number") or item.get("title") or "")
-        comparison_source = item.get("comparison_source") or ("similar" if use_comparison_group else "prior_art")
         inputs.append(
             {
                 "doc_id": doc_id,
                 "specification_text": specification_text,
                 "claims_text": "",
                 "drawings_text": "",
-                "comparison_source": comparison_source,
+                "comparison_source": "prior_art",
             }
         )
         if len(inputs) >= COMPARISON_TARGET_COUNT:

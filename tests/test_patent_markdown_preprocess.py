@@ -231,6 +231,10 @@ def test_preprocess_extracts_chinese_patent_sections():
                 }
             ],
             "claim_stats": {"active_claim_count": 1},
+            "citing_stats": {"available": True, "total_count": 1},
+            "citing_document_records": [
+                {"display_number": "JP 6816175 B2", "source": "google_patents_html_forward_references"}
+            ],
         },
     )
 
@@ -240,6 +244,8 @@ def test_preprocess_extracts_chinese_patent_sections():
     assert "设备可靠性指数" in result["sections"]["solution"]
     assert "实时计算风险分数" in result["sections"]["detailed_description"]
     assert "sections.claims_text" not in result["validation"]["missing_fields"]
+    assert result["citing_stats"]["total_count"] == 1
+    assert result["citing_documents"][0]["display_number"] == "JP 6816175 B2"
 
 
 def test_preprocess_uses_first_chinese_drawing_as_representative():

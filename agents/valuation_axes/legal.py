@@ -386,6 +386,7 @@ def valuation_citation_evidence(state: PatentWorkflowState, *, claim_text_limit:
             if isinstance(item, dict)
         ],
         "citing_signal": _valuation_citing_signal(state),
+        "citing_documents": list((state.kipris_api_data or {}).get("citing_document_records") or []),
         "foreign_citation_documents": [
             _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit, max_claims=5)
             for item in (evidence.get("foreign_citation_documents") or [])

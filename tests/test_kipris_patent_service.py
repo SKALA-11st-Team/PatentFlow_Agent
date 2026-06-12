@@ -23,6 +23,7 @@ from services.patent.kipris_patent_service import (
     _foreign_literature_number_candidates,
     _google_patents_figure_urls,
     _google_patents_backward_references,
+    _google_patents_forward_references,
     _select_fulltext_pdf,
     fulltext_application_number_candidates,
 )
@@ -514,6 +515,20 @@ def test_extract_foreign_claims_accepts_chinese_ocr_numbering():
     assert "说明书" not in claims[2]["text"]
 
 
+def test_extract_foreign_claims_accepts_taiwan_bracketed_claim_numbers():
+    claims = extract_foreign_claims_from_text(
+        """
+        【發明申請專利範圍】
+        【第1項】 一種用於提供虛擬產品的方法，包括取得製造數據。
+        【第2項】 如申請專利範圍第1項所述之方法，其中即時提供虛擬產品。
+        """
+    )
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2]
+    assert claims[0]["is_independent"] is True
+    assert claims[1]["dependency"] == 1
+
+
 def test_foreign_pdf_ocr_fallback_keeps_usable_text(monkeypatch, tmp_path):
     markdown_path = tmp_path / "CN110770661B.md"
     markdown_text = "测量控制方法和系统" * 40
@@ -630,6 +645,47 @@ def test_foreign_pdf_ocr_fallback_uses_japanese_language_pack(monkeypatch, tmp_p
     assert commands[0][-4:] == ["-l", "jpn+eng", "--psm", "6"]
 
 
+def test_foreign_pdf_ocr_fallback_uses_traditional_chinese_for_tw(monkeypatch, tmp_path):
+    image_dir = tmp_path / "TWI123_images"
+    image_dir.mkdir()
+    (image_dir / "imageFile1.png").write_bytes(b"fake-png")
+    markdown_path = tmp_path / "TWI123.md"
+    markdown_path.write_text(
+        "![image 1](<TWI123_images/imageFile1.png>)",
+        encoding="utf-8",
+    )
+    commands = []
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.shutil.which",
+        lambda name: "/opt/homebrew/bin/tesseract",
+    )
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+
+        class Result:
+            stdout = "申請專利範圍\n1. 一種用於提供虛擬產品的方法，包括取得製造數據。" * 20
+
+        return Result()
+
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.subprocess.run",
+        fake_run,
+    )
+
+    result = apply_foreign_pdf_ocr_fallback(
+        {
+            "markdown_paths": [str(markdown_path)],
+            "markdown_text": markdown_path.read_text(encoding="utf-8"),
+        },
+        country="TW",
+    )
+
+    assert result["ocr_applied"] is True
+    assert result["ocr_language"] == "chi_tra+eng"
+    assert commands[0][-4:] == ["-l", "chi_tra+eng", "--psm", "6"]
+
+
 def test_foreign_pdf_parse_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
     class Client:
         session = object()
@@ -719,6 +775,104 @@ def test_google_patents_html_to_markdown_extracts_fulltext_sections():
     assert "equipment reliability index" in markdown
 
 
+def test_google_patents_html_preserves_claim_numbers_and_taiwan_dependencies():
+    markdown = google_patents_html_to_markdown(
+        """
+        <div num="1" class="claim">
+          <div class="claim-text">一種用於提供虛擬半導體產品的方法，包括取得製造數據。</div>
+        </div>
+        <div num="2" class="claim">
+          <div class="claim-text">如申請專利範圍第1項所述之方法，其中即時提供虛擬產品。</div>
+        </div>
+        """
+    )
+
+    claims = extract_foreign_claims_from_text(markdown)
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2]
+    assert claims[0]["is_independent"] is True
+    assert claims[1]["dependency"] == 1
+
+
+def test_google_patents_html_fallback_keeps_downloaded_pdf_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.select_foreign_fulltext_pdf_with_fallback",
+        lambda *args, **kwargs: {
+            "literature_number": "TWI123456",
+            "selected_type": "GOOGLE_PATENTS_FULLTEXT",
+            "doc_name": "TWI123456.pdf",
+            "path": "https://example.com/TWI123456.pdf",
+        },
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._download_and_parse_foreign_selection",
+        lambda *args, **kwargs: {
+            "pdf_path": "/tmp/TWI123456.pdf",
+            "source_path": "https://example.com/TWI123456.pdf",
+            "markdown_text": "![page](<page.png>)",
+        },
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.download_google_patents_html_fulltext",
+        lambda *args, **kwargs: {
+            "selected_type": "GOOGLE_PATENTS_HTML_FULLTEXT",
+            "source_path": "https://patents.google.com/patent/TWI123456/zh",
+            "markdown_text": "## CLAIMS\n\n1. A method comprising enough usable claim text for parsing.",
+        },
+    )
+
+    result = download_and_parse_foreign_patent_pdf(
+        object(),
+        {"country": "TW", "registration_number": "I123456"},
+        candidates=[],
+        output_dir=tmp_path,
+    )
+
+    assert result["selected_type"] == "GOOGLE_PATENTS_HTML_FULLTEXT"
+    assert result["pdf_path"] == "/tmp/TWI123456.pdf"
+    assert result["pdf_source_path"] == "https://example.com/TWI123456.pdf"
+
+
+def test_google_patents_html_fulltext_prefers_language_with_parseable_claims(tmp_path):
+    from services.patent.kipris_patent_service import download_google_patents_html_fulltext
+
+    class Response:
+        def __init__(self, text):
+            self.text = text
+            self.content = text.encode("utf-8")
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, url, **kwargs):
+            del kwargs
+            if url.endswith("/en"):
+                return Response(
+                    '<meta name="DC.title" content="English title">'
+                    '<section itemprop="description"><div>' + ("Long description. " * 30) + "</div></section>"
+                )
+            return Response(
+                '<meta name="DC.title" content="中文標題">'
+                '<div class="claim" num="1"><div class="claim-text">'
+                "一種用於提供虛擬產品的方法，包括取得製造數據。"
+                "</div></div>"
+            )
+
+    class Client:
+        session = Session()
+        timeout = 1
+
+    result = download_google_patents_html_fulltext(
+        Client(),
+        {"country": "TW", "registration_number": "I123456"},
+        output_dir=tmp_path,
+    )
+
+    assert result["source_path"].endswith("/zh")
+    assert len(extract_foreign_claims_from_text(result["markdown_text"])) == 1
+
+
 def test_google_patents_html_response_decodes_utf8_content_instead_of_mojibake_text():
     chinese_html = (
         '<meta name="DC.title" content="具有相框功能的导航装置及其操作方法">'
@@ -783,6 +937,79 @@ def test_google_patents_backward_references_extracts_supported_patent_numbers():
     )
 
     assert references == ["US 20090306803 A1", "JP 2010118562 A"]
+
+
+def test_google_patents_forward_references_extracts_citing_documents():
+    references = _google_patents_forward_references(
+        """
+        <tr itemprop="forwardReferencesFamily" itemscope repeat>
+          <td>
+            <span itemprop="publicationNumber">JP6816175B2</span>
+            <span itemprop="examinerCited">*</span>
+          </td>
+          <td itemprop="priorityDate">2019-01-10</td>
+          <td itemprop="publicationDate">2021-01-20</td>
+          <td><span itemprop="assigneeOriginal">本田技研工業株式会社</span></td>
+          <td itemprop="title">製品測定結果表示システム</td>
+        </tr>
+        <tr itemprop="forwardReferences">
+          <td><span itemprop="publicationNumber">US12217409B2</span></td>
+          <td itemprop="priorityDate">2019-04-23</td>
+          <td itemprop="publicationDate">2025-02-04</td>
+          <td><span itemprop="assigneeOriginal">Sony Group Corporation</span></td>
+          <td itemprop="title">Information processing device</td>
+        </tr>
+        """
+    )
+
+    assert [item["display_number"] for item in references] == [
+        "JP 6816175 B2",
+        "US 12217409 B2",
+    ]
+    assert references[0]["examiner_cited"] is True
+    assert references[0]["assignee"] == "本田技研工業株式会社"
+    assert references[1]["publication_date"] == "2025-02-04"
+
+
+def test_foreign_rights_data_uses_google_patents_forward_references(monkeypatch):
+    class Response:
+        content = b"""
+        <tr itemprop="forwardReferencesFamily">
+          <td><span itemprop="publicationNumber">JP6816175B2</span></td>
+          <td itemprop="priorityDate">2019-01-10</td>
+          <td itemprop="publicationDate">2021-01-20</td>
+          <td><span itemprop="assigneeOriginal">Honda</span></td>
+          <td itemprop="title">Measurement system</td>
+        </tr>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    client = ForeignClient()
+    client.session = Session()
+    monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: client)
+
+    result = fetch_foreign_patent_rights_data(
+        {
+            "country": "TW",
+            "application_number": "106132082",
+            "registration_number": "I669767",
+            "status": "등록",
+        },
+        collect_pdf=False,
+    )
+
+    assert result["citing_stats"]["available"] is True
+    assert result["citing_stats"]["total_count"] == 1
+    assert result["citing_documents"][0]["display_number"] == "JP 6816175 B2"
+    assert result["foreign_api_collection"]["target_citing_references"]["source"] == (
+        "google_patents_html_forward_references"
+    )
 
 
 def test_google_patents_pdf_url_reads_citation_pdf_meta():
