@@ -13,6 +13,7 @@ from services.evidence.store_service import (
     merge_evidence_sources,
     save_evidence_collection,
     save_filtered_evidence_bundle,
+    save_skax_site_search_result,
 )
 from services.evidence.external_search_service import (
     MAX_SEARCH_QUERIES,
@@ -198,9 +199,9 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
     assert len(rewritten["ko"]) <= MAX_SEARCH_QUERIES
     assert any("MarketCaster" in query for query in rewritten["ko"])
     assert rewritten["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
-    # skax_site 1번은 관련제품명을 그대로(변형 없이), 2번부터 LLM 변형 검색어.
+    # skax_site는 LLM 변형만 담는다(제품명 그대로 검색어는 build_query_generation_plan의
+    # rule-based 후보가 담당하므로 여기서 따로 주입하지 않는다).
     assert rewritten["skax_site"] == [
-        "site:skax.co.kr MarketCaster",
         "site:skax.co.kr 로보어드바이저 금융 자산관리",
     ]
     assert rewritten["meta"]["product_query_enforced"] is True
@@ -575,3 +576,43 @@ def test_collect_external_evidence_empty_results_not_flagged_as_gateway_failure(
     assert result["gateway_unreachable"] is False
     assert result["missing_reason"] is None
     assert not any("external_evidence_unavailable" in warning for warning in result["warnings"])
+
+
+def test_save_skax_site_search_result_persists_queries_and_diagnostics(tmp_path):
+    # collect_skax_site_evidence 반환 형태를 그대로 저장한다.
+    skax_result = {
+        "items": [
+            {
+                "evidence_id": "skax_site_001",
+                "title": "AI 모델 서빙 - SK AX",
+                "url": "https://www.skax.co.kr/solution/ai",
+                "search_query": "site:skax.co.kr AccuInsight+ Runtime",
+            }
+        ],
+        "queries": [
+            "site:skax.co.kr AccuInsight+ Runtime",
+            "site:skax.co.kr 모델 서빙 플랫폼",
+        ],
+        "stats": {"collected_evidence_count": 1, "searched_result_count": 4},
+        "query_generation_diagnostics": {"query_source": "rule_based_with_query_rewriting"},
+        "search_diagnostics": [
+            {"query": "site:skax.co.kr AccuInsight+ Runtime", "tavily_effective_query": "AccuInsight+ Runtime"},
+        ],
+        "failed_urls": ["https://www.skax.co.kr/broken"],
+        "warning": None,
+    }
+
+    path = save_skax_site_search_result(
+        patent_id="P123",
+        skax_result=skax_result,
+        output_dir=tmp_path,
+    )
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    # 실제 전송 쿼리·후보 진단이 그대로 보존돼 디버깅에 쓸 수 있어야 한다.
+    assert saved["queries"] == skax_result["queries"]
+    assert saved["search_diagnostics"][0]["tavily_effective_query"] == "AccuInsight+ Runtime"
+    assert saved["failed_urls"] == ["https://www.skax.co.kr/broken"]
+    assert saved["items"][0]["evidence_id"] == "skax_site_001"
+    assert saved["patent_id"] == "P123"
+    assert path.name == "P123_skax_site_search.json"

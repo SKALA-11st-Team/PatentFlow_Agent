@@ -32,8 +32,9 @@ from services.evidence.store_service import (
 DEFAULT_UNIFIED_API_BASE_URL = settings.unified_api_base_url
 MAX_SEARCH_QUERIES = settings.search_query_count
 MAX_INDUSTRY_RAG_QUERIES = settings.industry_rag_query_count
-# skax_site 검색어는 3개로 고정한다: 1번은 관련제품명 그대로, 2~3번은 기술/서비스 변형.
-SKAX_QUERY_COUNT = 3
+# query rewriting(LLM)이 skax_site에 기여하는 변형 검색어 개수. 제품명 검색어는
+# build_query_generation_plan의 rule-based 후보가 담당하므로, 여기서는 LLM 변형만 추린다.
+SKAX_REWRITE_QUERY_COUNT = 2
 API_REQUEST_MAX_ATTEMPTS = 3
 API_REQUEST_RETRY_STATUS_CODES = {502, 503, 504}
 BLOCKED_HOSTNAMES = {"localhost.localdomain", "metadata.google.internal"}
@@ -105,7 +106,7 @@ def rewrite_search_queries(
         for query in compact_queries(llm_result.get("industry_rag", []))[:MAX_INDUSTRY_RAG_QUERIES]
         if query not in previous
     ]
-    rewritten_skax_site = ensure_skax_product_first(
+    rewritten_skax_site = select_skax_rewrite_queries(
         llm_result.get("skax_site", []),
         preprocessed_patent,
         previous,
@@ -300,35 +301,30 @@ def compact_queries(queries: list[str]) -> list[str]:
     return result
 
 
-def ensure_skax_product_first(
+def select_skax_rewrite_queries(
     llm_queries: list[str],
     preprocessed_patent: dict[str, Any],
     previous_queries: set[str],
 ) -> list[str]:
-    """skax_site 검색어 3개를 구성한다.
+    """query rewriting이 skax_site에 넘길 LLM 변형 검색어를 최대 SKAX_REWRITE_QUERY_COUNT개 추린다.
 
-    1번: 관련제품명을 그대로(변형·접두사 없이) 검색한다. SK AX 공식 사이트에
-    제품 페이지가 있으면 가장 정확히 잡기 위함이다.
-    2~3번: LLM이 만든 기술/서비스 변형 검색어로 채운다(제품명 페이지가 없을 때를
-    대비한 일반 표현). 1번 제품 검색어는 재검색 라운드에서도 항상 유지하고,
-    previous_queries 필터는 변형 검색어(2~3번)에만 적용한다.
-    모든 항목은 normalize_skax_site_queries로 canonical 형태(site:skax.co.kr 접두)로
-    맞춰 두면, Tavily 단계에서 site: 연산자가 제거되어 키워드만 전송된다.
+    제품명 그대로의 검색어는 build_query_generation_plan의 rule-based 후보가 이미 1순위로
+    포함하므로(중복 방지), 여기서는 제품명을 따로 주입하지 않고 LLM이 만든 기술/서비스 변형만
+    남긴다. LLM 변형이 build_query_generation_plan에서 rule-based보다 우선 배치되어 실제 검색에
+    반영된다. 제품명과 동일한 변형·이전 라운드 검색어는 제외한다.
     """
-    product = extract_related_product(preprocessed_patent)
-    head = normalize_skax_site_queries([product]) if product else []
-    product_norm = normalize_related_product(product)
-    tail_source = [
+    product_norm = normalize_related_product(extract_related_product(preprocessed_patent))
+    variant_source = [
         query
         for query in llm_queries
         if not product_norm or normalize_related_product(query) != product_norm
     ]
-    tail = [
+    variants = [
         query
-        for query in normalize_skax_site_queries(tail_source)
-        if query not in previous_queries and query not in head
+        for query in normalize_skax_site_queries(variant_source)
+        if query not in previous_queries
     ]
-    return compact_queries([*head, *tail])[:SKAX_QUERY_COUNT]
+    return compact_queries(variants)[:SKAX_REWRITE_QUERY_COUNT]
 
 
 def ensure_related_product_query(

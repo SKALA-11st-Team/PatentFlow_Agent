@@ -30,7 +30,10 @@ from services.evidence.compression_service import (
 from services.evidence.external_search_service import MAX_SEARCH_QUERIES, collect_external_evidence, rewrite_search_queries
 from services.evidence.news_filter_service import filter_news_evidence, save_filtered_news_result
 from services.evidence.skax_site_search_service import collect_skax_site_evidence
-from services.evidence.store_service import save_filtered_evidence_bundle
+from services.evidence.store_service import (
+    save_filtered_evidence_bundle,
+    save_skax_site_search_result,
+)
 from services.rag.industry_rag_service import (
     resolve_patent_industries,
     search_and_save_patent_industry_evidence,
@@ -643,6 +646,13 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         output_dir=artifact_subdir(state, "filtered_evidence"),
         save=not state.user_input.get("no_save", False),
     )
+    # 뉴스처럼 SK AX 검색의 raw 결과·진단(실제 전송 쿼리·후보 URL·필터 통계)을 별도 artifact로 남긴다.
+    skax_search_path = save_skax_site_search_safely(
+        patent_id=patent.get("id") or preprocessed.get("patent_id"),
+        skax_result=skax_result,
+        output_dir=artifact_subdir(state, "skax_site_search"),
+        save=not no_save,
+    )
     state.evidence_bundle = evidence_items
     state.query_plan = {
         **query_plan,
@@ -668,6 +678,7 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             "item_count": len(skax_items),
             "failed_urls": skax_result.get("failed_urls", []),
             "warning": skax_result.get("warning"),
+            "output_path": skax_search_path,
         },
         # EXT-03: 외부 게이트웨이 호출이 전부 실패해 증거 0건이면 missing_reason으로 표면화한다.
         "external_evidence": {
@@ -904,6 +915,27 @@ def save_filtered_evidence_safely(
                 news_items=news_items,
                 industry_items=industry_items,
                 other_items=other_items,
+                output_dir=output_dir,
+            )
+        )
+    except Exception:
+        return None
+
+
+def save_skax_site_search_safely(
+    *,
+    patent_id: str | int | None,
+    skax_result: dict,
+    output_dir: Path,
+    save: bool,
+) -> str | None:
+    if not save:
+        return None
+    try:
+        return str(
+            save_skax_site_search_result(
+                patent_id=patent_id,
+                skax_result=skax_result,
                 output_dir=output_dir,
             )
         )

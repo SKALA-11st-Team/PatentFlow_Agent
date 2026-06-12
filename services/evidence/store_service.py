@@ -13,6 +13,7 @@ from schemas.evidence import Evidence
 
 DEFAULT_API_EVIDENCE_DIR = settings.output_dir / "api_evidence"
 DEFAULT_FILTERED_EVIDENCE_DIR = settings.output_dir / "filtered_evidence"
+DEFAULT_SKAX_SEARCH_DIR = settings.output_dir / "skax_site_search"
 
 
 def now_iso() -> str:
@@ -113,6 +114,39 @@ def save_filtered_evidence_bundle(
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     filename = f"{safe_filename(str(patent_id) if patent_id is not None else 'unknown')}_filtered_evidence.json"
+    path = directory / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def save_skax_site_search_result(
+    *,
+    patent_id: str | int | None,
+    skax_result: dict[str, Any],
+    output_dir: Path | str = DEFAULT_SKAX_SEARCH_DIR,
+) -> Path:
+    """SK AX 공식 사이트 검색의 raw 결과·진단을 통째로 artifact로 남긴다.
+
+    뉴스는 쿼리별 raw 파일을 저장하지만 SK AX 검색은 최종 채택 근거만 filtered_evidence에
+    실렸을 뿐, "어떤 쿼리가 무엇을 가져왔는지"(실제 전송 쿼리·후보 URL·필터 통계)는
+    어디에도 저장되지 않아 디버깅 시 LangSmith trace에 의존해야 했다. 이를 JSON으로 고정한다.
+    """
+    payload = {
+        "source_type": "skax_site_search",
+        "source": "skax_co_kr",
+        "patent_id": str(patent_id) if patent_id is not None else None,
+        "collected_at": now_iso(),
+        "queries": skax_result.get("queries", []),
+        "stats": skax_result.get("stats", {}),
+        "query_generation_diagnostics": skax_result.get("query_generation_diagnostics", {}),
+        "search_diagnostics": skax_result.get("search_diagnostics", []),
+        "failed_urls": skax_result.get("failed_urls", []),
+        "warning": skax_result.get("warning"),
+        "items": [to_evidence_dict(item) for item in skax_result.get("items", [])],
+    }
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = f"{safe_filename(str(patent_id) if patent_id is not None else 'unknown')}_skax_site_search.json"
     path = directory / filename
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
