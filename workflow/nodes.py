@@ -576,8 +576,8 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             include_gnews=not skip_news_evidence,
             # EVID-02: 경쟁특허 근거(KIPRIS)를 기본 수집한다(application_number 있을 때만 실효).
             include_kipris=state.user_input.get("include_kipris_competitor", True),
-            ko_queries_override=query_plan.get("ko_queries", []),
-            en_queries_override=query_plan.get("en_queries", []),
+            ko_queries_override=query_plan.get("ko_queries") or None,
+            en_queries_override=query_plan.get("en_queries") or None,
             output_dir=artifact_subdir(state, "api_evidence"),
             save=not no_save,
         )
