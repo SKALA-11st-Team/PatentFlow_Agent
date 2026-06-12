@@ -774,7 +774,7 @@ def check_business_fit_axis_rules(
     subscore_total = 0
     allowed_subscores = {
         "official_business_evidence": {0, 8, 16, 24, 30},
-        "product_function_direct_match": {0, 12, 24, 36, 45},
+        "product_function_direct_match": {0, 24, 36, 45},
         "business_context_fit": {0, 4, 10, 18, 25},
     }
     for key, max_score in BUSINESS_FIT_SUBSCORE_MAX.items():

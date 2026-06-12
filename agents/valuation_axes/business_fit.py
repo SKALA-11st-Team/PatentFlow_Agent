@@ -50,8 +50,6 @@ STOPWORDS = {
     "포함",
     "포함하는",
 }
-BROAD_TERMS = {"ai", "data", "cloud", "제조", "솔루션", "서비스", "플랫폼", "데이터"}
-WEAK_TERMS = {"예측", "분석", "관리", "서비스", "플랫폼", "솔루션"}
 # VAL-08: 영문/타산업 특허 핵심어 추출이 한국어 STOPWORDS에만 의존해 무력화되던 문제 보완.
 # 영문 특허 명칭의 일반어(system/method/apparatus 등)·연결어를 대소문자 무관하게 불용어로 거른다.
 ENGLISH_STOPWORDS = {
@@ -172,7 +170,6 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
         "quantitative_metrics": build_business_fit_quantitative_metrics(
             state=state,
             evidence=evidence,
-            patent_description=patent_description,
         ),
     }
     return payload
@@ -378,9 +375,7 @@ def build_business_fit_quantitative_metrics(
     *,
     state: PatentWorkflowState,
     evidence: list[dict[str, Any]],
-    patent_description: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    del patent_description
     official_site_items = [item for item in evidence if is_sk_ax_official_evidence(item)]
     owned_media_items = [
         item
