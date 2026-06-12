@@ -31,6 +31,9 @@ class Settings(BaseModel):
     # 채점(가치평가 축) 전용 모델. 미설정 시 VALUATION_MODEL → openai_chat_model 순으로 폴백.
     # 특허 가치평가 품질을 우선하면 gpt-5 계열을 지정한다.
     openai_valuation_model: str | None = getenv("OPENAI_VALUATION_MODEL")
+    # 특허 구조화 전용 모델. 구조화는 판단이 아니라 추출·청구항 분해라 가치평가 축보다
+    # 가벼운 모델이 적합하다. 미설정 시 openai_chat_model(gpt-5-mini)로 폴백한다.
+    openai_structuring_model: str | None = getenv("OPENAI_STRUCTURING_MODEL")
     # 최종 보고서·요약 작성 전용 모델. 미설정 시 openai_chat_model로 폴백.
     # 서술 품질을 위해 gpt-5 같은 상위 모델을 쓰고 싶을 때 지정한다(작성은 KIPRIS
     # 호출이 없어 느려도 워크플로우를 막지 않는다).
@@ -41,12 +44,17 @@ class Settings(BaseModel):
     openai_reasoning_effort: str | None = getenv("OPENAI_REASONING_EFFORT")
     openai_verbosity: str | None = getenv("OPENAI_VERBOSITY")
     openai_valuation_reasoning_effort: str | None = getenv("OPENAI_VALUATION_REASONING_EFFORT")
+    # 구조화는 추출 작업이라 깊은 추론이 불필요하므로 기본 low로 비용을 낮춘다.
+    openai_structuring_reasoning_effort: str | None = getenv("OPENAI_STRUCTURING_REASONING_EFFORT", "low")
     openai_writing_reasoning_effort: str | None = getenv("OPENAI_WRITING_REASONING_EFFORT")
     openai_writing_verbosity: str | None = getenv("OPENAI_WRITING_VERBOSITY")
     openai_supervisor_reasoning_effort: str | None = getenv("OPENAI_SUPERVISOR_REASONING_EFFORT")
     openai_request_timeout_seconds: float = float(getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "90"))
     # 보고서/요약 작성(writing)은 출력이 길어 일반 호출보다 오래 걸리므로 별도 timeout.
     openai_writing_timeout_seconds: float = float(getenv("OPENAI_WRITING_TIMEOUT_SECONDS", "240"))
+    # 가치평가 축·특허 구조화는 특허 전문을 통째로 읽고 reasoning을 돌려 일반 호출보다
+    # 오래 걸리므로 별도 timeout.
+    openai_valuation_timeout_seconds: float = float(getenv("OPENAI_VALUATION_TIMEOUT_SECONDS", "300"))
     # 수집 후 뉴스 recency 필터의 최대 기간(일). naver·글로벌 뉴스 공통. 기본 5년.
     news_max_age_days: int = int(getenv("NEWS_MAX_AGE_DAYS", str(365 * 5)))
     openai_embedding_model: str = getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")

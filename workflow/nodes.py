@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import contextvars
+import json
 import re
 
 from app.config import settings
@@ -16,6 +17,11 @@ from services.patent.prior_art_patent_service import (
     build_prior_art_patent_context,
     prior_art_context_citation_documents,
 )
+from services.patent.patent_structuring_service import (
+    COMPARISON_TARGET_COUNT,
+    structure_target_and_comparisons,
+)
+from agents.valuation_axes.technology import build_technology_metrics
 from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
 from services.evidence.compression_service import (
     DEFAULT_RAG_SCORE_THRESHOLD,
@@ -262,6 +268,151 @@ def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
         if state.kipris_api_data is not None:
             state.kipris_api_data["citation_evidence"] = state.citation_evidence
     return state
+
+
+@trace(run_type="tool")
+def patent_structuring_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    """비교군을 한 번 조립하고, 타깃 + 비교 특허군을 동일 schema로 구조화한다.
+
+    조립 결과(state.comparison_group)는 기술성 축이 재사용해 중복 조립을 막는다.
+    구조화 결과(target_structure/comparison_structures)는 권리성·기술성이
+    element 단위 비교에 쓴다.
+    """
+    if state.target_structure is not None or state.comparison_structures:
+        return state
+
+    # 비교군(prior-art-first-then-similar)을 여기서 한 번만 조립한다.
+    if state.comparison_group is None:
+        state.comparison_group = build_technology_metrics(state)
+
+    target_input = build_target_structuring_input(state)
+    comparison_inputs = build_comparison_structuring_inputs(state)
+    if not target_input and not comparison_inputs:
+        return state
+
+    target_structure, comparison_structures, failures = structure_target_and_comparisons(
+        target_input=target_input or {},
+        comparison_inputs=comparison_inputs,
+    )
+    state.target_structure = target_structure
+    state.comparison_structures = comparison_structures
+    save_patent_structures(
+        state,
+        target_structure,
+        comparison_structures,
+        failures,
+        comparison_input_count=len(comparison_inputs),
+    )
+    return state
+
+
+def save_patent_structures(
+    state: PatentWorkflowState,
+    target_structure: dict | None,
+    comparison_structures: list[dict],
+    failures: list[dict] | None = None,
+    *,
+    comparison_input_count: int | None = None,
+) -> None:
+    """구조화 결과(타깃 + 비교군)를 artifact_dir/patent_structures 아래 JSON으로 저장한다."""
+    if state.user_input.get("no_save", False):
+        return
+    failures = failures or []
+    output_dir = artifact_subdir(state, "patent_structures")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if target_structure is not None:
+        _write_json(output_dir / "target.json", target_structure)
+
+    for index, structure in enumerate(comparison_structures, start=1):
+        doc_id = _safe_filename(str((structure or {}).get("doc_id") or f"comparison_{index}"))
+        _write_json(output_dir / f"comparison_{index:02d}_{doc_id}.json", structure)
+
+    # 타깃 + 비교군을 한 파일로도 묶어 둔다(전체 조회용 + 누락/실패 추적용).
+    _write_json(
+        output_dir / "all_structures.json",
+        {
+            "target": target_structure,
+            "comparisons": comparison_structures,
+            "target_structured": target_structure is not None,
+            "comparison_input_count": comparison_input_count
+            if comparison_input_count is not None
+            else len(comparison_structures) + len(failures),
+            "comparison_structured_count": len(comparison_structures),
+            "failure_count": len(failures),
+            "failures": failures,
+        },
+    )
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z._-]", "_", value).strip("_")
+    return cleaned[:80] or "unknown"
+
+
+def build_target_structuring_input(state: PatentWorkflowState) -> dict | None:
+    preprocessed = state.preprocessed_patent or {}
+    sections = preprocessed.get("sections") if isinstance(preprocessed.get("sections"), dict) else {}
+    specification_text = "\n\n".join(
+        str(sections.get(key) or "").strip()
+        for key in ("solution", "detailed_description", "effect")
+        if str(sections.get(key) or "").strip()
+    )
+    claims_text = str(sections.get("claims_text") or "").strip()
+    if not claims_text:
+        claims_text = "\n".join(
+            str((claim or {}).get("text") or "").strip()
+            for claim in (preprocessed.get("claims") or [])
+            if str((claim or {}).get("text") or "").strip()
+        )
+    if not specification_text and not claims_text:
+        return None
+    structured = state.patent_structured or {}
+    doc_id = str(
+        structured.get("application_number")
+        or structured.get("registration_number")
+        or (preprocessed.get("metadata") or {}).get("application_number")
+        or ""
+    )
+    return {
+        "doc_id": doc_id,
+        "specification_text": specification_text,
+        "claims_text": claims_text,
+        "drawings_text": str(sections.get("drawings") or "").strip(),
+    }
+
+
+def build_comparison_structuring_inputs(state: PatentWorkflowState) -> list[dict]:
+    # 기술성과 동일한 비교군(조립 결과)을 구조화 대상으로 삼는다. 조립 전이면
+    # prior_art_context로 폴백(이 경우 모두 선행문헌).
+    use_comparison_group = state.comparison_group is not None
+    context = state.comparison_group or state.prior_art_context or {}
+    items = context.get("similar_patents") or context.get("prior_art_patents") or []
+    inputs: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        specification_text = str(item.get("pdf_text") or item.get("pdf_text_excerpt") or "").strip()
+        if not specification_text:
+            continue
+        doc_id = str(item.get("display_number") or item.get("application_number") or item.get("title") or "")
+        comparison_source = item.get("comparison_source") or ("similar" if use_comparison_group else "prior_art")
+        inputs.append(
+            {
+                "doc_id": doc_id,
+                "specification_text": specification_text,
+                "claims_text": "",
+                "drawings_text": "",
+                "comparison_source": comparison_source,
+            }
+        )
+        if len(inputs) >= COMPARISON_TARGET_COUNT:
+            break
+    return inputs
 
 
 def merge_prior_art_citation_evidence(
@@ -891,6 +1042,12 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 issues.append(
                     f"Final report recommendation does not match valuation recommendation ({recommendation})"
                 )
+        country = str((state.patent_structured or {}).get("country") or "").strip().upper()
+        if country and country != "KR":
+            if re.search(r"국내\s*(?:권|특허|출원|등록)", markdown):
+                issues.append("Foreign patent report contains domestic-patent wording")
+            if "권리범위 참고도 및 이해" in markdown:
+                issues.append("Foreign patent report must omit the representative-drawing rights-scope block")
     # Forbidden expressions / evaluator tone are judged by the LLM final check
     # (it reads the report body), not by brittle substring matching here.
     passed = not issues

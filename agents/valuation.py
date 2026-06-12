@@ -130,6 +130,7 @@ def run_axis_llm_once(*, axis: str, prompt: str, evidence: list[dict[str, Any]])
         temperature=0.0,
         seed=valuation_seed(),
         reasoning_effort=settings.openai_valuation_reasoning_effort,
+        timeout=settings.openai_valuation_timeout_seconds,
     )
     parsed = parse_json_object(raw)
     if not parsed:

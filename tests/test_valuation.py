@@ -1683,8 +1683,6 @@ def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
         "KR-A",
         "JP-B",
         "1020200000001",
-        "1020200000002",
-        "1020200000003",
     ]
 
 
@@ -1713,7 +1711,7 @@ def test_technology_metrics_reuses_shared_prior_art_context(monkeypatch):
     metrics = technology.build_technology_metrics(state)
 
     assert metrics["selection_policy"] == "prior-art-only"
-    assert len(metrics["similar_patents"]) == 5
+    assert len(metrics["similar_patents"]) == 3
 
 
 def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
@@ -1799,7 +1797,7 @@ def test_technology_metrics_prior_art_only_payload_omits_prior_art_duplicates(mo
     metrics = technology.build_technology_metrics(PatentWorkflowState())
 
     assert metrics["selection_policy"] == "prior-art-only"
-    assert len(metrics["similar_patents"]) == 5
+    assert len(metrics["similar_patents"]) == 3
     assert "prior_art_patents" not in metrics
     assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
 
@@ -2859,8 +2857,8 @@ def test_reconcile_legal_scores_keeps_domestic_prior_art_metric():
             "right_stability": {
                 "score": 0,
                 "details": {
-                    "prior_art_overlap": {"score": 18},
-                    "claim_structure_stability": {"score": 7},
+                    "prior_art_overlap": {"score": 13},
+                    "independent_claim_clarity": {"score": 12},
                 },
             },
             "claim_protection": {"score": 24},
@@ -2872,7 +2870,7 @@ def test_reconcile_legal_scores_keeps_domestic_prior_art_metric():
 
     assert scored["score"] == 64
     assert scored["subscores"]["right_stability"]["score"] == 25
-    assert scored["subscores"]["right_stability"]["max_score"] == 35
+    assert scored["subscores"]["right_stability"]["max_score"] == 40
 
 
 def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_comparison_ready():
@@ -2887,8 +2885,8 @@ def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_c
             "right_stability": {
                 "score": 0,
                 "details": {
-                    "prior_art_overlap": {"score": 18},
-                    "claim_structure_stability": {"score": 7},
+                    "prior_art_overlap": {"score": 13},
+                    "independent_claim_clarity": {"score": 12},
                 },
             },
             "claim_protection": {"score": 24},
@@ -2899,7 +2897,7 @@ def test_reconcile_legal_scores_keeps_prior_art_metric_for_foreign_patent_when_c
     scored = reconcile_legal_scores(result, state=state)
 
     assert scored["subscores"]["right_stability"]["score"] == 25
-    assert scored["subscores"]["right_stability"]["max_score"] == 35
+    assert scored["subscores"]["right_stability"]["max_score"] == 40
     assert scored["score"] == 64
 
 
@@ -2908,6 +2906,7 @@ def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
 
     state = PatentWorkflowState(
         patent_structured={"country": "JP"},
+        citation_evidence={"prior_art_collection": {"comparison_ready_count": 1}},
         kipris_api_data={
             "citing_stats": {
                 "available": False,
@@ -2918,13 +2917,13 @@ def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
     )
     result = {
         "subscores": {
-            "right_stability": {"score": 35},
+            "right_stability": {"score": 40},
             "claim_protection": {"score": 40},
             "portfolio_defensive_value": {
-                "score": 21,
+                "score": 16,
                 "details": {
-                    "portfolio_connection_coverage": {"score": 15},
-                    "overseas_right_coverage": {"score": 6},
+                    "portfolio_connection_coverage": {"score": 12},
+                    "overseas_right_coverage": {"score": 4},
                     "follow_on_right_signal": {"score": 0},
                 },
             },
@@ -2933,9 +2932,10 @@ def test_reconcile_legal_scores_excludes_unavailable_foreign_citing_metric():
 
     scored = reconcile_legal_scores(result, state=state)
 
-    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 21
-    assert scored["subscores"]["portfolio_defensive_value"]["max_score"] == 21
-    assert scored["score"] == 100
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 16
+    assert scored["subscores"]["portfolio_defensive_value"]["max_score"] == 20
+    assert scored["subscores"]["portfolio_defensive_value"]["details"]["follow_on_right_signal"]["score"] is None
+    assert scored["score"] == 96
 
 
 def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign_patent():
@@ -2950,8 +2950,8 @@ def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign
             "right_stability": {
                 "score": 0,
                 "details": {
-                    "prior_art_overlap": {"score": 18},
-                    "claim_structure_stability": {"score": 7},
+                    "prior_art_overlap": {"score": 13},
+                    "independent_claim_clarity": {"score": 7},
                 },
             },
             "claim_protection": {"score": 24},
@@ -2962,8 +2962,28 @@ def test_reconcile_legal_scores_excludes_prior_art_metric_for_unresolved_foreign
     scored = reconcile_legal_scores(result, state=state)
 
     assert scored["subscores"]["right_stability"]["score"] == 7
-    assert scored["subscores"]["right_stability"]["max_score"] == 10
-    assert scored["score"] == 61
+    assert scored["subscores"]["right_stability"]["max_score"] == 40
+    assert scored["subscores"]["right_stability"]["details"]["prior_art_overlap"]["score"] is None
+    assert scored["score"] == 46
+
+
+def test_reconcile_legal_scores_caps_missing_foreign_details_without_renormalizing():
+    from agents.valuation_axes.legal import reconcile_legal_scores
+
+    state = PatentWorkflowState(patent_structured={"country": "CN"})
+    result = {
+        "subscores": {
+            "right_stability": {"score": 35},
+            "claim_protection": {"score": 40},
+            "portfolio_defensive_value": {"score": 25},
+        }
+    }
+
+    scored = reconcile_legal_scores(result, state=state)
+
+    assert scored["subscores"]["right_stability"]["score"] == 20
+    assert scored["subscores"]["portfolio_defensive_value"]["score"] == 16
+    assert scored["score"] == 76
 
 
 def test_reconcile_legal_scores_partial_details_does_not_undervalue():

@@ -1,6 +1,7 @@
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
     apply_foreign_pdf_ocr_fallback,
+    decode_google_patents_html_response,
     download_and_parse_foreign_patent_pdf,
     fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
@@ -491,7 +492,10 @@ def test_extract_foreign_claims_accepts_chinese_ocr_numbering():
         ## 페이지 3
         ![페이지 3](<images/page3.png>)
         ### OCR 텍스트
-        3、如权利要求 1 所述的导航装置，其中，控制单元切换背景图像。
+        ```text
+        200710112054. 7                    权 AR OR TB 第273丰
+        3、如权利要求 | 所述的导航装置，其中，控制单元切换背景图像。
+        ```
         ## 페이지 4
         说明书
         本发明涉及导航装置。
@@ -501,6 +505,12 @@ def test_extract_foreign_claims_accepts_chinese_ocr_numbering():
     assert [claim["claim_no"] for claim in claims] == [1, 2, 3]
     assert claims[0]["is_independent"] is True
     assert claims[1]["dependency"] == 1
+    assert claims[2]["dependency"] == 1
+    assert claims[2]["is_independent"] is False
+    assert "페이지" not in claims[1]["text"]
+    assert "OCR 텍스트" not in claims[1]["text"]
+    assert "image" not in claims[1]["text"]
+    assert "第273丰" not in claims[2]["text"]
     assert "说明书" not in claims[2]["text"]
 
 
@@ -709,6 +719,24 @@ def test_google_patents_html_to_markdown_extracts_fulltext_sections():
     assert "equipment reliability index" in markdown
 
 
+def test_google_patents_html_response_decodes_utf8_content_instead_of_mojibake_text():
+    chinese_html = (
+        '<meta name="DC.title" content="具有相框功能的导航装置及其操作方法">'
+        '<section itemprop="description"><div>本发明涉及导航装置。</div></section>'
+    )
+
+    class Response:
+        content = chinese_html.encode("utf-8")
+        text = content.decode("latin-1")
+
+    decoded = decode_google_patents_html_response(Response())
+    markdown = google_patents_html_to_markdown(decoded)
+
+    assert "具有相框功能的导航装置及其操作方法" in markdown
+    assert "本发明涉及导航装置" in markdown
+    assert "å" not in markdown
+
+
 def test_google_patents_html_to_markdown_keeps_full_description_section():
     markdown = google_patents_html_to_markdown(
         """
@@ -796,6 +824,28 @@ Claim 4: 請求項１ないし３のいずれか１項に記載の方法であ�
 
     assert claims[0]["is_independent"] is True
     assert [claim["dependency"] for claim in claims[1:]] == [1, 1, 1]
+
+
+def test_extract_foreign_claims_removes_ocr_markdown_wrappers_for_japanese_patent():
+    claims = extract_foreign_claims_from_text(
+        """
+CLAIMS
+Claim 1: 基準データを用いて計測値の変動を検知する装置。
+## 페이지 2
+![페이지 2](<images/page2.png>)
+### OCR 텍스트
+```text
+特許第1234567号 請求の範囲 第2頁
+Claim 2: 請求項１に記載の装置であって、警告を出力する装置。
+```
+"""
+    )
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2]
+    assert claims[1]["dependency"] == 1
+    assert all("페이지" not in claim["text"] for claim in claims)
+    assert all("OCR 텍스트" not in claim["text"] for claim in claims)
+    assert all("![" not in claim["text"] for claim in claims)
 
 
 def test_extract_foreign_claims_from_text_ignores_numbered_description_before_claims():
