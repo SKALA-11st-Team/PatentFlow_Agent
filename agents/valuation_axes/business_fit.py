@@ -380,7 +380,7 @@ def build_business_fit_quantitative_metrics(
     evidence: list[dict[str, Any]],
     patent_description: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    description = patent_description or build_business_fit_patent_description(state)
+    del patent_description
     official_site_items = [item for item in evidence if is_sk_ax_official_evidence(item)]
     owned_media_items = [
         item
@@ -392,7 +392,6 @@ def build_business_fit_quantitative_metrics(
         business_fit_keywords(state),
     )
     official_score = score_official_evidence_presence(official_site_items, owned_media_items)
-    product_score = score_product_function_direct_match(description, business_evidence_items)
     return {
         "official_evidence_count": len(official_site_items),
         "official_site_evidence_count": len(official_site_items),
@@ -400,7 +399,6 @@ def build_business_fit_quantitative_metrics(
         "business_evidence_count": len(business_evidence_items),
         "best_relevance_score": max((evidence_relevance_score(item) for item in business_evidence_items), default=0.0),
         "official_business_evidence": official_score,
-        "product_function_direct_match": product_score,
     }
 
 
@@ -445,199 +443,8 @@ def score_official_evidence_presence(
     }
 
 
-def score_product_function_direct_match(description: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
-    summary = build_product_function_match_summary(description, items)
-    product_level = summary["product_match_level"]
-    strong_ratio = summary["strong_core_match_ratio"]
-    if product_level == "direct" and strong_ratio >= 0.6:
-        score = 45
-        reason = "product_direct_and_most_core_functions_matched"
-        rationale = product_function_rationale(summary, "관련제품과 특허 핵심 기능 대부분이 SK AX 공식 evidence에서 직접 확인된다.")
-    elif product_level == "direct" and strong_ratio > 0:
-        score = 36
-        reason = "product_direct_and_some_core_functions_matched"
-        rationale = product_function_rationale(summary, "관련제품은 SK AX 공식 evidence에서 직접 확인되며 특허 핵심 기능 일부도 확인된다.")
-    elif product_level in {"direct", "partial"}:
-        score = 24
-        reason = "product_context_matched_but_core_functions_weak"
-        rationale = product_function_rationale(summary, "관련제품 또는 유사 제품/서비스 맥락은 확인되지만 특허 핵심 기능 직접 매칭은 약하다.")
-    elif product_level == "broad" or summary["area_matched"]:
-        score = 12
-        reason = "broad_business_context_only"
-        rationale = product_function_rationale(summary, "같은 산업 또는 사업군 수준의 연결은 있으나 제품명과 핵심 기능의 직접 연결은 확인되지 않는다.")
-    else:
-        score = 0
-        reason = "no_product_or_function_match"
-        rationale = product_function_rationale(summary, "제품/서비스 및 핵심 기능 연결이 확인되지 않는다.")
-    return {
-        "score": score,
-        "max_score": 45,
-        "rationale": rationale,
-        "score_reasons": [reason],
-        **summary,
-    }
-
-
-def build_product_function_match_summary(description: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
-    text = " ".join(evidence_text(item) for item in items).lower()
-    related_product = normalize_text(description.get("related_product"))
-    product_match_level = product_match_level_for(related_product, text)
-    core = extract_business_fit_core_terms(description)
-    strong_terms = core["strong_core_terms"]
-    matched_strong = [term for term in strong_terms if term.lower() in text]
-    core_terms = core["core_terms"]
-    matched_core = [term for term in core_terms if term.lower() in text]
-    product_match_evidence = evidence_refs_for_terms(items, [related_product]) if product_match_level == "direct" else []
-    matched_core_evidence = evidence_refs_for_terms(items, matched_strong[:3])
-    area_matched = any(
-        normalize_text(description.get(key)).lower() in text
-        for key in ("business_area", "technology_area")
-        if normalize_text(description.get(key)) and normalize_text(description.get(key)).lower() not in BROAD_TERMS
-    )
-    return {
-        "related_product": related_product,
-        "related_product_matched": product_match_level == "direct",
-        "product_match_level": product_match_level,
-        "core_terms": core_terms,
-        "matched_core_terms": matched_core,
-        "missing_core_terms": [term for term in core_terms if term not in matched_core],
-        "core_match_ratio": ratio(len(matched_core), len(core_terms)),
-        "strong_core_terms": strong_terms,
-        "matched_strong_core_terms": matched_strong,
-        "strong_core_match_ratio": ratio(len(matched_strong), len(strong_terms)),
-        "product_match_evidence": product_match_evidence,
-        "matched_core_evidence": matched_core_evidence,
-        "area_matched": area_matched,
-    }
-
-
-def product_function_rationale(summary: dict[str, Any], base: str) -> str:
-    parts = [base]
-    product = summary.get("related_product")
-    product_refs = summary.get("product_match_evidence") or []
-    if product and product_refs:
-        refs = ", ".join(ref["title"] for ref in product_refs[:2] if ref.get("title"))
-        parts.append(f"관련제품 '{product}'은 공식 evidence({refs})에서 확인된다.")
-    elif product:
-        parts.append(f"관련제품 '{product}'의 직접 언급은 공식 evidence에서 확인되지 않는다.")
-    matched = [term for term in summary.get("matched_strong_core_terms", []) if len(term) <= 40]
-    missing = [term for term in summary.get("missing_core_terms", []) if term not in {product} and len(term) <= 30]
-    if matched:
-        parts.append(f"확인된 핵심 기능/용어는 {', '.join(matched[:4])}이다.")
-    if missing:
-        parts.append(f"직접 확인되지 않은 핵심 기능/용어는 {', '.join(missing[:4])}이다.")
-    return " ".join(parts)
-
-
-def evidence_refs_for_terms(items: list[dict[str, Any]], terms: list[str]) -> list[dict[str, str]]:
-    refs: list[dict[str, str]] = []
-    for term in terms:
-        if not term:
-            continue
-        lowered = term.lower()
-        for item in items:
-            if lowered not in evidence_text(item).lower():
-                continue
-            ref = {
-                "evidence_id": normalize_text(item.get("evidence_id")),
-                "title": normalize_text(item.get("title")) or normalize_text(item.get("url")),
-                "url": normalize_text(item.get("url")),
-                "matched_term": term,
-            }
-            if ref not in refs:
-                refs.append(ref)
-            break
-    return refs[:5]
-
-
-# 핵심어 매칭(분모)을 오염시키는 noise. evidence 본문에 제품·기능어가 들어있나를 보는
-# substring 매칭이라, 아래 유형은 분모만 늘리고 매칭은 불가능해 ratio를 0쪽으로 끌어내린다.
-#  - 출원인 법인명(주식회사/Inc 등): 특허의 "핵심 기능"이 아니다.
-#  - 명세서 boilerplate(발명/실시예/도면 등): 의미 없는 상투어다.
-#  - 통문장(제목 등 여러 어절): evidence 본문에 그대로 박힐 일이 없어 영영 매칭되지 않는다.
-COMPANY_NAME_MARKERS = (
-    "주식회사", "(주)", "㈜", "유한회사",
-    " inc", " inc.", " corp", " corp.", " ltd", " ltd.", " co.", " co.,", " llc", " gmbh", " ag",
-)
-PATENT_BOILERPLATE_TERMS = {
-    "발명", "본발명", "실시예", "실시 예", "도면", "도면부호", "청구항", "명세서",
-    "출원", "특허", "기재", "수단", "단계", "구성", "구성요소",
-}
-MAX_CORE_TERM_WORDS = 3
-
-
-def is_noise_core_term(text: str, *, related_product: str = "") -> bool:
-    """핵심어로 부적절한 noise(법인명·boilerplate·통문장)면 True. 제품명 자체는 면제한다."""
-    if related_product and text == related_product:
-        return False
-    lowered = text.lower()
-    if any(marker in lowered for marker in COMPANY_NAME_MARKERS):
-        return True
-    base = strip_korean_particle(text)
-    if text in PATENT_BOILERPLATE_TERMS or base in PATENT_BOILERPLATE_TERMS:
-        return True
-    if base.startswith("실시예") or base.startswith("발명"):
-        return True
-    if len(text.split()) > MAX_CORE_TERM_WORDS:
-        return True
-    return False
-
-
-def extract_business_fit_core_terms(description: dict[str, Any]) -> dict[str, Any]:
-    related_product = normalize_text(description.get("related_product"))
-    raw_terms = [
-        related_product,
-        *(description.get("key_points") or []),
-        *(description.get("key_terms") or []),
-        *title_keyword_terms(first_text(description.get("title_final"), description.get("title"), description.get("title_draft")), limit=8),
-        *title_keyword_terms(description.get("solution_or_core_technology"), limit=4),
-        *title_keyword_terms(description.get("use_case_or_application"), limit=4),
-    ]
-    core_terms = []
-    weak_terms = []
-    for value in raw_terms:
-        text = normalize_core_term(value)
-        if not text or text in core_terms or is_stopword(text):
-            continue
-        if is_noise_core_term(text, related_product=related_product):
-            continue
-        if text.lower() in BROAD_TERMS or text in WEAK_TERMS:
-            weak_terms.append(text)
-            continue
-        core_terms.append(text)
-        if len(core_terms) >= 8:
-            break
-    return {
-        "core_terms": core_terms[:8],
-        "strong_core_terms": [term for term in core_terms if term != related_product][:6],
-        "weak_terms": unique_texts(weak_terms)[:6],
-    }
-
-
-def product_match_level_for(related_product: str, evidence_text_value: str) -> str:
-    if not related_product:
-        return "none"
-    product = related_product.lower()
-    if product in evidence_text_value:
-        return "direct"
-    tokens = [token.lower() for token in title_keyword_terms(related_product, limit=4) if not is_stopword(token)]
-    matched = [token for token in tokens if token in evidence_text_value and token.lower() not in BROAD_TERMS]
-    if matched:
-        return "partial"
-    return "none"
-
-
 def is_broad_or_weak_official_evidence(item: dict[str, Any]) -> bool:
     return is_insight_or_trend_page(item) or not is_concrete_business_page(item)
-
-
-def ratio(numerator: int, denominator: int) -> float:
-    return round(numerator / denominator, 3) if denominator else 0.0
-
-
-def normalize_core_term(value: Any) -> str:
-    text = strip_korean_particle(normalize_text(value).strip("()[]{}.,;:·"))
-    return "" if is_stopword(text) else text
 
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:

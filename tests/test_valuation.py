@@ -562,7 +562,6 @@ def test_business_fit_input_context_uses_summary_and_limited_official_evidence()
     assert metrics["official_evidence_count"] == 5
     assert metrics["official_business_evidence"]["score"] == 30
     assert metrics["official_business_evidence"]["max_score"] == 30
-    assert metrics["product_function_direct_match"]["max_score"] == 45
     assert "candidate_results" not in serialized
     assert "search_request_url" not in serialized
     assert "청구항 전체 원문은 들어가면 안 됨" not in serialized
@@ -658,9 +657,6 @@ def test_business_fit_quantitative_metrics_scores_rule_based_subscores_from_offi
     assert metrics["official_evidence_count"] == 2
     assert metrics["best_relevance_score"] == 0.72
     assert metrics["official_business_evidence"]["score"] == 24
-    assert metrics["product_function_direct_match"]["score"] == 36
-    assert metrics["product_function_direct_match"]["product_match_level"] == "direct"
-    assert "자산배분" in metrics["product_function_direct_match"]["matched_strong_core_terms"]
 
 
 def test_business_fit_quantitative_metrics_uses_sk_owned_media_as_lower_tier_evidence():
@@ -693,69 +689,6 @@ def test_business_fit_quantitative_metrics_uses_sk_owned_media_as_lower_tier_evi
 
     assert payload["business_fit_context"]["skax_official_evidence"] == []
     assert payload["business_fit_context"]["sk_owned_media_evidence"][0]["source_domain"] == "skcareersjournal.com"
-
-
-def test_business_fit_quantitative_metrics_limits_match_when_core_terms_are_missing():
-    from agents.valuation_axes.business_fit import build_business_fit_quantitative_metrics, title_keyword_terms
-
-    title = "상품 트렌드 예측을 반영한 강화학습 모델을 적용한 자산배분 시스템 및 방법"
-
-    assert title_keyword_terms(title, limit=6) == ["강화학습", "자산배분", "트렌드 예측", "상품 트렌드", "트렌드", "예측"]
-
-    state = PatentWorkflowState(
-        patent_structured={
-            "title_final": title,
-            "related_product": "로보어드바이저",
-            "business_area": "Data",
-            "technology_area": "데이터분석",
-        }
-    )
-    evidence = [
-        {
-            "evidence_id": f"skax_finance_{index}",
-            "source": "sk_ax_official",
-            "source_type": "company_disclosure",
-            "title": "로보어드바이저 금융 서비스",
-            "url": f"https://www.skax.co.kr/finance/{index}",
-            "content": "로보어드바이저 고객 업무 자동화 플랫폼 서비스",
-            "candidate_relevance_score": 0.92,
-        }
-        for index in range(3)
-    ]
-
-    metrics = build_business_fit_quantitative_metrics(state=state, evidence=evidence)
-
-    assert metrics["product_function_direct_match"]["score"] == 24
-    assert metrics["product_function_direct_match"]["missing_core_terms"]
-    assert metrics["product_function_direct_match"]["strong_core_match_ratio"] == 0.0
-
-
-def test_extract_business_fit_core_terms_drops_applicant_boilerplate_and_full_title_noise():
-    from agents.valuation_axes.business_fit import extract_business_fit_core_terms
-
-    # 실제 AccuInsight 케이스에서 strong_core_terms를 오염시키던 입력을 재현한다:
-    # 통문장(제목), 출원인 법인명(에스케이 주식회사/SK Inc), 명세서 boilerplate(발명/실시예).
-    description = {
-        "related_product": "AccuInsight Runtime",
-        "key_terms": [
-            "AI 모델 서빙 시스템 및 방법",   # 통문장(제목)
-            "에스케이 주식회사",             # 출원인 법인명(KR)
-            "SK Inc",                       # 출원인 법인명(EN)
-            "모델 서빙",                    # 살아남아야 할 진짜 기능어
-        ],
-        "solution_or_core_technology": "본 발명의 실시예에 따른 모델 배포 구성을 설명한다",
-    }
-
-    result = extract_business_fit_core_terms(description)
-    strong = result["strong_core_terms"]
-
-    # noise는 strong_core_terms에서 제외된다.
-    assert "AI 모델 서빙 시스템 및 방법" not in strong  # 통문장
-    assert "에스케이 주식회사" not in strong
-    assert "SK Inc" not in strong
-    assert not any(term in strong for term in ("발명", "실시예에", "실시예"))
-    # 진짜 기능어는 남는다.
-    assert "모델 서빙" in strong
 
 
 def test_business_fit_run_uses_llm_for_final_axis_json():
@@ -833,7 +766,6 @@ def test_business_fit_run_uses_llm_for_final_axis_json():
     assert captured_llm_calls[0]["prompt"] == "saved artifact prompt"
     assert captured_llm_calls[0]["evidence"][0]["evidence_id"] == "skax_finance_001"
     assert result["subscores"]["official_business_evidence"]["score"] == 16
-    assert result["subscores"]["product_function_direct_match"]["score"] == 36
     assert result["subscores"]["business_context_fit"]["score"] == 18
     assert "details" not in result["subscores"]["business_context_fit"]
     assert result["score"] == 70
