@@ -64,13 +64,14 @@ def build_summary_input_payload(*, state: PatentWorkflowState, summary_result: d
             "metadata": patent.get("metadata") or {},
             "sections": patent.get("sections") or {},
             "claim_stats": patent.get("claim_stats") or {},
+            # 요약이 청구항을 빠짐없이 반영하도록 전체 청구항을 전문으로 전달한다.
             "claims": [
                 {
                     "claim_no": claim.get("claim_no"),
-                    "text": str(claim.get("text") or "")[:1200],
+                    "text": str(claim.get("text") or ""),
                     "is_independent": claim.get("is_independent"),
                 }
-                for claim in (patent.get("claims") or [])[:5]
+                for claim in (patent.get("claims") or [])
             ],
         },
         "draft_summary": {

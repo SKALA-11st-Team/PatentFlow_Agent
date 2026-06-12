@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 STEP1_PROMPT_PATH = "valuation/patent_structuring_step1.md"
 STEP2_PROMPT_PATH = "valuation/patent_structuring_step2.md"
-COMPARISON_TARGET_COUNT = 5
+COMPARISON_TARGET_COUNT = 3
 MAX_STRUCTURING_WORKERS = 6
 
 

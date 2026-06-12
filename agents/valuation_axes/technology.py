@@ -18,7 +18,7 @@ from workflow.state import PatentWorkflowState
 AXIS = "technology"
 LABEL = "기술성"
 PROMPT_PATH = "valuation/valuation_technology.md"
-TECHNOLOGY_COMPARISON_TARGET_COUNT = 5
+TECHNOLOGY_COMPARISON_TARGET_COUNT = 3
 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:

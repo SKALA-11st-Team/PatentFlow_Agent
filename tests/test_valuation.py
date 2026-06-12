@@ -1626,8 +1626,6 @@ def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
         "KR-A",
         "JP-B",
         "1020200000001",
-        "1020200000002",
-        "1020200000003",
     ]
 
 
@@ -1656,7 +1654,7 @@ def test_technology_metrics_reuses_shared_prior_art_context(monkeypatch):
     metrics = technology.build_technology_metrics(state)
 
     assert metrics["selection_policy"] == "prior-art-only"
-    assert len(metrics["similar_patents"]) == 5
+    assert len(metrics["similar_patents"]) == 3
 
 
 def test_technology_metrics_payload_removes_duplicate_large_fields(monkeypatch):
@@ -1742,7 +1740,7 @@ def test_technology_metrics_prior_art_only_payload_omits_prior_art_duplicates(mo
     metrics = technology.build_technology_metrics(PatentWorkflowState())
 
     assert metrics["selection_policy"] == "prior-art-only"
-    assert len(metrics["similar_patents"]) == 5
+    assert len(metrics["similar_patents"]) == 3
     assert "prior_art_patents" not in metrics
     assert all("pdf_text_excerpt" not in item for item in metrics["similar_patents"])
 
