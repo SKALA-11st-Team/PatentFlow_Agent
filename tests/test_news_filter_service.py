@@ -71,6 +71,27 @@ def test_filter_news_evidence_keeps_when_no_patent_keywords():
     assert result["stats"]["kept_count"] == 1
 
 
+def test_filter_news_evidence_exempts_localized_foreign_news_from_keyword_match():
+    # 해외특허 현지어 뉴스(source=domestic_news)는 한국어 patent_keywords와 안 겹쳐도 폐기하지 않는다.
+    jp_news = {
+        "evidence_id": "news_jp",
+        "source_type": "news",
+        "source": "domestic_news",
+        "title": "半導体工程のCpkモニタリング技術",
+        "url": "https://example.jp/news",
+        "published_at": "2026-03-10T00:00:00+09:00",
+        "content": "FDCインターロックの発生頻度を測定し工程能力を監視する。",
+        "metadata": {"content_char_count": 40},
+    }
+    result = filter_news_evidence([jp_news], preprocessed_patent=PATENT, now=NOW)
+    assert result["stats"]["kept_count"] == 1
+    # 대조군: 동일 내용이 naver_news였다면 키워드 0건 매칭으로 폐기됐어야 한다.
+    kr_equivalent = {**jp_news, "source": "naver_news", "evidence_id": "news_kr"}
+    kr_result = filter_news_evidence([kr_equivalent], preprocessed_patent=PATENT, now=NOW)
+    assert kr_result["stats"]["kept_count"] == 0
+    assert kr_result["rejected"][0]["reason"] == "no_patent_keyword_match"
+
+
 def test_filter_keeps_news_with_missing_published_at():
     # EVID-06: 발행일이 없어도 관련 뉴스는 통과하고 published_at_missing 플래그가 붙는다.
     no_date = {**RELATED, "evidence_id": "news_nd", "url": "https://example.com/nodate"}
