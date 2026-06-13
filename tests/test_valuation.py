@@ -1731,13 +1731,14 @@ def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
         return {
             "comparison_mode": "prior-art",
             "candidate_count": 2,
+            "fulltext_count": 2,
             "similar_patents": [
-                {"display_number": "KR-A", "source_type": "prior_art"},
-                {"display_number": "JP-B", "source_type": "foreign_prior_art"},
+                {"display_number": "KR-A", "source_type": "prior_art", "pdf_text": "본문 A"},
+                {"display_number": "JP-B", "source_type": "foreign_prior_art", "pdf_text": "본문 B"},
             ],
             "prior_art_patents": [
-                {"display_number": "KR-A", "source_type": "prior_art"},
-                {"display_number": "JP-B", "source_type": "foreign_prior_art"},
+                {"display_number": "KR-A", "source_type": "prior_art", "pdf_text": "본문 A"},
+                {"display_number": "JP-B", "source_type": "foreign_prior_art", "pdf_text": "본문 B"},
             ],
             "warnings": [],
         }
@@ -1768,6 +1769,7 @@ def test_technology_metrics_always_prior_art_first_then_similar(monkeypatch):
 
     assert metrics["comparison_mode"] == "hybrid"
     assert metrics["selection_policy"] == "prior-art-first-then-similar"
+    # 전문 있는 선행문헌(KR-A, JP-B)이 앞, 부족분은 유사특허로 목표(3)까지 채운다.
     assert [item.get("display_number") or item.get("application_number") for item in metrics["similar_patents"]] == [
         "KR-A",
         "JP-B",
@@ -1786,10 +1788,11 @@ def test_technology_metrics_reuses_shared_prior_art_context(monkeypatch):
     state = PatentWorkflowState(
         prior_art_context={
             "comparison_mode": "prior-art",
-            "candidate_count": 5,
+            "candidate_count": 6,
+            "fulltext_count": 6,
             "similar_patents": [
-                {"display_number": f"JP-{index}", "source_type": "foreign_prior_art"}
-                for index in range(5)
+                {"display_number": f"JP-{index}", "source_type": "foreign_prior_art", "pdf_text": f"본문 {index}"}
+                for index in range(6)
             ],
             "prior_art_patents": [],
             "warnings": [],
@@ -3368,8 +3371,8 @@ def test_foreign_market_growth_reclassified_ipc_preserves_counts_and_flags_reaso
 
     monkeypatch.setattr(
         market,
-        "collect_classification_window_application_counts",
-        lambda representative_code, windows, use_ipc, country_code: [
+        "collect_foreign_ipc_window_counts",
+        lambda representative_ipc, country_code, windows: [
             {"label": "w1", "start_date": "2021-12-06", "end_date": "2022-12-05", "count": 0},
             {"label": "w2", "start_date": "2022-12-06", "end_date": "2023-12-05", "count": 0},
             {"label": "w3", "start_date": "2023-12-06", "end_date": "2024-12-05", "count": 0},

@@ -11,7 +11,7 @@ from agents.valuation_axes.payload_common import (
     build_claim_context,
     build_element_structure_payload,
 )
-from services.patent.prior_art_patent_service import build_prior_art_patent_context
+from services.patent.prior_art_patent_service import build_prior_art_patent_context, has_prior_art_fulltext
 from services.patent.similar_patent_service import build_similar_patent_context
 from workflow.state import PatentWorkflowState
 
@@ -255,6 +255,8 @@ def build_prior_art_context(
     metadata: dict[str, Any],
     kipris_api_data: dict[str, Any] | None,
     output_dir: Path | None,
+    home_country: str | None = None,
+    target_fulltext_count: int | None = TECHNOLOGY_COMPARISON_TARGET_COUNT,
 ) -> dict[str, Any]:
     try:
         return build_prior_art_patent_context(
@@ -263,6 +265,8 @@ def build_prior_art_context(
             collect_pdf=True,
             output_dir=output_dir,
             pdf_text_limit=None,
+            home_country=home_country,
+            target_fulltext_count=target_fulltext_count,
         )
     except Exception as exc:
         return {
@@ -290,10 +294,13 @@ def build_hybrid_context(
         metadata=metadata,
         kipris_api_data=kipris_api_data,
         output_dir=prior_art_dir,
+        home_country=country_code,
     )
     prior_items = list(prior_art.get("similar_patents") or [])
+    # 비교문헌은 전문(본문)이 있어야 쓸 수 있으므로, "후보 수"가 아니라 "전문 성공 수"로 충분 여부를 판정한다.
+    prior_fulltext_items = [item for item in prior_items if has_prior_art_fulltext(item)]
 
-    if len(prior_items) >= target_top_k:
+    if len(prior_fulltext_items) >= target_top_k:
         return {
             "comparison_mode": "hybrid",
             "selection_policy": "prior-art-only",
@@ -301,7 +308,7 @@ def build_hybrid_context(
             "representative_ipc": representative_ipc,
             "country_code": country_code,
             "candidate_count": int(prior_art.get("candidate_count") or 0),
-            "similar_patents": compact_comparison_items(prior_items[:target_top_k]),
+            "similar_patents": compact_comparison_items(prior_fulltext_items[:target_top_k]),
             "target_count": target_top_k,
             "warnings": list(prior_art.get("warnings") or []),
         }
@@ -313,8 +320,9 @@ def build_hybrid_context(
         country_code=country_code,
         output_dir=similar_dir,
     )
+    # 부족분만 CPC/IPC 유사특허로 채운다. 전문 있는 선행문헌을 앞에 두고, 그다음 유사특허.
     hybrid_items = merge_hybrid_items(
-        prior_items=prior_items,
+        prior_items=prior_fulltext_items,
         similar_items=list(similar.get("similar_patents") or []),
         target_count=target_top_k,
     )

@@ -246,12 +246,15 @@ def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
     artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
     output_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
     try:
+        home_country = str((state.patent_structured or {}).get("country") or "").strip().upper() or None
         state.prior_art_context = build_prior_art_patent_context(
             target_metadata=metadata,
             kipris_api_data=state.kipris_api_data,
             collect_pdf=bool(output_dir),
             output_dir=output_dir,
             pdf_text_limit=None,
+            home_country=home_country,
+            target_fulltext_count=COMPARISON_TARGET_COUNT if output_dir else None,
         )
     except Exception as exc:
         state.prior_art_context = {

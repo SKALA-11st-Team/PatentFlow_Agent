@@ -31,6 +31,7 @@ PAT_UTI_REST_SERVICE_PATH = "/openapi/rest/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
 OVERSEAS_PATENT_SERVICE_PATH = "/openapi/rest/ForeignPatentBibliographicService"
 OVERSEAS_IMAGE_FULLTEXT_SERVICE_PATH = "/openapi/rest/ForeignPatentImageAndFullTextService"
+OVERSEAS_ADVANCED_SEARCH_SERVICE_PATH = "/openapi/rest/ForeignPatentAdvencedSearchService"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
 CITATION_SERVICE_PATH = "/openapi/rest/CitationService"
 CITING_SERVICE_PATH = "/openapi/rest/CitingService"
@@ -357,9 +358,47 @@ class KiprisClient:
         ]
 
     def search_by_ipc(self, ipc_number: str, **params: Any) -> dict[str, Any]:
-        """IPC 검색 - ipcSearchInfo"""
+        """IPC 검색 - ipcSearchInfo.
+
+        search_by_cpc와 동일하게 /openapi/rest/ 경로 + accessKey 인증을 써야 한다. 기본 경로
+        (/kipo-api/kipi/ + ServiceKey)로는 INVALID_REQUEST_PARAMETER로 실패한다.
+        """
         params.update({"ipcNumber": ipc_number})
-        return self.request("ipcSearchInfo", params)
+        return self.request(
+            "ipcSearchInfo",
+            params,
+            service_path=PAT_UTI_REST_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
+    def count_foreign_patents_by_ipc_opendate(
+        self,
+        ipc_number: str,
+        country_code: str,
+        open_date_start: str,
+        open_date_end: str,
+    ) -> int:
+        """해외특허 IPC + 공개일자(OPD) 범위로 해당 국가 공개 특허 건수를 센다.
+
+        ForeignPatentAdvencedSearchService/advancedSearch는 `free` 쿼리에
+        `IPC=[코드] AND OPD=[YYYYMMDD~YYYYMMDD]` 문법으로 IPC와 공개일자 범위를 동시에 걸 수
+        있고, totalSearchCount로 구간 건수를 바로 돌려준다(ipcSearch는 날짜 필터가 없어 불가).
+        IPC는 공백을 제거해야 한다(`G16H 50/70` → `G16H50/70`).
+        """
+        ipc = re.sub(r"\s+", "", str(ipc_number or ""))
+        free_query = f"IPC=[{ipc}] AND OPD=[{open_date_start}~{open_date_end}]"
+        raw = self.request(
+            "advancedSearch",
+            {"free": free_query, "collectionValues": country_code, "currentPage": 1},
+            service_path=OVERSEAS_ADVANCED_SEARCH_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+        items = ((raw.get("response") or {}).get("body") or {}).get("items") or {}
+        total = items.get("totalSearchCount") if isinstance(items, dict) else None
+        try:
+            return int(str(total).strip())
+        except (TypeError, ValueError):
+            return 0
 
     def search_by_cpc(self, cpc_number: str, **params: Any) -> dict[str, Any]:
         """CPC 검색 - cpcSearchInfo"""

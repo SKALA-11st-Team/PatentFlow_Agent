@@ -232,6 +232,13 @@ def fetch_foreign_patent_rights_data(
             f"foreign_bibliography_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
         )
     result.update(fetch_foreign_target_reference_data(client, candidates, patent=patent))
+    # 해외 인용(citation_documents)에서 prior_art 목록을 채운다. 국내 경로(normalize_kipris_citations)는
+    # metadata["prior_art"]를 채우지만 해외 경로는 비워두던 탓에 비교문헌 빌드 게이트가 막혀 있었다.
+    result["metadata"]["prior_art"] = [
+        item["display_number"]
+        for item in (result.get("citation_documents") or [])
+        if isinstance(item, dict) and item.get("display_number")
+    ]
     if country in {"US", "JP", "CN"}:
         claims, used_literature_number = fetch_foreign_target_claims(client, candidates)
     else:
@@ -2041,10 +2048,14 @@ def normalize_foreign_reference_documents(raw: Any, *, source: str, direction: s
     for item in iter_foreign_reference_items(raw):
         if not isinstance(item, dict):
             continue
-        country_code = first_mapping_value(item, ("countryCode", "CountryCode", "citationCountryCode", "documentCountryCode"))
+        # KIPRIS 해외 인용 API(usPatentDocuments/foreignPatentDocuments)는 인용 선행문헌 번호를
+        # `corgPatno`(Cited ORiGinal PATent No)로, 국가를 `cntryCodeLink`(자국)·`countryCode`(타국)로,
+        # 공개일을 `patDt`로 준다. 이 필드명을 빠뜨려 번호가 전부 null로 떨어지던 것을 보완한다.
+        country_code = first_mapping_value(item, ("countryCode", "CountryCode", "cntryCodeLink", "cntryCode", "citationCountryCode", "documentCountryCode"))
         document_number = first_mapping_value(
             item,
             (
+                "corgPatno",
                 "literatureNumber",
                 "LiteratureNumber",
                 "documentNumber",
@@ -2057,7 +2068,7 @@ def normalize_foreign_reference_documents(raw: Any, *, source: str, direction: s
         )
         kind_code = first_mapping_value(item, ("kindCode", "KindCode", "publicationKindCode", "PublicationKindCode"))
         title = first_mapping_value(item, ("inventionTitle", "title", "Title", "documentTitle"))
-        publication_date = first_mapping_value(item, ("publicationDate", "PublicationDate", "openDate", "OpenDate"))
+        publication_date = first_mapping_value(item, ("publicationDate", "PublicationDate", "openDate", "OpenDate", "patDt"))
         if not (country_code or document_number or title):
             continue
         documents.append(

@@ -232,12 +232,22 @@ def build_market_growth_metrics(
 
     windows = market_growth_windows()
     try:
-        counts = collect_classification_window_application_counts(
-            representative_code,
-            windows=windows,
-            use_ipc=use_ipc,
-            country_code=country_code,
-        )
+        if use_ipc and country_code:
+            # 해외특허: ForeignPatentAdvencedSearchService/advancedSearch로 IPC+공개일자 범위별
+            # 해당 국가 공개 건수를 구간당 1회 호출로 직접 받는다(국내 ipc/cpcSearchInfo는 해당
+            # 국가 특허를 못 세므로 사용하지 않는다).
+            counts = collect_foreign_ipc_window_counts(
+                representative_code,
+                country_code=country_code,
+                windows=windows,
+            )
+        else:
+            counts = collect_classification_window_application_counts(
+                representative_code,
+                windows=windows,
+                use_ipc=use_ipc,
+                country_code=country_code,
+            )
     except Exception as exc:
         detail = scrub_secrets(normalize_text(exc))
         reason = f"kipris_search_failed:{exc.__class__.__name__}"
@@ -316,6 +326,44 @@ def missing_market_growth(reason: str, windows: list[dict[str, Any]]) -> dict[st
         "market_growth_score": None,
         "missing_reason": reason,
     }
+
+
+def collect_foreign_ipc_window_counts(
+    representative_ipc: str,
+    *,
+    country_code: str,
+    windows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """해외특허: 대표 IPC + 공개일자(OPD) 범위로 해당 국가 공개 특허 건수를 구간별로 센다.
+
+    KIPRIS ForeignPatentAdvencedSearchService/advancedSearch가 IPC+공개일자 범위를 동시에
+    받아 totalSearchCount를 돌려주므로, 3개 1년 구간을 각각 1회 호출해 건수를 받는다.
+    """
+    from open_api.kipris_client import KiprisClient
+
+    target_windows = windows or market_growth_windows()
+    if not target_windows:
+        return []
+    client = KiprisClient()
+    counts: list[dict[str, Any]] = []
+    for window in target_windows:
+        start_date = window["start_date"]
+        end_date = window["end_date"]
+        count = client.count_foreign_patents_by_ipc_opendate(
+            representative_ipc,
+            country_code,
+            start_date.strftime("%Y%m%d"),
+            end_date.strftime("%Y%m%d"),
+        )
+        counts.append(
+            {
+                "label": window["label"],
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "count": count,
+            }
+        )
+    return counts
 
 
 def collect_classification_window_application_counts(

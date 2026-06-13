@@ -1,4 +1,6 @@
+import services.patent.prior_art_patent_service as prior_art_service
 from services.patent.prior_art_patent_service import (
+    build_prior_art_patent_context,
     collect_prior_art_candidates,
     prior_art_legal_content_from_markdown,
     resolve_prior_art_candidate,
@@ -74,6 +76,102 @@ def test_collect_prior_art_candidates_excludes_kind_code_digits_from_kr_document
     assert by_display["KR102311787 B1"]["kind_code"] == "B1"
     assert by_display["KR1020210131720 A"]["standard_number"] == "1020210131720"
     assert by_display["KR1020210131720 A"]["kind_code"] == "A"
+
+
+def test_collect_prior_art_candidates_ranks_home_country_first():
+    citation_documents = [
+        {"display_number": "EP3550568 A1", "country_code": "EP", "kind_code": "A1"},
+        {"display_number": "US2006053172 A1", "country_code": "US", "kind_code": "A1"},
+        {"display_number": "JP2018123456 A", "country_code": "JP", "kind_code": "A"},
+        {"display_number": "US9999999 B2", "country_code": "US", "kind_code": "B2"},
+    ]
+
+    candidates = collect_prior_art_candidates(
+        target_metadata={},
+        citation_documents=citation_documents,
+        home_country="US",
+    )
+    order = [candidate["display_number"] for candidate in candidates]
+
+    # 자국(US) 인용이 앞으로, 그중 등록(B kind)이 공개(A kind)보다 먼저
+    assert order[0] == "US9999999 B2"
+    assert order[1] == "US2006053172 A1"
+    assert order.index("US2006053172 A1") < order.index("EP3550568 A1")
+    assert order.index("US2006053172 A1") < order.index("JP2018123456 A")
+
+
+def test_collect_prior_art_candidates_defaults_home_country_to_kr():
+    citation_documents = [
+        {"display_number": "US9999999 B2", "country_code": "US", "kind_code": "B2"},
+        {"display_number": "KR102284539 B1", "country_code": "KR", "kind_code": "B1"},
+    ]
+
+    candidates = collect_prior_art_candidates(
+        target_metadata={},
+        citation_documents=citation_documents,
+    )
+    order = [candidate["display_number"] for candidate in candidates]
+
+    assert order[0] == "KR102284539 B1"
+
+
+def test_build_prior_art_context_stops_after_target_fulltext(monkeypatch):
+    # 짝수 번호 후보만 전문 확보 성공한다고 가정 → 목표 3건 채우면 더 시도하지 않아야 한다.
+    citation_documents = [
+        {"display_number": f"US{index}", "country_code": "US", "kind_code": "B2"}
+        for index in range(10)
+    ]
+    attempts: list[str] = []
+
+    def fake_resolve(candidate, *, output_dir, collect_pdf, text_limit):
+        display = candidate.get("display_number")
+        attempts.append(display)
+        index = int(display.removeprefix("US"))
+        item = {"display_number": display, "_warnings": []}
+        if index % 2 == 0:
+            item["pdf_text"] = f"본문 {display}"
+        return item
+
+    monkeypatch.setattr(prior_art_service, "resolve_prior_art_candidate", fake_resolve)
+
+    context = build_prior_art_patent_context(
+        target_metadata={},
+        kipris_api_data={"citation_documents": citation_documents},
+        collect_pdf=True,
+        target_fulltext_count=3,
+        home_country="US",
+    )
+
+    assert context["fulltext_count"] == 3
+    # US0, US2, US4 에서 3건 성공 → US4까지(앞에서부터 5건) 시도하고 멈춤. 10건 전부 시도하지 않음.
+    assert attempts == ["US0", "US1", "US2", "US3", "US4"]
+
+
+def test_build_prior_art_context_attempt_cap_when_fulltext_scarce(monkeypatch):
+    # 전문이 전혀 안 잡히면 안전장치(max_resolution_attempts)까지만 시도하고 멈춘다.
+    citation_documents = [
+        {"display_number": f"EP{index}", "country_code": "EP", "kind_code": "A1"}
+        for index in range(20)
+    ]
+    attempts: list[str] = []
+
+    def fake_resolve(candidate, *, output_dir, collect_pdf, text_limit):
+        attempts.append(candidate.get("display_number"))
+        return {"display_number": candidate.get("display_number"), "_warnings": []}
+
+    monkeypatch.setattr(prior_art_service, "resolve_prior_art_candidate", fake_resolve)
+
+    context = build_prior_art_patent_context(
+        target_metadata={},
+        kipris_api_data={"citation_documents": citation_documents},
+        collect_pdf=True,
+        target_fulltext_count=6,
+        max_resolution_attempts=8,
+        home_country="EP",
+    )
+
+    assert context["fulltext_count"] == 0
+    assert len(attempts) == 8
 
 
 def test_resolve_foreign_prior_art_collects_registration_fulltext(monkeypatch, tmp_path):

@@ -24,6 +24,17 @@ from services.patent.markdown_preprocess_service import (
 
 DEFAULT_PRIOR_ART_TOP_K = 5
 
+# 전문 성공 목표를 채우기 위해 자국 우선 순서로 인용을 순회할 때, 다운로드를 시도하는 최대 후보 수.
+# (전문 다운로드는 네트워크/OCR 비용이 크므로 무한 순회를 막는 안전장치)
+PRIOR_ART_MAX_RESOLUTION_ATTEMPTS = 15
+
+
+def has_prior_art_fulltext(item: dict[str, Any]) -> bool:
+    """비교문헌으로 쓸 수 있는 전문(본문)이 확보됐는지 판정한다."""
+    if not isinstance(item, dict):
+        return False
+    return bool(str(item.get("pdf_text") or item.get("pdf_text_excerpt") or "").strip())
+
 
 def build_prior_art_patent_context(
     *,
@@ -33,25 +44,53 @@ def build_prior_art_patent_context(
     collect_pdf: bool = False,
     output_dir: str | Path | None = None,
     pdf_text_limit: int | None = None,
+    home_country: str | None = None,
+    target_fulltext_count: int | None = None,
+    max_resolution_attempts: int = PRIOR_ART_MAX_RESOLUTION_ATTEMPTS,
 ) -> dict[str, Any]:
     citation_documents = list((kipris_api_data or {}).get("citation_documents") or [])
-    prior_art_candidates = collect_prior_art_candidates(target_metadata=target_metadata, citation_documents=citation_documents)
+    prior_art_candidates = collect_prior_art_candidates(
+        target_metadata=target_metadata,
+        citation_documents=citation_documents,
+        home_country=home_country,
+    )
     warnings: list[str] = []
 
     if not prior_art_candidates:
         return {
             "comparison_mode": "prior-art",
             "candidate_count": 0,
+            "fulltext_count": 0,
             "similar_patents": [],
             "prior_art_patents": [],
             "warnings": ["prior_art_candidates_not_found"],
         }
 
-    selected_candidates = prior_art_candidates if top_k is None else prior_art_candidates[:top_k]
-    resolved = [
-        resolve_prior_art_candidate(candidate, output_dir=Path(output_dir) if output_dir else None, collect_pdf=collect_pdf, text_limit=pdf_text_limit)
-        for candidate in selected_candidates
-    ]
+    output_path = Path(output_dir) if output_dir else None
+
+    if collect_pdf and target_fulltext_count:
+        # 자국 우선 순서대로 순회하며 전문 성공 건수가 목표(target_fulltext_count)에 도달하면 멈춘다.
+        # 앞쪽 후보가 전문 확보에 실패해도 뒤 후보로 계속 시도하므로 [:top_k] 고정 컷의 누락을 없앤다.
+        attempt_cap = min(len(prior_art_candidates), max(max_resolution_attempts, target_fulltext_count))
+        resolved: list[dict[str, Any]] = []
+        fulltext_count = 0
+        for candidate in prior_art_candidates[:attempt_cap]:
+            item = resolve_prior_art_candidate(
+                candidate, output_dir=output_path, collect_pdf=collect_pdf, text_limit=pdf_text_limit
+            )
+            resolved.append(item)
+            if has_prior_art_fulltext(item):
+                fulltext_count += 1
+                if fulltext_count >= target_fulltext_count:
+                    break
+    else:
+        selected_candidates = prior_art_candidates if top_k is None else prior_art_candidates[:top_k]
+        resolved = [
+            resolve_prior_art_candidate(candidate, output_dir=output_path, collect_pdf=collect_pdf, text_limit=pdf_text_limit)
+            for candidate in selected_candidates
+        ]
+        fulltext_count = sum(1 for item in resolved if has_prior_art_fulltext(item))
+
     warnings.extend(
         warning
         for item in resolved
@@ -60,29 +99,60 @@ def build_prior_art_patent_context(
     return {
         "comparison_mode": "prior-art",
         "candidate_count": len(prior_art_candidates),
+        "fulltext_count": fulltext_count,
         "similar_patents": resolved,
         "prior_art_patents": resolved,
         "warnings": warnings,
     }
 
 
-def collect_prior_art_candidates(*, target_metadata: dict[str, Any], citation_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _rank_prior_art_citations(citation_documents: list[dict[str, Any]], home_country: str | None) -> list[dict[str, Any]]:
+    """자국(대상국) 인용을 앞으로 정렬한다.
+
+    자국 문헌은 KIPRIS 본문/전문 다운로드 성공률이 높아 비교문헌 확보에 유리하므로
+    표준화·등록 여부와 함께 자국 우선으로 정렬한다. home_country 미지정 시 KR을 자국으로 본다.
+    """
+    home = (normalize_text(home_country) or "KR").upper()
+
+    def _key(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        kind = str(item.get("kind_code") or "").upper()
+        country = str(item.get("country_code") or "").upper()
+        return (
+            0 if item.get("is_standardized") else 1,
+            0 if kind.startswith("B") else 1,
+            0 if country == home else 1,
+            str(item.get("display_number") or ""),
+        )
+
+    return sorted(citation_documents, key=_key)
+
+
+def collect_prior_art_candidates(
+    *,
+    target_metadata: dict[str, Any],
+    citation_documents: list[dict[str, Any]],
+    home_country: str | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen = set()
 
-    for citation in citation_documents:
+    for citation in _rank_prior_art_citations(citation_documents, home_country):
         display_number = normalize_text(citation.get("display_number"))
         if not display_number or display_number in seen:
             continue
         seen.add(display_number)
+        # 해외 인용(normalize_foreign_reference_documents)은 번호를 standard_number가 아닌 document_number로 준다.
+        # 해외 전문 다운로드(_foreign_literature_number_candidates)가 document_number를 읽으므로 함께 보존한다.
+        document_number = normalize_text(citation.get("document_number"))
         items.append(
             {
                 "display_number": display_number,
                 "source": "kipris_citation",
                 "country_code": normalize_text(citation.get("country_code")),
                 "kind_code": normalize_text(citation.get("kind_code")),
-                "standard_number": normalize_digits(citation.get("standard_number")),
-                "original_number": normalize_text(citation.get("original_number")),
+                "standard_number": normalize_digits(citation.get("standard_number") or document_number),
+                "document_number": document_number,
+                "original_number": normalize_text(citation.get("original_number")) or document_number,
                 "citation_type_names": list(citation.get("citation_type_names") or []),
                 "publication_date": normalize_text(citation.get("publication_date")),
                 "is_standardized": bool(citation.get("is_standardized")),
