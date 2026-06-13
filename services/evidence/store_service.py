@@ -14,6 +14,7 @@ from schemas.evidence import Evidence
 DEFAULT_API_EVIDENCE_DIR = settings.output_dir / "api_evidence"
 DEFAULT_FILTERED_EVIDENCE_DIR = settings.output_dir / "filtered_evidence"
 DEFAULT_SKAX_SEARCH_DIR = settings.output_dir / "skax_site_search"
+DEFAULT_QUERY_DIAGNOSTICS_DIR = settings.output_dir / "query_diagnostics"
 
 
 def now_iso() -> str:
@@ -147,6 +148,38 @@ def save_skax_site_search_result(
     directory = Path(output_dir)
     directory.mkdir(parents=True, exist_ok=True)
     filename = f"{safe_filename(str(patent_id) if patent_id is not None else 'unknown')}_skax_site_search.json"
+    path = directory / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def save_external_search_diagnostics(
+    *,
+    patent_id: str | int | None,
+    diagnostics: dict[str, Any],
+    output_dir: Path | str = DEFAULT_QUERY_DIAGNOSTICS_DIR,
+) -> Path:
+    """외부 뉴스 검색의 쿼리/태스크/경고 메타를 별도 artifact로 저장한다."""
+    payload = {
+        "source_type": "query_diagnostics",
+        "source": "external_search",
+        "patent_id": str(patent_id) if patent_id is not None else None,
+        "collected_at": now_iso(),
+        "ko_queries": diagnostics.get("ko_queries", []),
+        "en_queries": diagnostics.get("en_queries", []),
+        "selected_ko_queries": diagnostics.get("queries", []),
+        "selected_en_queries": diagnostics.get("gnews_queries", []),
+        "rewrite_meta": diagnostics.get("rewrite_meta", {}),
+        "warnings": diagnostics.get("warnings", []),
+        "attempted_calls": diagnostics.get("attempted_calls"),
+        "failed_calls": diagnostics.get("failed_calls"),
+        "gateway_unreachable": diagnostics.get("gateway_unreachable"),
+        "missing_reason": diagnostics.get("missing_reason"),
+        "saved_collections": diagnostics.get("saved_collections", []),
+    }
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = f"{safe_filename(str(patent_id) if patent_id is not None else 'unknown')}_external_search.json"
     path = directory / filename
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path

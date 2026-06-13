@@ -169,6 +169,16 @@ def collect_external_evidence(
     sources: list[list[dict[str, Any]]] = []
     saved_paths: list[str] = []
     warnings: list[str] = []
+    rewrite_meta = {
+        **rewrite_meta,
+        "debug_include_naver": include_naver,
+        "debug_include_gnews": include_gnews,
+        "debug_include_kipris": include_kipris,
+        "debug_ko_queries_generated": ko_queries,
+        "debug_en_queries_generated": en_queries,
+        "debug_selected_ko_queries": selected_queries,
+        "debug_selected_en_queries": selected_gnews_queries,
+    }
     # EXT-03: 게이트웨이(:8080) 호출 시도/실패 횟수를 추적한다. 모든 시도가 실패하면 게이트웨이
     # 미기동·미도달로 간주해 '증거 0건'을 조용히 통과시키지 않고 hard-surface(missing_reason)한다.
     attempted_calls = 0
@@ -179,6 +189,8 @@ def collect_external_evidence(
     # 태스크 수·실패 수로 동일하게 보존한다. sources/warnings/saved_paths는 순서 무관이라 병렬 안전.
     fetch_tasks: list[dict[str, Any]] = []
     if include_naver:
+        if not selected_queries:
+            warnings.append("naver_news_skipped:no_ko_queries_selected")
         for query in selected_queries:
             fetch_tasks.append({
                 "fetch": lambda q=query: request_json(
@@ -194,6 +206,8 @@ def collect_external_evidence(
                 "warn_prefix": f"naver_news call failed for query '{query}'",
             })
     if include_gnews:
+        if not selected_gnews_queries:
+            warnings.append("global_news_skipped:no_en_queries_selected")
         # GNews 대체: 글로벌 뉴스는 게이트웨이 대신 Tavily(topic=news)를 직접 호출한다.
         for gnews_query in selected_gnews_queries:
             fetch_tasks.append({
@@ -222,6 +236,11 @@ def collect_external_evidence(
         })
 
     attempted_calls = len(fetch_tasks)
+    rewrite_meta["debug_fetch_task_sources"] = [task["source"] for task in fetch_tasks]
+    rewrite_meta["debug_fetch_task_queries"] = [
+        {"source": task["source"], "query": task["query"]}
+        for task in fetch_tasks
+    ]
 
     def _run_fetch_task(task: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -239,9 +258,19 @@ def collect_external_evidence(
                     patent_id=patent_id,
                     output_dir=output_dir or settings.output_dir / "api_evidence",
                 ))
-            return {"items": items, "saved": saved, "warning": None}
+            empty_warning = None
+            if task["source"] == "naver_news" and not items:
+                empty_warning = f"naver_news_empty_results:query='{task['query']}'"
+            if task["source"] == "global_news" and not items:
+                empty_warning = f"global_news_empty_results:query='{task['query']}'"
+            return {"items": items, "saved": saved, "warning": None, "empty_warning": empty_warning}
         except requests.RequestException as exc:
-            return {"items": None, "saved": None, "warning": f"{task['warn_prefix']}: {exc}"}
+            return {
+                "items": None,
+                "saved": None,
+                "warning": f"{task['warn_prefix']}: {exc}",
+                "empty_warning": None,
+            }
 
     if fetch_tasks:
         max_workers = max(1, min(len(fetch_tasks), settings.evidence_fetch_concurrency))
@@ -255,6 +284,8 @@ def collect_external_evidence(
                 sources.append(outcome["items"])
                 if outcome["saved"]:
                     saved_paths.append(outcome["saved"])
+                if outcome["empty_warning"]:
+                    warnings.append(outcome["empty_warning"])
 
     merged = merge_evidence_sources(sources, prefix="api")
     quality = annotate_evidence_quality(merged, preprocessed_patent=preprocessed_patent)
@@ -350,6 +381,10 @@ def ensure_related_product_query(
         ),
         None,
     )
+    if not product_query and not queries:
+        # Naver News가 완전히 비는 상황은 시장성 축을 과도하게 약화시키므로,
+        # 재검색 라운드에서 이전 쿼리와 중복되더라도 최소 1개의 제품명 기반 한국어 검색어는 유지한다.
+        product_query = candidates[0]
     if not product_query:
         return queries, False
 
