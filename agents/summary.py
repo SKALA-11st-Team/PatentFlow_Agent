@@ -7,6 +7,7 @@ from app.config import settings
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 from services.observability.langsmith_service import trace
+from services.evidence.compression_service import parse_json_object
 from workflow.state import PatentWorkflowState
 
 
@@ -31,6 +32,10 @@ def run_summary_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     }
     summary_body = run_summary_llm_required(state, summary_result)
     summary_result["summary_markdown"] = build_complete_summary_markdown(patent, summary_body)
+    summary_result["summary_brief"] = run_summary_brief_llm_required(
+        state,
+        summary_markdown=summary_result["summary_markdown"],
+    )
     state.summary_result = summary_result
     state.current_stage = "summary_check"
     return state
@@ -54,6 +59,37 @@ def run_summary_llm_required(state: PatentWorkflowState, summary_result: dict[st
 def build_summary_prompt(*, state: PatentWorkflowState, summary_result: dict[str, Any]) -> str:
     template = load_prompt("summary/summary.md").strip()
     payload = build_summary_input_payload(state=state, summary_result=summary_result)
+    return f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
+
+
+def run_summary_brief_llm_required(
+    state: PatentWorkflowState,
+    *,
+    summary_markdown: str,
+) -> dict[str, Any]:
+    raw = call_llm(
+        build_summary_brief_prompt(state=state, summary_markdown=summary_markdown),
+        model=settings.openai_writing_model,
+        reasoning_effort=settings.openai_writing_reasoning_effort,
+        verbosity=settings.openai_writing_verbosity,
+        timeout=settings.openai_writing_timeout_seconds,
+    ).strip()
+    parsed = parse_json_object(raw)
+    if parsed is None:
+        raise RuntimeError("LLM summary brief response was not valid JSON.")
+    return validate_summary_brief(parsed)
+
+
+def build_summary_brief_prompt(
+    *,
+    state: PatentWorkflowState,
+    summary_markdown: str,
+) -> str:
+    template = load_prompt("summary/summary_brief.md").strip()
+    payload = {
+        "summary_markdown": summary_markdown,
+        "patent_structures": build_summary_structure_payload(state),
+    }
     return f"{template}\n\nInput JSON:\n{json.dumps(payload, ensure_ascii=False, indent=2)}"
 
 
@@ -132,6 +168,64 @@ def build_complete_summary_markdown(patent: dict[str, Any], body_markdown: str |
         ]
         if section.strip()
     )
+
+
+def validate_summary_brief(value: dict[str, Any]) -> dict[str, Any]:
+    brief = {
+        "one_line_summary": normalize_brief_sentence(value.get("one_line_summary")),
+        "problem": normalize_brief_sentence(value.get("problem")),
+        "core_idea": normalize_brief_sentence(value.get("core_idea")),
+        "key_components": normalize_brief_list(value.get("key_components"), minimum=3, maximum=6),
+        "operation_steps": normalize_brief_list(value.get("operation_steps"), minimum=3, maximum=5),
+        "expected_effect": normalize_brief_sentence(value.get("expected_effect")),
+    }
+    missing = [key for key, item in brief.items() if not item]
+    if missing:
+        raise RuntimeError(f"LLM summary brief missing required fields: {', '.join(missing)}")
+    return brief
+
+
+def normalize_brief_sentence(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip()
+
+
+def normalize_brief_list(value: Any, *, minimum: int, maximum: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items = [normalize_brief_sentence(item) for item in value]
+    items = [item for item in items if item][:maximum]
+    return items if len(items) >= minimum else []
+
+
+def build_summary_brief_markdown(brief: dict[str, Any]) -> str:
+    lines = [
+        "# 특허 이해 요약",
+        "",
+        "## 한 줄 요약",
+        "",
+        brief["one_line_summary"],
+        "",
+        "## 해결하려는 문제",
+        "",
+        brief["problem"],
+        "",
+        "## 핵심 아이디어",
+        "",
+        brief["core_idea"],
+        "",
+        "## 주요 기술/구성",
+        "",
+        *[f"- {item}" for item in brief["key_components"]],
+        "",
+        f"## 작동 방식 {len(brief['operation_steps'])}단계",
+        "",
+        *[f"{index}. {item}" for index, item in enumerate(brief["operation_steps"], 1)],
+        "",
+        "## 기대 효과",
+        "",
+        brief["expected_effect"],
+    ]
+    return "\n".join(lines)
 
 
 def build_summary_basic_info_markdown(patent: dict[str, Any]) -> str:
