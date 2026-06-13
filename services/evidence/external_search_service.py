@@ -44,11 +44,13 @@ TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 
 def search_news_via_tavily(query: str, *, max_results: int, country: str | None = None) -> dict[str, Any]:
-    """Tavily(topic=news, 도메인 제한 없음)로 뉴스를 검색한다.
+    """Tavily로 뉴스를 검색한다.
 
-    country가 None이면 국가 제한 없이 전세계 뉴스를 가져온다(글로벌 사업성). country가
-    주어지면(해외특허 domestic 채널) 해당 국가로 한정해 현지 뉴스를 가져온다. 최근 기간은
-    뉴스 필터(5년)와 정렬된 days 범위로 제한하고, 본문은 raw_content로 함께 수집한다.
+    country가 None이면 topic=news로 국가 제한 없이 전세계 뉴스를 가져온다(글로벌 사업성).
+    country가 주어지면(해외특허 domestic 채널) 해당 국가 현지 결과로 한정한다. Tavily의
+    `country` 파라미터는 topic=general에서만 동작하므로(문서상 "Available only if topic is
+    general"), country 지정 시 topic=general로 호출한다. 최근성은 다운스트림 뉴스 필터(5년)가
+    published_at 기준으로 거르고, 본문은 raw_content로 함께 수집한다.
     """
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
@@ -56,14 +58,17 @@ def search_news_via_tavily(query: str, *, max_results: int, country: str | None 
     payload: dict[str, Any] = {
         "api_key": api_key,
         "query": query,
-        "topic": "news",
         "search_depth": "basic",
         "max_results": max(1, int(max_results)),
         "include_raw_content": True,
-        "days": settings.tavily_news_max_age_days,
     }
     if country:
+        # country는 topic=general에서만 적용된다. days(news 전용)는 보내지 않는다.
+        payload["topic"] = "general"
         payload["country"] = country
+    else:
+        payload["topic"] = "news"
+        payload["days"] = settings.tavily_news_max_age_days
     response = requests.post(
         TAVILY_SEARCH_URL,
         json=payload,

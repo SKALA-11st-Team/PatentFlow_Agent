@@ -59,11 +59,15 @@ def test_search_news_via_tavily_adds_country_only_when_given(monkeypatch):
 
     search_news_via_tavily("japanese ai factory", max_results=3, country="japan")
     assert captured["payload"]["country"] == "japan"
-    assert captured["payload"]["topic"] == "news"
+    # country는 Tavily에서 topic=general일 때만 동작하므로 country 지정 시 general로 호출한다.
+    assert captured["payload"]["topic"] == "general"
+    assert "days" not in captured["payload"]
 
     captured.clear()
     search_news_via_tavily("global ai factory", max_results=3, country=None)
     assert "country" not in captured["payload"]
+    assert captured["payload"]["topic"] == "news"
+    assert "days" in captured["payload"]
 
 
 def test_normalize_tavily_news_response_tags_domestic_source_and_country():

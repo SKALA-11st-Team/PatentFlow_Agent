@@ -186,5 +186,11 @@ def dedupe_key(item: dict[str, Any]) -> str:
 
 
 def safe_filename(value: str) -> str:
-    safe = re.sub(r"[^0-9a-zA-Z가-힣._-]+", "_", value).strip("_")
-    return safe or "unknown"
+    # 특정 언어만 허용하던 allowlist는 중국어·일본어는 물론 아랍어·태국어·데바나가리(결합표시)
+    # 등을 `_`로 날려 파일명을 깨거나 충돌시켰다. allowlist 대신 파일시스템에 위험한 문자
+    # (경로 구분자·예약문자·제어문자·공백)만 `_`로 치환하는 denylist로 바꿔, 모든 언어의 글자를
+    # 그대로 보존한다.
+    safe = re.sub(r'[\s/\\:*?"<>|\x00-\x1f]+', "_", value).strip("_")
+    if safe in ("", ".", ".."):
+        return "unknown"
+    return safe
