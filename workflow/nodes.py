@@ -538,7 +538,7 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.search_queries = compact_workflow_queries(
         [
             *state.search_queries,
-            *rewritten.get("ko", []),
+            *rewritten.get("domestic", []),
             *rewritten.get("en", []),
             *rewritten.get("industry_rag", []),
             *rewritten.get("skax_site", []),
@@ -546,7 +546,7 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
     )
     state.query_plan = {
         "source": "query_rewriting",
-        "ko_queries": rewritten.get("ko", []),
+        "domestic_queries": rewritten.get("domestic", []),
         "en_queries": rewritten.get("en", []),
         "industry_rag_queries": rewritten.get("industry_rag", []),
         "skax_site_queries": rewritten.get("skax_site", []),
@@ -588,7 +588,7 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             # 해외특허는 domestic 채널을 Tavily(country=대상국, 현지어)로 대체한다.
             is_foreign=bool(query_plan.get("is_foreign")),
             domestic_country=query_plan.get("domestic_country"),
-            ko_queries_override=query_plan.get("ko_queries") or None,
+            domestic_queries_override=query_plan.get("domestic_queries") or None,
             en_queries_override=query_plan.get("en_queries") or None,
             output_dir=artifact_subdir(state, "api_evidence"),
             save=not no_save,
@@ -668,7 +668,7 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.evidence_bundle = evidence_items
     state.query_plan = {
         **query_plan,
-        "selected_ko_queries": result.get("queries", []),
+        "selected_domestic_queries": result.get("queries", []),
         "selected_en_queries": result.get("gnews_queries", []),
         "search_warnings": result.get("warnings", []),
         "news_filter": {

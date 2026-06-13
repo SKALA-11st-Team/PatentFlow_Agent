@@ -1324,7 +1324,7 @@ def query_plan_payload(query_plan: dict[str, Any]) -> dict[str, Any]:
     industry_rag = query_plan.get("industry_rag") or {}
     compressed = query_plan.get("compressed_evidence") or {}
     news_filter = query_plan.get("news_filter") or {}
-    ko_queries = search_queries.get("ko") or search_queries.get("korean") or []
+    ko_queries = search_queries.get("domestic") or search_queries.get("ko") or search_queries.get("korean") or []
     en_queries = search_queries.get("en") or search_queries.get("english") or []
     return {
         "available": bool(query_plan),

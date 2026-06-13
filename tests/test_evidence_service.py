@@ -174,7 +174,7 @@ def test_query_rewriting_fails_when_llm_is_disabled():
 def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
     def fake_llm_rewrite_search_queries(**kwargs):
         return {
-            "ko": ["금융 데이터 전처리 AI", "기준금리 발표 시장 변동성", "에스케이 주식회사 금융데이터"],
+            "domestic": ["금융 데이터 전처리 AI", "기준금리 발표 시장 변동성", "에스케이 주식회사 금융데이터"],
             "en": ["financial data preprocessing", "market volatility AI"],
             "industry_rag": ["웰스테크 AI 에이전트 디지털 자문"],
             "skax_site": ["로보어드바이저 금융 자산관리"],
@@ -196,8 +196,8 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
         use_llm=True,
     )
 
-    assert len(rewritten["ko"]) <= MAX_SEARCH_QUERIES
-    assert any("MarketCaster" in query for query in rewritten["ko"])
+    assert len(rewritten["domestic"]) <= MAX_SEARCH_QUERIES
+    assert any("MarketCaster" in query for query in rewritten["domestic"])
     assert rewritten["industry_rag"] == ["웰스테크 AI 에이전트 디지털 자문"]
     # skax_site는 LLM 변형만 담는다(제품명 그대로 검색어는 build_query_generation_plan의
     # rule-based 후보가 담당하므로 여기서 따로 주입하지 않는다).
@@ -211,7 +211,7 @@ def test_query_rewriting_parses_industry_rag_queries():
     parsed = parse_query_rewrite_response(
         json.dumps(
             {
-                "ko": ["AI 투자 서비스"],
+                "domestic": ["AI 투자 서비스"],
                 "en": ["ai investing"],
                 "industry_rag": [
                     "웰스테크 AI 에이전트 디지털 자문",
@@ -237,7 +237,7 @@ def test_query_rewriting_parses_industry_rag_queries():
 def test_llm_query_rewriting_includes_owner_and_joint_applicant_queries(monkeypatch):
     def fake_llm_rewrite_search_queries(**kwargs):
         return {
-            "ko": ["CMP 패드 자동 적재", "CMP 패드 커팅 에이징 자동화", "CMP 패드 트레이 셔틀"],
+            "domestic": ["CMP 패드 자동 적재", "CMP 패드 커팅 에이징 자동화", "CMP 패드 트레이 셔틀"],
             "en": ["CMP pad automatic loading", "wafer polishing pad handling"],
         }
 
@@ -260,9 +260,9 @@ def test_llm_query_rewriting_includes_owner_and_joint_applicant_queries(monkeypa
         use_llm=True,
     )
 
-    assert any("에스케이 주식회사" in query for query in rewritten["ko"])
-    assert any("한주반도체" in query for query in rewritten["ko"])
-    assert any("CMP Pad" in query for query in rewritten["ko"])
+    assert any("에스케이 주식회사" in query for query in rewritten["domestic"])
+    assert any("한주반도체" in query for query in rewritten["domestic"])
+    assert any("CMP Pad" in query for query in rewritten["domestic"])
     assert rewritten["meta"]["owner_query_enforced"] is True
     assert rewritten["meta"]["joint_applicant_query_enforced"] is True
 
@@ -313,7 +313,7 @@ def test_collect_external_evidence_fills_gnews_queries(monkeypatch, tmp_path):
         include_naver=False,
         include_gnews=True,
         include_kipris=False,
-        ko_queries_override=[],
+        domestic_queries_override=[],
         en_queries_override=["reinforcement learning finance", "AI asset allocation"],
         query_limit_per_axis=MAX_SEARCH_QUERIES,
         fetch_news_full_text=False,
@@ -359,7 +359,7 @@ def test_collect_external_evidence_searches_news_queries_concurrently(monkeypatc
         include_naver=True,
         include_gnews=False,
         include_kipris=False,
-        ko_queries_override=["스마트팩토리 레이아웃", "제조 자동화"],
+        domestic_queries_override=["스마트팩토리 레이아웃", "제조 자동화"],
         en_queries_override=[],
         query_limit_per_axis=2,
         fetch_news_full_text=False,
@@ -396,7 +396,7 @@ def test_collect_external_evidence_uses_configured_news_results_per_query(monkey
         patent_id=1,
         include_naver=True,
         include_gnews=True,
-        ko_queries_override=["대화형 AI 챗봇"],
+        domestic_queries_override=["대화형 AI 챗봇"],
         en_queries_override=["conversational AI chatbot"],
         query_limit_per_axis=1,
         fetch_news_full_text=False,
@@ -531,7 +531,7 @@ def test_collect_external_evidence_hard_surfaces_gateway_failure(monkeypatch, tm
         include_naver=True,
         include_gnews=True,
         include_kipris=False,
-        ko_queries_override=["대화형 AI 챗봇"],
+        domestic_queries_override=["대화형 AI 챗봇"],
         en_queries_override=["conversational AI chatbot"],
         query_limit_per_axis=1,
         fetch_news_full_text=False,
@@ -564,7 +564,7 @@ def test_collect_external_evidence_empty_results_not_flagged_as_gateway_failure(
         include_naver=True,
         include_gnews=True,
         include_kipris=False,
-        ko_queries_override=["대화형 AI 챗봇"],
+        domestic_queries_override=["대화형 AI 챗봇"],
         en_queries_override=["conversational AI chatbot"],
         query_limit_per_axis=1,
         fetch_news_full_text=False,
@@ -642,7 +642,7 @@ def test_rewrite_search_queries_falls_back_when_llm_raises(monkeypatch):
     assert rewritten["meta"]["rewrite_source"] == "fallback"
     assert "RuntimeError" in rewritten["meta"]["llm_error"]
     # ensure_* 인젝터가 제품명 기반 결정적 쿼리를 채워 degraded 수집이 가능해야 한다.
-    assert any("MarketCaster" in query for query in rewritten["ko"])
+    assert any("MarketCaster" in query for query in rewritten["domestic"])
 
 
 # AG-03: 외부 응답 형태 드리프트(normalize 단계 TypeError 등)가 수집 실패로 집계될 뿐
@@ -663,7 +663,7 @@ def test_collect_external_evidence_survives_malformed_source_payload(monkeypatch
 
     result = collect_external_evidence(
         preprocessed_patent={"metadata": {"title": "테스트 특허"}, "sections": {"abstract": "초록"}},
-        ko_queries_override=["테스트 쿼리"],
+        domestic_queries_override=["테스트 쿼리"],
         en_queries_override=[],
         include_gnews=False,
         include_kipris=False,

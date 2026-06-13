@@ -111,7 +111,7 @@ def test_collect_external_evidence_foreign_routes_domestic_to_tavily(monkeypatch
         include_kipris=False,
         is_foreign=True,
         domestic_country="japan",
-        ko_queries_override=["スマート工場 ai"],
+        domestic_queries_override=["スマート工場 ai"],
         en_queries_override=[],
         query_limit_per_axis=1,
         fetch_news_full_text=False,
@@ -142,7 +142,7 @@ def test_collect_external_evidence_domestic_kr_still_uses_gateway(monkeypatch):
         include_kipris=False,
         is_foreign=False,
         domestic_country=None,
-        ko_queries_override=["스마트팩토리 자동화"],
+        domestic_queries_override=["스마트팩토리 자동화"],
         en_queries_override=[],
         query_limit_per_axis=1,
         fetch_news_full_text=False,
@@ -159,7 +159,7 @@ def test_rewrite_search_queries_foreign_skips_korean_postprocessing(monkeypatch)
     def fake_llm_rewrite(**kwargs):
         captured.update(kwargs)
         return {
-            "ko": ["スマート工場 予知保全", "製造 自動化 ai"],
+            "domestic": ["スマート工場 予知保全", "製造 自動化 ai"],
             "en": ["smart factory", "predictive maintenance"],
             "industry_rag": [],
             "skax_site": [],
@@ -183,7 +183,7 @@ def test_rewrite_search_queries_foreign_skips_korean_postprocessing(monkeypatch)
     # 현지어 라벨이 LLM에 전달된다.
     assert captured["domestic_language"] == "Japanese"
     # 한국어 전용 후처리(제품명 `… 시장 동향`, 회사명 쿼리)는 스킵 → ko가 LLM 출력 그대로.
-    assert rewritten["ko"] == ["スマート工場 予知保全", "製造 自動化 ai"]
+    assert rewritten["domestic"] == ["スマート工場 予知保全", "製造 自動化 ai"]
     assert rewritten["meta"]["product_query_enforced"] is False
     assert rewritten["meta"]["owner_query_enforced"] is False
 

@@ -116,7 +116,7 @@ def rewrite_search_queries(
         llm_result = {}
         llm_error = llm_error or "InvalidRewriteResult: LLM 재작성 결과가 객체가 아님"
 
-    rewritten_ko = [query for query in compact_queries(llm_result.get("ko") or [])[:MAX_SEARCH_QUERIES] if query not in previous]
+    rewritten_domestic = [query for query in compact_queries(llm_result.get("domestic") or [])[:MAX_SEARCH_QUERIES] if query not in previous]
     rewritten_en = [query for query in compact_queries(llm_result.get("en") or [])[:MAX_SEARCH_QUERIES] if query not in previous]
 
     product_query_enforced = False
@@ -124,13 +124,13 @@ def rewrite_search_queries(
     if not is_foreign:
         # 한국어 전용 후처리(제품명 `… 시장 동향`, 회사명 쿼리)는 국내(KR) domestic 채널에만
         # 적용한다. 해외특허 domestic 채널은 현지어 쿼리이므로 한국어 접미사 주입을 스킵한다.
-        rewritten_ko, product_query_enforced = ensure_related_product_query(
-            rewritten_ko,
+        rewritten_domestic, product_query_enforced = ensure_related_product_query(
+            rewritten_domestic,
             preprocessed_patent,
             previous,
         )
-        rewritten_ko, company_query_meta = ensure_applicant_context_queries(
-            rewritten_ko,
+        rewritten_domestic, company_query_meta = ensure_applicant_context_queries(
+            rewritten_domestic,
             preprocessed_patent,
             previous,
         )
@@ -148,7 +148,7 @@ def rewrite_search_queries(
     )
 
     return {
-        "ko": rewritten_ko,
+        "domestic": rewritten_domestic,
         "en": rewritten_en,
         "industry_rag": rewritten_industry_rag,
         "skax_site": rewritten_skax_site,
@@ -176,15 +176,15 @@ def collect_external_evidence(
     missing_evidence: list[str] | None = None,
     previous_queries: list[str] | None = None,
     use_llm_rewrite: bool = True,
-    ko_queries_override: list[str] | None = None,
+    domestic_queries_override: list[str] | None = None,
     en_queries_override: list[str] | None = None,
     fetch_news_full_text: bool = settings.fetch_news_full_text,
     output_dir: Path | str | None = None,
     save: bool = True,
 ) -> dict[str, Any]:
     rewrite_meta: dict[str, Any]
-    if ko_queries_override is not None or en_queries_override is not None:
-        ko_queries = compact_queries(ko_queries_override or [])[:MAX_SEARCH_QUERIES]
+    if domestic_queries_override is not None or en_queries_override is not None:
+        domestic_queries = compact_queries(domestic_queries_override or [])[:MAX_SEARCH_QUERIES]
         en_queries = enforce_english_queries(en_queries_override or [])
         rewrite_meta = {"rewrite_source": "precomputed", "llm_error": None}
     else:
@@ -194,11 +194,11 @@ def collect_external_evidence(
             previous_queries=previous_queries,
             use_llm=use_llm_rewrite,
         )
-        ko_queries = rewritten["ko"]
+        domestic_queries = rewritten["domestic"]
         en_queries = rewritten["en"]
         rewrite_meta = rewritten.get("meta") or {}
     safe_limit = max(1, int(query_limit_per_axis))
-    selected_queries = ko_queries[:safe_limit]
+    selected_queries = domestic_queries[:safe_limit]
     selected_gnews_queries = en_queries[:safe_limit]
     news_results_per_query = max(1, int(settings.news_results_per_query))
 
@@ -330,7 +330,7 @@ def collect_external_evidence(
         )
 
     return {
-        "ko_queries": ko_queries,
+        "domestic_queries": domestic_queries,
         "en_queries": en_queries,
         "queries": selected_queries,
         "gnews_queries": selected_gnews_queries,
@@ -725,9 +725,9 @@ def parse_query_rewrite_response(raw: str) -> dict[str, list[str]] | None:
     if not isinstance(parsed, dict):
         return None
 
-    result: dict[str, list[str]] = {"ko": [], "en": [], "industry_rag": [], "skax_site": []}
+    result: dict[str, list[str]] = {"domestic": [], "en": [], "industry_rag": [], "skax_site": []}
     limits = {
-        "ko": MAX_SEARCH_QUERIES,
+        "domestic": MAX_SEARCH_QUERIES,
         "en": MAX_SEARCH_QUERIES,
         "industry_rag": MAX_INDUSTRY_RAG_QUERIES,
         "skax_site": MAX_SEARCH_QUERIES,
