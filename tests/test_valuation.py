@@ -1443,6 +1443,53 @@ def test_market_select_evidence_keeps_all_market_evidence():
     assert [item["evidence_id"] for item in selected] == [f"news_{index}" for index in range(1, 9)]
 
 
+# AG-01(EVID-02 복원): KIPRIS 경쟁특허 근거가 권리성·기술성 축에는 들어가고
+# 시장성 축에는 들어가지 않는다(시장성은 뉴스 기반 경쟁 신호를 따로 가짐).
+def _competitor_patent_evidence():
+    return [
+        {
+            "evidence_id": "kipris_1",
+            "source_type": "competitor_patent",
+            "source": "kipris",
+            "title": "경쟁 특허",
+            "compressed_summary": "경쟁 특허 초록",
+        },
+        {
+            "evidence_id": "news_1",
+            "source_type": "news",
+            "source": "naver_news",
+            "title": "시장 뉴스",
+        },
+    ]
+
+
+def test_legal_select_evidence_includes_competitor_patent():
+    from agents.valuation_axes.legal import select_evidence
+
+    evidence = _competitor_patent_evidence()
+    selected = select_evidence(evidence, PatentWorkflowState(evidence_bundle=evidence))
+
+    assert [item["evidence_id"] for item in selected] == ["kipris_1"]
+
+
+def test_technology_select_evidence_includes_competitor_patent():
+    from agents.valuation_axes.technology import select_evidence
+
+    evidence = _competitor_patent_evidence()
+    selected = select_evidence(evidence, PatentWorkflowState(evidence_bundle=evidence))
+
+    assert [item["evidence_id"] for item in selected] == ["kipris_1"]
+
+
+def test_market_select_evidence_excludes_competitor_patent():
+    from agents.valuation_axes.market import select_evidence
+
+    evidence = _competitor_patent_evidence()
+    selected = select_evidence(evidence, PatentWorkflowState(evidence_bundle=evidence))
+
+    assert [item["evidence_id"] for item in selected] == ["news_1"]
+
+
 def test_foreign_market_select_evidence_prioritizes_named_industry_reports():
     from agents.valuation_axes.market import select_evidence
 

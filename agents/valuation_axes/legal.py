@@ -202,9 +202,10 @@ def coerce_int(value: Any) -> int | None:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     del state
+    # AG-01(EVID-02 복원): KIPRIS 경쟁특허 근거를 권리성 축에 포함 — 경쟁 출원 지형/권리 중복 맥락.
     return select_by_source_types(
         items,
-        source_types={"portfolio_context", "patent_api", "prior_art", "citation"},
+        source_types={"portfolio_context", "patent_api", "prior_art", "citation", "competitor_patent"},
     )
 
 

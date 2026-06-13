@@ -11,14 +11,50 @@ def test_select_compression_candidates_keeps_news_and_high_score_rag():
         {"evidence_id": "rag_high", "source_type": "industry_report", "score": 0.5, "context": "청크"},
         {"evidence_id": "rag_low", "source_type": "industry_report", "score": 0.49, "context": "청크"},
         {"evidence_id": "disclosure_1", "source_type": "company_disclosure", "content": "공시"},
+        {"evidence_id": "kipris_1", "source_type": "competitor_patent", "content": "경쟁특허 초록"},
     ]
 
-    candidates, skipped = select_compression_candidates(items, rag_score_threshold=0.5)
+    candidates, skipped, passthrough = select_compression_candidates(items, rag_score_threshold=0.5)
 
     # company_disclosure(SK AX 공식 근거)도 이제 압축 후보에 포함된다.
     assert [item["evidence_id"] for item in candidates] == ["news_1", "rag_high", "disclosure_1"]
     assert skipped["low_rag_score"] == 1
+    # AG-01: 경쟁특허는 non_target으로 버리지 않고 패스스루한다.
     assert skipped["non_target"] == 0
+    assert [item["evidence_id"] for item in passthrough] == ["kipris_1"]
+
+
+def test_compress_evidence_items_passes_competitor_patent_through_without_llm():
+    items = [
+        {
+            "evidence_id": "kipris_1",
+            "source_type": "competitor_patent",
+            "source": "kipris",
+            "title": "경쟁 특허",
+            "content": "경쟁 특허의 초록 본문",
+            "metadata": {"applicant": "경쟁사"},
+        },
+    ]
+    llm_calls = []
+
+    def fake_llm(prompt):
+        llm_calls.append(prompt)
+        return "{}"
+
+    result = compress_evidence_items(
+        items,
+        preprocessed_patent={"metadata": {"title": "테스트 특허"}, "sections": {"abstract": "초록"}},
+        llm=fake_llm,
+    )
+
+    assert llm_calls == []
+    assert result["stats"]["passthrough_count"] == 1
+    assert result["stats"]["skipped_non_target_count"] == 0
+    survivor = result["items"][0]
+    assert survivor["evidence_id"] == "kipris_1"
+    assert survivor["source_type"] == "competitor_patent"
+    # 축 프롬프트 페이로드가 content를 렌더링하지 않으므로 초록이 compressed_summary로 옮겨진다.
+    assert survivor["compressed_summary"] == "경쟁 특허의 초록 본문"
 
 
 def test_compress_evidence_items_normalizes_news_and_rag_shapes():

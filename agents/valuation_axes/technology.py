@@ -59,9 +59,10 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     del state
+    # AG-01(EVID-02 복원): KIPRIS 경쟁특허 근거를 기술성 축에 포함 — 인접 출원 대비 차별성 판단.
     return select_by_source_types(
         items,
-        source_types={"portfolio_context", "industry_report", "patent_api"},
+        source_types={"portfolio_context", "industry_report", "patent_api", "competitor_patent"},
     )
 
 
