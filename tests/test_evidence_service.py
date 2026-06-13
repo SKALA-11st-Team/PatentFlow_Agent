@@ -616,3 +616,59 @@ def test_save_skax_site_search_result_persists_queries_and_diagnostics(tmp_path)
     assert saved["items"][0]["evidence_id"] == "skax_site_001"
     assert saved["patent_id"] == "P123"
     assert path.name == "P123_skax_site_search.json"
+
+
+# AG-02: LLM 쿼리 재작성이 실패해도 평가가 500으로 죽지 않고 메타데이터 기반 폴백으로 진행된다.
+def test_rewrite_search_queries_falls_back_when_llm_raises(monkeypatch):
+    def broken_llm_rewrite(**kwargs):
+        raise RuntimeError("LLM query rewriting response was not valid JSON.")
+
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.llm_rewrite_search_queries",
+        broken_llm_rewrite,
+    )
+
+    rewritten = rewrite_search_queries(
+        {
+            "metadata": {
+                "title": "금융시장 데이터 전처리",
+                "related_product": "MarketCaster",
+            },
+            "sections": {"abstract": "금융 데이터 이상치를 탐지하고 전처리하는 기술"},
+        },
+        use_llm=True,
+    )
+
+    assert rewritten["meta"]["rewrite_source"] == "fallback"
+    assert "RuntimeError" in rewritten["meta"]["llm_error"]
+    # ensure_* 인젝터가 제품명 기반 결정적 쿼리를 채워 degraded 수집이 가능해야 한다.
+    assert any("MarketCaster" in query for query in rewritten["ko"])
+
+
+# AG-03: 외부 응답 형태 드리프트(normalize 단계 TypeError 등)가 수집 실패로 집계될 뿐
+# collect_external_evidence 전체를 던지게 하지 않는다.
+def test_collect_external_evidence_survives_malformed_source_payload(monkeypatch):
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.request_json",
+        lambda *args, **kwargs: {"items": None},
+    )
+
+    def broken_normalize(raw, *, query):
+        raise TypeError("'NoneType' object is not iterable")
+
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.normalize_naver_news_response",
+        broken_normalize,
+    )
+
+    result = collect_external_evidence(
+        preprocessed_patent={"metadata": {"title": "테스트 특허"}, "sections": {"abstract": "초록"}},
+        ko_queries_override=["테스트 쿼리"],
+        en_queries_override=[],
+        include_gnews=False,
+        include_kipris=False,
+        save=False,
+    )
+
+    assert result["items"] == []
+    assert any("naver_news call failed" in warning and "TypeError" in warning for warning in result["warnings"])

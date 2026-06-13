@@ -80,14 +80,26 @@ def rewrite_search_queries(
     if not use_llm:
         raise RuntimeError("LLM query rewriting is required, but use_llm is disabled.")
 
-    llm_result = llm_rewrite_search_queries(
-        preprocessed_patent=preprocessed_patent,
-        missing_evidence=missing_evidence or [],
-        previous_queries=previous_queries or [],
-        retry_count=retry_count,
-    )
-    rewritten_ko = [query for query in compact_queries(llm_result.get("ko", []))[:MAX_SEARCH_QUERIES] if query not in previous]
-    rewritten_en = [query for query in compact_queries(llm_result.get("en", []))[:MAX_SEARCH_QUERIES] if query not in previous]
+    # AG-02: LLM 재작성 실패(비-JSON 응답·네트워크 오류 등)가 평가 전체를 500으로 만들지 않도록
+    # 빈 결과로 폴백한다 — 아래 ensure_* 인젝터가 특허 메타데이터 기반 결정적 쿼리를 채워
+    # degraded 상태로도 수집을 계속한다. 실패 사유는 meta.llm_error로 남겨 추적 가능하게 한다.
+    llm_error: str | None = None
+    try:
+        llm_result = llm_rewrite_search_queries(
+            preprocessed_patent=preprocessed_patent,
+            missing_evidence=missing_evidence or [],
+            previous_queries=previous_queries or [],
+            retry_count=retry_count,
+        )
+    except Exception as exc:
+        llm_result = {}
+        llm_error = f"{exc.__class__.__name__}: {str(exc)[:200]}"
+    if not isinstance(llm_result, dict):
+        llm_result = {}
+        llm_error = llm_error or "InvalidRewriteResult: LLM 재작성 결과가 객체가 아님"
+
+    rewritten_ko = [query for query in compact_queries(llm_result.get("ko") or [])[:MAX_SEARCH_QUERIES] if query not in previous]
+    rewritten_en = [query for query in compact_queries(llm_result.get("en") or [])[:MAX_SEARCH_QUERIES] if query not in previous]
 
     rewritten_ko, product_query_enforced = ensure_related_product_query(
         rewritten_ko,
@@ -103,11 +115,11 @@ def rewrite_search_queries(
     rewritten_en = enforce_english_queries(rewritten_en)
     rewritten_industry_rag = [
         query
-        for query in compact_queries(llm_result.get("industry_rag", []))[:MAX_INDUSTRY_RAG_QUERIES]
+        for query in compact_queries(llm_result.get("industry_rag") or [])[:MAX_INDUSTRY_RAG_QUERIES]
         if query not in previous
     ]
     rewritten_skax_site = select_skax_rewrite_queries(
-        llm_result.get("skax_site", []),
+        llm_result.get("skax_site") or [],
         preprocessed_patent,
         previous,
     )
@@ -118,8 +130,8 @@ def rewrite_search_queries(
         "industry_rag": rewritten_industry_rag,
         "skax_site": rewritten_skax_site,
         "meta": {
-            "rewrite_source": "llm",
-            "llm_error": None,
+            "rewrite_source": "fallback" if llm_error else "llm",
+            "llm_error": llm_error,
             "product_query_enforced": product_query_enforced,
             **company_query_meta,
         },
@@ -240,8 +252,11 @@ def collect_external_evidence(
                     output_dir=output_dir or settings.output_dir / "api_evidence",
                 ))
             return {"items": items, "saved": saved, "warning": None}
-        except requests.RequestException as exc:
-            return {"items": None, "saved": None, "warning": f"{task['warn_prefix']}: {exc}"}
+        except Exception as exc:
+            # AG-03: 네트워크 오류(RequestException)만이 아니라 외부 응답 형태 드리프트로
+            # normalize/enrich가 던지는 TypeError·KeyError 등도 수집 실패로 집계한다 —
+            # 한 소스의 페이로드 변형이 평가 전체를 500으로 만들지 않게 한다(EXT-03 경고 의미 보존).
+            return {"items": None, "saved": None, "warning": f"{task['warn_prefix']}: {exc.__class__.__name__}: {exc}"}
 
     if fetch_tasks:
         max_workers = max(1, min(len(fetch_tasks), settings.evidence_fetch_concurrency))
