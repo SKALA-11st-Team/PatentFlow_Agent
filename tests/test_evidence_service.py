@@ -207,6 +207,41 @@ def test_llm_query_rewriting_keeps_one_related_product_query(monkeypatch):
     assert rewritten["meta"]["product_query_enforced"] is True
 
 
+def test_llm_query_rewriting_keeps_product_query_even_when_previous_queries_exhaust_ko(monkeypatch):
+    def fake_llm_rewrite_search_queries(**kwargs):
+        return {
+            "domestic": [],
+            "en": ["robo advisor asset allocation"],
+            "industry_rag": [],
+            "skax_site": [],
+        }
+
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.llm_rewrite_search_queries",
+        fake_llm_rewrite_search_queries,
+    )
+
+    rewritten = rewrite_search_queries(
+        {
+            "metadata": {
+                "title": "강화학습 기반 자산배분",
+                "related_product": "로보어드바이저",
+            },
+            "sections": {"abstract": "강화학습 기반 투자전략 생성"},
+        },
+        previous_queries=[
+            "로보어드바이저 시장 동향",
+            "로보어드바이저 기술 적용",
+            "로보어드바이저 기업 동향",
+            "로보어드바이저",
+        ],
+        use_llm=True,
+    )
+
+    assert rewritten["domestic"] == ["로보어드바이저 시장 동향"]
+    assert rewritten["meta"]["product_query_enforced"] is True
+
+
 def test_query_rewriting_parses_industry_rag_queries():
     parsed = parse_query_rewrite_response(
         json.dumps(

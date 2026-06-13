@@ -347,7 +347,7 @@ def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
     monkeypatch.setattr(
         "workflow.nodes.rewrite_search_queries",
         lambda **kwargs: {
-            "ko": ["AI 투자 서비스"],
+            "domestic": ["AI 투자 서비스"],
             "en": ["ai investing"],
             "industry_rag": ["웰스테크 AI 에이전트 디지털 자문"],
             "skax_site": ["site:skax.co.kr 로보어드바이저 금융"],
@@ -891,12 +891,12 @@ def test_evidence_search_node_uses_llm_rewrite_when_query_plan_lists_are_empty(m
         user_input={"no_save": True},
         patent_structured={"application_number": "10-2024-0000001"},
         preprocessed_patent={"metadata": {}, "sections": {}},
-        query_plan={"ko_queries": [], "en_queries": []},
+        query_plan={"domestic_queries": [], "en_queries": []},
     )
 
     evidence_search_node(state)
 
-    assert captured["ko_queries_override"] is None
+    assert captured["domestic_queries_override"] is None
     assert captured["en_queries_override"] is None
 
 

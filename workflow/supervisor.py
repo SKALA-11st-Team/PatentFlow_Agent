@@ -1324,15 +1324,30 @@ def query_plan_payload(query_plan: dict[str, Any]) -> dict[str, Any]:
     industry_rag = query_plan.get("industry_rag") or {}
     compressed = query_plan.get("compressed_evidence") or {}
     news_filter = query_plan.get("news_filter") or {}
-    ko_queries = search_queries.get("domestic") or search_queries.get("ko") or search_queries.get("korean") or []
-    en_queries = search_queries.get("en") or search_queries.get("english") or []
+    ko_queries = (
+        query_plan.get("selected_domestic_queries")
+        or query_plan.get("selected_ko_queries")
+        or search_queries.get("domestic")
+        or search_queries.get("ko")
+        or search_queries.get("korean")
+        or []
+    )
+    en_queries = (
+        query_plan.get("selected_en_queries")
+        or search_queries.get("en")
+        or search_queries.get("english")
+        or []
+    )
+    search_warnings = query_plan.get("search_warnings") or search_queries.get("warnings") or []
     return {
         "available": bool(query_plan),
         "ko_query_count": safe_len(ko_queries),
         "en_query_count": safe_len(en_queries),
         "selected_ko_queries": limit_list(ko_queries, 5),
         "selected_en_queries": limit_list(en_queries, 5),
-        "search_warnings": limit_list(search_queries.get("warnings"), 10),
+        "search_warnings": limit_list(search_warnings, 10),
+        "rewrite_meta": query_plan.get("rewrite_meta") or {},
+        "query_diagnostics_path": query_plan.get("query_diagnostics_path"),
         "news_filter": {
             "enabled": news_filter.get("enabled"),
             "kept_count": news_filter.get("kept_count"),

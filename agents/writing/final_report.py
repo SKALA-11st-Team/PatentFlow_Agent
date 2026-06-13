@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agents.valuation_axes.market import build_invention_market_linkage_context
 from app.config import settings
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
@@ -89,6 +90,7 @@ def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_re
     patent = {
         "metadata": final_report_patent_metadata(state),
         "summary_result": state.summary_result,
+        "invention_market_linkage_context": build_invention_market_linkage_context(state),
     }
     rights_scope_context = build_rights_scope_context(state)
     if rights_scope_context:

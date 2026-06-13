@@ -140,16 +140,18 @@ def test_final_report_prompt_uses_rights_scope_explanation_for_legal_axis():
     assert "아이디어 자체보다" not in final_report
 
 
-def test_market_prompt_uses_20_40_20_20_market_structure():
+def test_market_prompt_uses_20_20_20_20_20_market_structure():
     prompt = Path("prompts/valuation/valuation_market.md").read_text(encoding="utf-8")
 
-    assert "시장성 점수(100) = 산업 시장성(20) + 시장 성장성(40) + 글로벌 사업성(20) + 경쟁성(20)" in prompt
+    assert "시장성 점수(100) = 산업 시장성(20) + 시장 성장성(20) + 글로벌 사업성(20) + 경쟁성(20) + 발명-시장 연결성(20)" in prompt
     assert "`subscores.industry_marketability.score`는 0, 8, 20 중 하나" in prompt
     assert "`subscores.global_business.score`는 0, 8, 20 중 하나" in prompt
     assert "`subscores.competitiveness.score`는 0, 7, 13, 20 중 하나" in prompt
+    assert "`subscores.invention_market_linkage.score`는 0, 7, 13, 20 중 하나" in prompt
     assert "적용 분야 자체에 대한 시장 수요 또는 상용화 흐름이 확인되지만, 세부 기능 직접성은 약한 경우에는 0점보다 8점을 우선 검토" in prompt
     assert '"로보어드바이저", "자동화 서비스", "AI 솔루션"처럼 상위 서비스 범주의 존재만으로는 0점을 줄 수 없다.' in prompt
     assert "세부 기능 대체 여부가 기사만으로 명확하지 않으면 기본적으로 7점 또는 13점을 우선 검토" in prompt
+    assert "발명-시장 연결성" in prompt
 
 
 def test_run_valuation_agent_sets_result():
@@ -979,7 +981,7 @@ def test_business_fit_rubric_is_externalized_to_prompt_md():
     assert result["subscores"]["official_business_evidence"]["score"] == 24
 
 
-def test_market_score_helpers_apply_20_40_20_20_structure():
+def test_market_score_helpers_apply_20_20_20_20_20_structure():
     from datetime import date, datetime
 
     from agents.valuation_axes.market import (
@@ -997,13 +999,13 @@ def test_market_score_helpers_apply_20_40_20_20_structure():
         {"label": "2022-11-30~2023-11-29", "start_date": date(2022, 11, 30), "end_date": date(2023, 11, 29)},
         {"label": "2023-11-30~2024-11-29", "start_date": date(2023, 11, 30), "end_date": date(2024, 11, 29)},
     ]
-    assert score_cagr(0.16) == 25
-    assert score_cagr(0.1) == 20
-    assert score_cagr(0.05) == 15
-    assert score_cagr(0.01) == 10
+    assert score_cagr(0.16) == 10
+    assert score_cagr(0.1) == 8
+    assert score_cagr(0.05) == 6
+    assert score_cagr(0.01) == 4
     assert score_cagr(-0.01) == 0
-    assert score_recent_trend([10, 12, 15]) == ("continuous_increase", 15)
-    assert score_recent_trend([10, 8, 12]) == ("partial_increase", 8)
+    assert score_recent_trend([10, 12, 15]) == ("continuous_increase", 10)
+    assert score_recent_trend([10, 8, 12]) == ("partial_increase", 5)
     assert score_recent_trend([15, 12, 10]) == ("continuous_decrease", 0)
 
     result = apply_marketability_scores(
@@ -1013,17 +1015,18 @@ def test_market_score_helpers_apply_20_40_20_20_structure():
                 "industry_marketability": {"score": 20, "rationale": "산업 수요가 직접 연결된다."},
                 "global_business": {"score": 20, "rationale": "해외 적용 흐름이 직접 연결된다."},
                 "competitiveness": {"score": 13, "rationale": "부분 대체재만 확인된다."},
+                "invention_market_linkage": {"score": 13, "rationale": "발명의 해결과제가 시장 수요와 일부 직접 연결된다."},
             },
             "grade": "B",
             "missing_information": [],
             "confidence": 0.8,
         },
         {
-            "market_growth_score": 32,
+            "market_growth_score": 18,
         },
     )
 
-    assert result["score"] == 85
+    assert result["score"] == 84
     assert result["grade"] == "A"
     assert result["subscores"] == {
         "industry_marketability": {
@@ -1034,8 +1037,8 @@ def test_market_score_helpers_apply_20_40_20_20_structure():
         },
         "market_growth": {
             "label": "시장 성장성",
-            "score": 32,
-            "max_score": 40,
+            "score": 18,
+            "max_score": 20,
             "details": {
                 "cagr_score": None,
                 "trend_score": None,
@@ -1054,6 +1057,12 @@ def test_market_score_helpers_apply_20_40_20_20_structure():
             "max_score": 20,
             "rationale": "부분 대체재만 확인된다.",
         },
+        "invention_market_linkage": {
+            "label": "발명-시장 연결성",
+            "score": 13,
+            "max_score": 20,
+            "rationale": "발명의 해결과제가 시장 수요와 일부 직접 연결된다.",
+        },
     }
 
     result = apply_marketability_scores(
@@ -1066,13 +1075,14 @@ def test_market_score_helpers_apply_20_40_20_20_structure():
                 },
                 "global_business": {"score": 8, "rationale": "해외 직접 연결성은 약하다."},
                 "competitiveness": {"score": 20, "rationale": "대체재가 거의 없다."},
+                "invention_market_linkage": {"score": 7, "rationale": "시장 수요는 있으나 발명과의 직접 연결은 약하다."},
             },
             "grade": "B",
             "missing_information": [],
             "confidence": 0.8,
         },
         {
-            "market_growth_score": 40,
+            "market_growth_score": 20,
         },
     )
 
@@ -1084,8 +1094,9 @@ def test_market_score_helpers_apply_20_40_20_20_structure():
     }
     assert result["subscores"]["global_business"]["score"] == 8
     assert result["subscores"]["competitiveness"]["score"] == 20
+    assert result["subscores"]["invention_market_linkage"]["score"] == 7
     assert "industry_marketability_breakdown" not in result
-    assert result["score"] == 76
+    assert result["score"] == 63
     assert "market_score_cap_reason" not in result["marketability_metrics"]
 
     assert build_global_business_metrics(
@@ -1174,7 +1185,7 @@ def test_market_prompt_uses_18_month_lagged_three_window_activity():
     assert "최근 3개년 공개 활동성" not in prompt
     assert "`source`가 `global_news`인 해외 뉴스는 산업 시장성이 아니라 글로벌 사업성 근거로 우선 사용한다." in prompt
     assert "해당 국가를 제외한 해외 시장의 진출, 도입, 활용, 확산 흐름" in prompt
-    assert "시장성 점수(100) = 산업 시장성(20) + 시장 성장성(40) + 글로벌 사업성(20) + 경쟁성(20)" in prompt
+    assert "시장성 점수(100) = 산업 시장성(20) + 시장 성장성(20) + 글로벌 사업성(20) + 경쟁성(20) + 발명-시장 연결성(20)" in prompt
     assert "시장성 총점은 원칙적으로 55점을 넘기지 않는다" not in prompt
 
 
@@ -1200,7 +1211,7 @@ def test_technology_prompt_defines_evidence_comparison_and_zero_score_rules():
 def test_final_report_prompt_uses_gnews_for_global_business():
     prompt = Path("prompts/writing/final_report.md").read_text(encoding="utf-8")
 
-    assert "글로벌 적용성은 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 중심으로 설명하세요." in prompt
+    assert "글로벌 사업성은 해외 뉴스 근거에서 확인된 글로벌 시장 관심과 해외 적용 흐름을 중심으로 설명하세요." in prompt
     assert "글로벌 뉴스 기반 글로벌 시장 근거가 없다는 사실만으로 시장성이 낮다고 단정하지 마세요." in prompt
     assert "해외 Patent Family가 확인되지 않아 글로벌 사업성은 국내 단독 출원 기준으로 낮게 반영되었습니다." not in prompt
 
@@ -1215,6 +1226,7 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
                 "industry_marketability": {"score": 20, "rationale": "r"},
                 "global_business": {"score": 20, "rationale": "r"},
                 "competitiveness": {"score": 20, "rationale": "r"},
+                "invention_market_linkage": {"score": 20, "rationale": "r"},
             },
             "grade": "B",
             "missing_information": [],
@@ -1225,7 +1237,7 @@ def test_market_growth_missing_is_not_replaced_with_default_score():
         },
     )
 
-    assert result["score"] == 60
+    assert result["score"] == 80
     assert result["subscores"]["market_growth"]["score"] is None
     assert "CPC 기준 18개월 전 종료 3개 1년 구간 공개 특허 수 확인 필요" in result["missing_information"]
     assert result["confidence"] == 0.49
@@ -2182,7 +2194,11 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
             "business_area": "AI",
             "technology_area": "문서처리",
             "status": "등록",
+            "technology_field": "문서 처리 자동화",
+            "problem_to_solve": "문서 변환 정확도와 처리 효율을 높이는 것",
+            "core_application_functions": ["문서 변환", "자동 분류"],
         },
+        target_structure={"key_elements": [{"name": "변환 엔진", "role": "핵심 처리"}]},
         summary_result={"plain_summary": "특허 요약", "key_points": ["요약 포인트"]},
         evidence_bundle=[
             {
@@ -2287,6 +2303,14 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
     assert payload["patent"]["metadata"]["application_number"] == "10-2024-0000001"
     assert payload["patent"]["metadata"]["registration_number"] == "10-3000001"
     assert payload["patent"]["summary_result"]["plain_summary"] == "특허 요약"
+    assert payload["patent"]["invention_market_linkage_context"]["technology_field"] == "문서 처리 자동화"
+    assert payload["patent"]["invention_market_linkage_context"]["problem_to_solve"] == "문서 변환 정확도와 처리 효율을 높이는 것"
+    assert payload["patent"]["invention_market_linkage_context"]["core_application_functions"] == ["문서 변환", "자동 분류"]
+    assert payload["patent"]["invention_market_linkage_context"]["key_elements"] == [{"name": "변환 엔진", "role": "핵심 처리"}]
+    assert payload["patent"]["invention_market_linkage_context"]["direct_connection_hints"][:2] == [
+        "핵심 기능: 문서 변환",
+        "핵심 기능: 자동 분류",
+    ]
     for axis in ["legal", "technology", "market", "business_fit"]:
         assert payload["valuation_result"]["axes"][axis]["score"] == valuation_result["axes"][axis]["score"]
         assert payload["valuation_result"]["axes"][axis]["rationale"] == valuation_result["axes"][axis]["rationale"]
