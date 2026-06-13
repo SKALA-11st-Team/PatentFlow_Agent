@@ -279,9 +279,14 @@ class KiprisClient:
         return self.request("getAdvancedSearch", params)
 
     def search_by_application_number(self, application_number: str, **params: Any) -> dict[str, Any]:
-        """출원번호 검색 - applicationNumberSearchInfo"""
+        """출원번호 검색 - getAdvancedSearch(applicationNumber).
+
+        `applicationNumberSearchInfo` operation은 이 서비스 경로/키에서 INVALID_REQUEST_PARAMETER로
+        실패한다(존재하지 않는 operation). 전체검색 getAdvancedSearch에 applicationNumber를 넘기면
+        정상 동작하며(resultCode 00), 응답 shape도 extract_kipris_items가 이미 처리한다.
+        """
         params.update({"applicationNumber": application_number})
-        return self.request("applicationNumberSearchInfo", params)
+        return self.request("getAdvancedSearch", params)
 
     def bibliography_detail(self, application_number: str) -> dict[str, Any]:
         """서지상세정보 - getBibliographyDetailInfoSearch"""
