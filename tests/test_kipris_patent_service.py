@@ -932,7 +932,7 @@ def test_foreign_pdf_parse_falls_back_to_google_patents_pdf(monkeypatch, tmp_pat
         lambda url, **kwargs: tmp_path / kwargs["filename"],
     )
 
-    def fake_parse(pdf_path, *, output_dir):
+    def fake_parse(pdf_path, *, output_dir, country=None):
         parse_calls.append(str(pdf_path))
         if len(parse_calls) == 1:
             return {

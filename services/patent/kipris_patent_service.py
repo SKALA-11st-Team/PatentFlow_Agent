@@ -656,6 +656,7 @@ def parse_single_patent_pdf(
     *,
     output_dir: str | Path,
     output_format: str = "markdown-with-images",
+    country: str | None = None,
 ) -> dict[str, Any]:
     java_path = shutil.which("java")
     if not java_path:
@@ -691,18 +692,26 @@ def parse_single_patent_pdf(
         after = sorted(output_dir.rglob("*.md"))
 
     markdown_text = "\n\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in after)
-    column_text = extract_pdf_text_left_then_right(pdf_path)
-    if has_meaningful_pdf_text(column_text):
-        markdown_text = column_text
-    if should_run_ocr_fallback(markdown_text):
-        ocr_text = extract_pdf_text_with_ocr(pdf_path)
-        if not has_meaningful_pdf_text(ocr_text):
-            raise RuntimeError("foreign_pdf_text_extraction_failed_after_ocr")
-        markdown_text = ocr_text
-        parse_warning = "ocr_fallback_used"
-    else:
-        parse_warning = None
-    normalized_markdown_path = output_dir / f"{pdf_path.stem}_left_right.md"
+    parse_warning = None
+    # 좌→우 컬럼 추출(left_right)과 일반 Tesseract(eng) OCR은 미국 특허 2단 조판 전용 경로다.
+    # CN/JP/TW 등 비-US 해외특허는 pdfplumber가 CID 폰트를 못 읽어 mojibake가 나오고, 컬럼 분할·
+    # 영문 front-matter 트림·영어 OCR이 모두 안 맞는다. 따라서 비-US에는 이 경로를 적용하지 않고
+    # opendataloader가 만든 이미지 마크다운을 그대로 둬서, 하위 apply_foreign_pdf_ocr_fallback이
+    # 국가별 언어팩(chi_sim/jpn/chi_tra)으로 OCR하도록 위임한다. country를 안 넘기는 레거시
+    # 호출(KR fulltext·prior_art)은 None→US 취급으로 기존 동작을 유지한다.
+    is_us_layout = country is None or str(country).strip().upper() == "US"
+    if is_us_layout:
+        column_text = extract_pdf_text_left_then_right(pdf_path)
+        if has_meaningful_pdf_text(column_text):
+            markdown_text = column_text
+        if should_run_ocr_fallback(markdown_text):
+            ocr_text = extract_pdf_text_with_ocr(pdf_path)
+            if not has_meaningful_pdf_text(ocr_text):
+                raise RuntimeError("foreign_pdf_text_extraction_failed_after_ocr")
+            markdown_text = ocr_text
+            parse_warning = "ocr_fallback_used"
+    suffix = "_left_right" if is_us_layout else ""
+    normalized_markdown_path = output_dir / f"{pdf_path.stem}{suffix}.md"
     normalized_markdown_path.write_text(markdown_text, encoding="utf-8")
     for path in after:
         if path.resolve() == normalized_markdown_path.resolve():
@@ -2210,7 +2219,7 @@ def _download_and_parse_foreign_selection(
         session=client.session,
         timeout=client.timeout,
     )
-    parsed = parse_single_patent_pdf(pdf_path, output_dir=parse_output_dir)
+    parsed = parse_single_patent_pdf(pdf_path, output_dir=parse_output_dir, country=country)
     parsed = apply_foreign_pdf_ocr_fallback(parsed, country=country)
     return {
         "literature_number": selected["literature_number"],
