@@ -30,15 +30,15 @@ missing_evidence가 주어진 경우에는 부족한 근거 유형을 보완할 
   - 글로벌 뉴스(Tavily)는 글로벌 영어 뉴스를 폭넓게 색인하며 구체적인 기술·제품·서비스 표현도 잘 검색된다. 억지로 가장 넓은 상위 표현으로 줄이지 말고, 특허의 핵심 기술/서비스를 나타내는 자연스러운 영어 키워드로 작성한다.
   - 영어 뉴스/업계에서 실제 통용되는 표현을 쓴다(예: smart factory, industrial IoT, digital twin, predictive maintenance, robo advisor, MLOps, model serving). 필요하면 구체 기능어를 함께 써도 된다.
   - 합성어는 영어에서 통용되는 띄어쓰기/하이픈 형태로 쓴다(roboadvisor 아님, robo advisor).
-  - 회사명은 en 검색어에 넣지 않는다(예: `SK Inc industrial IoT`, `SK AX model serving` 금지). 권리자/출원인 등 회사명은 ko 검색어에서만 사용한다.
+  - 회사명은 en 검색어에 넣지 않는다(예: `SK Inc industrial IoT`, `SK AX model serving` 금지). 권리자/출원인 등 회사명은 domestic 검색어에서만 사용한다.
   - `Korean`, `Korea` 같은 언어/국가 한정어를 en 검색어에 넣지 않는다(예: `Korean numeral conversion` 금지). 한국어/한국 특화 기술이면 국가 한정어 없이 상위 응용 분야의 영어 표현으로 바꾼다(예: conversational AI, speech recognition).
 - 하이픈, 슬래시, 콜론, 따옴표, 괄호 같은 특수문자를 넣지 않는다.
 - 관련 제품명이 길면 전체를 그대로 복사하지 말고 핵심 제품명만 사용한다.
 - 예: `CMP Pad Press Cutting, Aging` → `CMP 패드` 또는 `CMP Pad`
-- 관련 제품이 존재한다면 ko 검색어 중 최소 1개는 핵심 제품명을 포함한다.
+- 관련 제품이 존재한다면 domestic 검색어 중 최소 1개는 핵심 제품명을 포함한다.
 - 아래 회사명/공동출원인 관련 규칙은 `domestic_news_language`가 `Korean`일 때만 적용한다. 현지어(Japanese/Chinese 등)일 때는 회사명을 억지로 넣지 말고 핵심 기술·제품·서비스 중심의 현지어 키워드로 작성한다.
-- metadata에 assignee, applicant, owner 등 권리자/출원인 회사명이 있으면 ko 검색어 중 최소 1개는 `회사명 + 핵심 제품명` 형태로 작성한다.
-- metadata의 joint_application이 참이고 joint_applicant_name이 있으면 ko 검색어 중 최소 1개는 `공동출원인명 + 핵심 제품명` 형태로 작성한다.
+- metadata에 assignee, applicant, owner 등 권리자/출원인 회사명이 있으면 domestic 검색어 중 최소 1개는 `회사명 + 핵심 제품명` 형태로 작성한다.
+- metadata의 joint_application이 참이고 joint_applicant_name이 있으면 domestic 검색어 중 최소 1개는 `공동출원인명 + 핵심 제품명` 형태로 작성한다.
 - 공동출원인명은 지어내지 말고 입력된 joint_applicant_name만 사용한다.
 - 검색어 개수가 부족해 회사명 쿼리와 공동출원인 쿼리를 모두 넣기 어렵다면, 긴 설명형 검색어를 줄이고 회사명 쿼리 1개와 공동출원인 쿼리 1개를 우선 포함한다.
 - retry_count가 1 이상이거나 missing_evidence에 minimum_news_count가 있으면, 이전 검색어보다 더 일반화된 산업/공정/제품 표현을 사용한다.
