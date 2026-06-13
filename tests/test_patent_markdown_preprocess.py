@@ -540,3 +540,29 @@ What is claimed is:
     assert [claim["claim_no"] for claim in result["claims"]] == [1, 2]
     assert result["claims"][0]["is_independent"] is True
     assert result["claims"][1]["dependency"] == 1
+
+
+def test_foreign_ipc_falls_back_to_body_int_cl_when_api_empty():
+    # CN 등 해외특허는 KIPRIS 서지 API가 IPC를 비워주는 경우가 있어, 본문 (51) Int.Cl. 표기에서
+    # 보강해야 한다.
+    body = """
+(54) 발명의 명칭 공정/설비 측정 데이터 감지 방법
+(51)Int.Cl.
+
+#### G06Q 50/04(2006.01) G06Q 10/06(2006.01) G05B 19/418(2006.01)
+"""
+    result = build_preprocessed_patent(
+        body,
+        db_metadata={"country": "CN"},
+        api_data={"metadata": {"country": "CN", "ipc": []}, "sections": {}, "claims": []},
+    )
+    assert result["metadata"]["ipc"] == ["G06Q 50/04", "G06Q 10/06", "G05B 19/418"]
+
+
+def test_foreign_ipc_prefers_api_over_body():
+    result = build_preprocessed_patent(
+        "(51)Int.Cl.\n#### G06Q 50/04(2006.01)\n",
+        db_metadata={"country": "US"},
+        api_data={"metadata": {"country": "US", "ipc": ["G16H 50/70"]}, "sections": {}, "claims": []},
+    )
+    assert result["metadata"]["ipc"] == ["G16H 50/70"]
