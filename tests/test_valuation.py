@@ -118,10 +118,10 @@ def test_final_report_prompt_separates_review_actions_by_owner():
     assert "## 5. 역할별 확인 사항" in final_report
     assert "### 5.1 사업부 확인 사항" in final_report
     assert "### 5.2 법무팀 검토 사항" in final_report
-    assert "### 5.3 기술 검토 사항" in final_report
+    assert "### 5.3 기술 검토 사항" not in final_report
     assert "선행문헌 비교, 청구항 해석, 보호범위" in final_report
     assert "사업부 확인 사항에 넣지 마세요." in final_report
-    assert "구현 파라미터, 데이터·모델·시스템 인터페이스" in final_report
+    assert "구현 파라미터, 시스템 인터페이스" in final_report
 
 
 def test_final_report_prompt_uses_rights_scope_explanation_for_legal_axis():
