@@ -14,9 +14,10 @@
 
 사용 가능한 근거:
 - Vector DB에서 검색된 `industry_report`
-- 최근 뉴스 기반 `news` 중 `source`가 `naver_news`인 국내 뉴스
+- 최근 뉴스 기반 `news` 중 `source`가 `naver_news`(국내특허) 또는 `domestic_news`(해외특허 본국 현지 뉴스)인 대상 특허 본국 뉴스
 - `source`가 `global_news`인 해외 뉴스
-- Input JSON의 대상 특허 설명(`technology_field`, `background_art`, `problem_to_solve`, `core_application_functions`)
+- Input JSON의 `summary_result`(대상 특허 요약, 핵심 구성, 처리 흐름)
+- Input JSON의 `patent.metadata`(`business_area`, `technology_area`, `related_product` 등 대상 특허 기본 정보)
 - Input JSON의 `marketability_metrics`
 
 사용하지 말아야 할 근거:

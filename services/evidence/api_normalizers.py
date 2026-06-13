@@ -82,10 +82,14 @@ def normalize_tavily_news_response(
     *,
     query: str,
     collected_at: str | None = None,
+    source: str = "global_news",
+    country: str | None = None,
 ) -> list[dict[str, Any]]:
     """Tavily(topic=news) 검색 결과를 공통 뉴스 evidence shape로 변환한다.
 
-    글로벌/해외 뉴스 근거이므로 source는 "global_news"로 태깅한다(시장성 글로벌 사업성).
+    기본은 글로벌/해외 뉴스 근거(source="global_news", 시장성 글로벌 사업성)다.
+    해외특허 domestic 채널은 source="domestic_news" + country(대상국)로 호출해
+    대상 특허 본국 현지 뉴스로 태깅한다(시장성 산업 시장성·경쟁성).
     """
     collected_at = collected_at or now_iso()
     results = raw if isinstance(raw, list) else raw.get("results", [])
@@ -102,7 +106,7 @@ def normalize_tavily_news_response(
             {
                 "evidence_id": None,
                 "source_type": "news",
-                "source": "global_news",
+                "source": source,
                 "title": item.get("title"),
                 "url": item.get("url"),
                 "published_at": published_at,
@@ -114,6 +118,7 @@ def normalize_tavily_news_response(
                     "rank": rank,
                     "score": item.get("score"),
                     "provider": "tavily_news",
+                    "country": country,
                 },
             }
         )

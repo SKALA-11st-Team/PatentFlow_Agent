@@ -89,7 +89,8 @@ def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, li
         source_type = normalize_text(item.get("source_type")).lower()
         if source_type == "industry_report":
             groups["industry_report_evidence_ids"].append(evidence_id)
-        elif source == "naver_news":
+        elif source in ("naver_news", "domestic_news"):
+            # 국내(naver_news)·해외특허 본국 현지 뉴스(domestic_news)는 동일한 domestic 채널이다.
             groups["naver_news_evidence_ids"].append(evidence_id)
             groups["competition_evidence_ids"].append(evidence_id)
         elif source == "global_news":

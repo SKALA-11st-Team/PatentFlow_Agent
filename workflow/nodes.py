@@ -29,6 +29,7 @@ from services.evidence.compression_service import (
 )
 from services.evidence.external_search_service import MAX_SEARCH_QUERIES, collect_external_evidence, rewrite_search_queries
 from services.evidence.news_filter_service import filter_news_evidence, save_filtered_news_result
+from services.evidence.news_localization import is_foreign_country, resolve_domestic_locale
 from services.evidence.skax_site_search_service import collect_skax_site_evidence
 from services.evidence.store_service import (
     save_filtered_evidence_bundle,
@@ -522,12 +523,17 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
         state.current_stage = "evidence_check"
         return state
 
+    country = (state.patent_structured or {}).get("country")
+    is_foreign = is_foreign_country(country)
+    domestic_country, domestic_language = resolve_domestic_locale(country)
     rewritten = rewrite_search_queries(
         preprocessed_patent=preprocessed,
         missing_evidence=state.missing_evidence,
         previous_queries=state.search_queries,
         retry_count=state.retry_count,
         use_llm=True,
+        domestic_language=domestic_language,
+        is_foreign=is_foreign,
     )
     state.search_queries = compact_workflow_queries(
         [
@@ -545,6 +551,9 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
         "industry_rag_queries": rewritten.get("industry_rag", []),
         "skax_site_queries": rewritten.get("skax_site", []),
         "rewrite_meta": rewritten.get("meta", {}),
+        "is_foreign": is_foreign,
+        "domestic_country": domestic_country,
+        "domestic_language": domestic_language,
     }
     state.current_stage = "query_rewriting"
     return state
@@ -576,6 +585,9 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             include_gnews=not skip_news_evidence,
             # EVID-02: 경쟁특허 근거(KIPRIS)를 기본 수집한다(application_number 있을 때만 실효).
             include_kipris=state.user_input.get("include_kipris_competitor", True),
+            # 해외특허는 domestic 채널을 Tavily(country=대상국, 현지어)로 대체한다.
+            is_foreign=bool(query_plan.get("is_foreign")),
+            domestic_country=query_plan.get("domestic_country"),
             ko_queries_override=query_plan.get("ko_queries") or None,
             en_queries_override=query_plan.get("en_queries") or None,
             output_dir=artifact_subdir(state, "api_evidence"),

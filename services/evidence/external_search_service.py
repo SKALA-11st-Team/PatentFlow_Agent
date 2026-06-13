@@ -23,6 +23,7 @@ from services.evidence.api_normalizers import (
 )
 from services.evidence.news_article_extraction_service import enrich_news_items_with_full_text
 from services.evidence.news_filter_service import extract_keywords
+from services.evidence.news_localization import DEFAULT_DOMESTIC_LANGUAGE
 from services.evidence.store_service import (
     merge_evidence_sources,
     save_evidence_collection,
@@ -42,30 +43,39 @@ BLOCKED_LINK_LOCAL_IP = ipaddress.ip_address("169.254.169.254")
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 
-def search_global_news_via_tavily(query: str, *, max_results: int) -> dict[str, Any]:
-    """GNews 대체: Tavily(topic=news, 도메인 제한 없음)로 글로벌 영어 뉴스를 검색한다.
+def search_news_via_tavily(query: str, *, max_results: int, country: str | None = None) -> dict[str, Any]:
+    """Tavily(topic=news, 도메인 제한 없음)로 뉴스를 검색한다.
 
-    국가 제한 없이 영어 검색어로 전세계 뉴스를 가져오고, 최근 기간은 뉴스 필터(5년)와
-    정렬된 days 범위로 제한한다. 본문은 raw_content로 함께 수집한다.
+    country가 None이면 국가 제한 없이 전세계 뉴스를 가져온다(글로벌 사업성). country가
+    주어지면(해외특허 domestic 채널) 해당 국가로 한정해 현지 뉴스를 가져온다. 최근 기간은
+    뉴스 필터(5년)와 정렬된 days 범위로 제한하고, 본문은 raw_content로 함께 수집한다.
     """
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
         raise requests.RequestException("TAVILY_API_KEY is not set")
+    payload: dict[str, Any] = {
+        "api_key": api_key,
+        "query": query,
+        "topic": "news",
+        "search_depth": "basic",
+        "max_results": max(1, int(max_results)),
+        "include_raw_content": True,
+        "days": settings.tavily_news_max_age_days,
+    }
+    if country:
+        payload["country"] = country
     response = requests.post(
         TAVILY_SEARCH_URL,
-        json={
-            "api_key": api_key,
-            "query": query,
-            "topic": "news",
-            "search_depth": "basic",
-            "max_results": max(1, int(max_results)),
-            "include_raw_content": True,
-            "days": settings.tavily_news_max_age_days,
-        },
+        json=payload,
         timeout=settings.skax_search_timeout_seconds,
     )
     response.raise_for_status()
     return response.json()
+
+
+def search_global_news_via_tavily(query: str, *, max_results: int) -> dict[str, Any]:
+    """GNews 대체: 국가 제한 없는 글로벌 영어 뉴스 검색(하위호환 래퍼)."""
+    return search_news_via_tavily(query, max_results=max_results, country=None)
 
 
 def rewrite_search_queries(
@@ -75,6 +85,8 @@ def rewrite_search_queries(
     previous_queries: list[str] | None = None,
     retry_count: int = 0,
     use_llm: bool = True,
+    domestic_language: str = DEFAULT_DOMESTIC_LANGUAGE,
+    is_foreign: bool = False,
 ) -> dict[str, Any]:
     previous = set(previous_queries or [])
     if not use_llm:
@@ -90,6 +102,7 @@ def rewrite_search_queries(
             missing_evidence=missing_evidence or [],
             previous_queries=previous_queries or [],
             retry_count=retry_count,
+            domestic_language=domestic_language,
         )
     except Exception as exc:
         llm_result = {}
@@ -101,16 +114,21 @@ def rewrite_search_queries(
     rewritten_ko = [query for query in compact_queries(llm_result.get("ko") or [])[:MAX_SEARCH_QUERIES] if query not in previous]
     rewritten_en = [query for query in compact_queries(llm_result.get("en") or [])[:MAX_SEARCH_QUERIES] if query not in previous]
 
-    rewritten_ko, product_query_enforced = ensure_related_product_query(
-        rewritten_ko,
-        preprocessed_patent,
-        previous,
-    )
-    rewritten_ko, company_query_meta = ensure_applicant_context_queries(
-        rewritten_ko,
-        preprocessed_patent,
-        previous,
-    )
+    product_query_enforced = False
+    company_query_meta = {"owner_query_enforced": False, "joint_applicant_query_enforced": False}
+    if not is_foreign:
+        # 한국어 전용 후처리(제품명 `… 시장 동향`, 회사명 쿼리)는 국내(KR) domestic 채널에만
+        # 적용한다. 해외특허 domestic 채널은 현지어 쿼리이므로 한국어 접미사 주입을 스킵한다.
+        rewritten_ko, product_query_enforced = ensure_related_product_query(
+            rewritten_ko,
+            preprocessed_patent,
+            previous,
+        )
+        rewritten_ko, company_query_meta = ensure_applicant_context_queries(
+            rewritten_ko,
+            preprocessed_patent,
+            previous,
+        )
 
     rewritten_en = enforce_english_queries(rewritten_en)
     rewritten_industry_rag = [
@@ -148,6 +166,8 @@ def collect_external_evidence(
     include_naver: bool = True,
     include_gnews: bool = True,
     include_kipris: bool = False,
+    is_foreign: bool = False,
+    domestic_country: str | None = None,
     missing_evidence: list[str] | None = None,
     previous_queries: list[str] | None = None,
     use_llm_rewrite: bool = True,
@@ -191,20 +211,37 @@ def collect_external_evidence(
     # 태스크 수·실패 수로 동일하게 보존한다. sources/warnings/saved_paths는 순서 무관이라 병렬 안전.
     fetch_tasks: list[dict[str, Any]] = []
     if include_naver:
+        # domestic 뉴스 채널: 국내(KR)는 게이트웨이 Naver News(한국어), 해외특허는
+        # Tavily(country=대상국, 현지어)로 본국 현지 뉴스를 대체 수집한다.
         for query in selected_queries:
-            fetch_tasks.append({
-                "fetch": lambda q=query: request_json(
-                    api_base_url,
-                    "/api/news/search",
-                    {"query": q, "display": news_results_per_query, "start": 1, "sort": "sim"},
-                ),
-                "normalize": lambda raw, q=query: normalize_naver_news_response(raw, query=q),
-                "enrich": True,
-                "source_type": "news",
-                "source": "naver_news",
-                "query": query,
-                "warn_prefix": f"naver_news call failed for query '{query}'",
-            })
+            if is_foreign:
+                fetch_tasks.append({
+                    "fetch": lambda q=query: search_news_via_tavily(
+                        q, max_results=news_results_per_query, country=domestic_country
+                    ),
+                    "normalize": lambda raw, q=query: normalize_tavily_news_response(
+                        raw, query=q, source="domestic_news", country=domestic_country
+                    ),
+                    "enrich": True,
+                    "source_type": "news",
+                    "source": "domestic_news",
+                    "query": query,
+                    "warn_prefix": f"domestic_news call failed for query '{query}'",
+                })
+            else:
+                fetch_tasks.append({
+                    "fetch": lambda q=query: request_json(
+                        api_base_url,
+                        "/api/news/search",
+                        {"query": q, "display": news_results_per_query, "start": 1, "sort": "sim"},
+                    ),
+                    "normalize": lambda raw, q=query: normalize_naver_news_response(raw, query=q),
+                    "enrich": True,
+                    "source_type": "news",
+                    "source": "naver_news",
+                    "query": query,
+                    "warn_prefix": f"naver_news call failed for query '{query}'",
+                })
     if include_gnews:
         # GNews 대체: 글로벌 뉴스는 게이트웨이 대신 Tavily(topic=news)를 직접 호출한다.
         for gnews_query in selected_gnews_queries:
@@ -632,11 +669,13 @@ def llm_rewrite_search_queries(
     missing_evidence: list[str],
     previous_queries: list[str],
     retry_count: int = 0,
+    domestic_language: str = DEFAULT_DOMESTIC_LANGUAGE,
 ) -> dict[str, list[str]]:
     prompt_template = (
         load_prompt("evidence/query_rewriting.md")
         .replace("{{search_query_count}}", str(MAX_SEARCH_QUERIES))
         .replace("{{industry_rag_query_count}}", str(MAX_INDUSTRY_RAG_QUERIES))
+        .replace("{{domestic_language}}", domestic_language)
     )
     payload = {
         "metadata": preprocessed_patent.get("metadata") or {},
@@ -646,6 +685,7 @@ def llm_rewrite_search_queries(
             "problem": (preprocessed_patent.get("sections") or {}).get("problem") or "",
             "solution": (preprocessed_patent.get("sections") or {}).get("solution") or "",
         },
+        "domestic_news_language": domestic_language,
         "missing_evidence": missing_evidence,
         "previous_queries": previous_queries,
         "retry_count": retry_count,
