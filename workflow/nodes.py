@@ -33,7 +33,6 @@ from services.evidence.news_localization import is_foreign_country, resolve_dome
 from services.evidence.skax_site_search_service import collect_skax_site_evidence
 from services.evidence.store_service import (
     save_filtered_evidence_bundle,
-    save_external_search_diagnostics,
     save_skax_site_search_result,
 )
 from services.rag.industry_rag_service import (
@@ -659,13 +658,6 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         output_dir=artifact_subdir(state, "filtered_evidence"),
         save=not state.user_input.get("no_save", False),
     )
-    query_diagnostics_path = None
-    if not no_save:
-        query_diagnostics_path = save_external_search_diagnostics(
-            patent_id=patent.get("id") or preprocessed.get("patent_id"),
-            diagnostics=result,
-            output_dir=artifact_subdir(state, "query_diagnostics"),
-        )
     # 뉴스처럼 SK AX 검색의 raw 결과·진단(실제 전송 쿼리·후보 URL·필터 통계)을 별도 artifact로 남긴다.
     skax_search_path = save_skax_site_search_safely(
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
@@ -680,7 +672,6 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         "selected_en_queries": result.get("gnews_queries", []),
         "search_warnings": result.get("warnings", []),
         "rewrite_meta": result.get("rewrite_meta", query_plan.get("rewrite_meta", {})),
-        "query_diagnostics_path": str(query_diagnostics_path) if query_diagnostics_path else None,
         "news_filter": {
             "output_path": news_filter_result.get("output_path"),
             "stats": news_filter_result.get("stats", {}),

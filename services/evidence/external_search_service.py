@@ -273,7 +273,11 @@ def collect_external_evidence(
                 "query": gnews_query,
                 "warn_prefix": f"global_news call failed for query '{gnews_query}'",
             })
-    if include_kipris and application_number:
+    if include_kipris and application_number and not is_foreign:
+        # 경쟁특허 검색(`patent-utility/search/application-number`)은 국내 KR 특허 DB를 출원번호로
+        # 조회하는 기능이라 해외특허(US/CN/JP)의 출원번호는 형식이 맞지 않아 거부된다(rc=10).
+        # 해외특허의 인용/선행은 overseas 인용 엔드포인트를 타는 fetch_foreign_target_reference_data가
+        # 담당하므로, 여기서는 국내 경쟁검색을 해외특허에 대해 스킵한다.
         kipris_query = f"application_number:{application_number}"
         fetch_tasks.append({
             "fetch": lambda: request_json(

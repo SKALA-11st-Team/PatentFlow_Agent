@@ -563,7 +563,7 @@ def test_parse_single_patent_pdf_uses_ocr_when_markdown_has_no_text(monkeypatch,
         lambda path: "Abstract\nClaims\n1. A system comprising a processor.",
     )
 
-    result = parse_single_patent_pdf(pdf_path, output_dir=output_dir)
+    result = parse_single_patent_pdf(pdf_path, output_dir=output_dir, country="US")
 
     assert result["markdown_paths"]
     assert "Abstract" in result["markdown_text"]
@@ -592,7 +592,7 @@ def test_parse_single_patent_pdf_raises_when_ocr_fails_to_extract_text(monkeypat
     )
 
     with pytest.raises(RuntimeError, match="foreign_pdf_text_extraction_failed_after_ocr"):
-        parse_single_patent_pdf(pdf_path, output_dir=output_dir)
+        parse_single_patent_pdf(pdf_path, output_dir=output_dir, country="US")
 
 
 def test_find_cached_foreign_patent_pdf_uses_publication_id(tmp_path):

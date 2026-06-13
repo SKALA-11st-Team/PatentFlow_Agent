@@ -1334,7 +1334,6 @@ def query_plan_payload(query_plan: dict[str, Any]) -> dict[str, Any]:
         "selected_en_queries": limit_list(en_queries, 5),
         "search_warnings": limit_list(search_warnings, 10),
         "rewrite_meta": query_plan.get("rewrite_meta") or {},
-        "query_diagnostics_path": query_plan.get("query_diagnostics_path"),
         "news_filter": {
             "enabled": news_filter.get("enabled"),
             "kept_count": news_filter.get("kept_count"),

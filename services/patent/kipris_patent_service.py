@@ -693,13 +693,14 @@ def parse_single_patent_pdf(
 
     markdown_text = "\n\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in after)
     parse_warning = None
-    # 좌→우 컬럼 추출(left_right)과 일반 Tesseract(eng) OCR은 미국 특허 2단 조판 전용 경로다.
-    # CN/JP/TW 등 비-US 해외특허는 pdfplumber가 CID 폰트를 못 읽어 mojibake가 나오고, 컬럼 분할·
-    # 영문 front-matter 트림·영어 OCR이 모두 안 맞는다. 따라서 비-US에는 이 경로를 적용하지 않고
-    # opendataloader가 만든 이미지 마크다운을 그대로 둬서, 하위 apply_foreign_pdf_ocr_fallback이
-    # 국가별 언어팩(chi_sim/jpn/chi_tra)으로 OCR하도록 위임한다. country를 안 넘기는 레거시
-    # 호출(KR fulltext·prior_art)은 None→US 취급으로 기존 동작을 유지한다.
-    is_us_layout = country is None or str(country).strip().upper() == "US"
+    # 좌→우 컬럼 추출(left_right)과 일반 Tesseract(eng) OCR은 **미국 특허 전용** 경로다(US 2단 조판,
+    # 이미지형 PDF 대응). 그 외(KR 국내·CN/JP/TW 해외·country 미상)는 이 경로를 타지 않고
+    # opendataloader가 만든 마크다운을 그대로 사용한다:
+    #  - KR 국내: KIPRIS 전문 PDF를 opendataloader로 파싱(원래 알고리즘).
+    #  - CN/JP/TW: opendataloader 이미지 마크다운을 두고 하위 apply_foreign_pdf_ocr_fallback이
+    #    국가별 언어팩(chi_sim/jpn/chi_tra)으로 OCR.
+    # country가 "US"일 때만 left_right를 적용한다(None=KR 국내 등은 opendataloader).
+    is_us_layout = str(country or "").strip().upper() == "US"
     if is_us_layout:
         column_text = extract_pdf_text_left_then_right(pdf_path)
         if has_meaningful_pdf_text(column_text):
