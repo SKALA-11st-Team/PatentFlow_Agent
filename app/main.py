@@ -290,8 +290,13 @@ def save_outputs(state: PatentWorkflowState, *, save_cleaned_markdown: bool = Fa
         )
         safe_patent_id = str(patent_id).replace("/", "_")
         summary_path = output_dir / f"{safe_patent_id}_summary.json"
+        summary_json = {
+            key: value
+            for key, value in state.summary_result.items()
+            if key != "summary_brief"
+        }
         summary_path.write_text(
-            json.dumps(state.summary_result, ensure_ascii=False, indent=2),
+            json.dumps(summary_json, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         saved["summary_json"] = summary_path
@@ -300,6 +305,23 @@ def save_outputs(state: PatentWorkflowState, *, save_cleaned_markdown: bool = Fa
             markdown_path = output_dir / f"{safe_patent_id}_summary.md"
             markdown_path.write_text(f"{markdown}\n", encoding="utf-8")
             saved["summary_markdown"] = markdown_path
+        summary_brief = state.summary_result.get("summary_brief")
+        if isinstance(summary_brief, dict):
+            from agents.summary import build_summary_brief_markdown
+
+            brief_json_path = output_dir / f"{safe_patent_id}_summary_brief.json"
+            brief_json_path.write_text(
+                json.dumps(summary_brief, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            saved["summary_brief_json"] = brief_json_path
+
+            brief_markdown_path = output_dir / f"{safe_patent_id}_summary_brief.md"
+            brief_markdown_path.write_text(
+                f"{build_summary_brief_markdown(summary_brief)}\n",
+                encoding="utf-8",
+            )
+            saved["summary_brief_markdown"] = brief_markdown_path
     if state.final_report:
         output_dir = artifact_subdir(state, "final")
         output_dir.mkdir(parents=True, exist_ok=True)
