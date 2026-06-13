@@ -260,6 +260,28 @@ def test_foreign_target_literature_candidates_defaults_us_registration_to_b2():
     assert candidates[0]["kind_code"] == "B2"
 
 
+def test_foreign_target_literature_candidates_cn_uses_application_number_without_check_digit():
+    # CN 해외 문헌번호는 출원번호 12자리(검증숫자 제외)+A0/B0 형식이어야 한다(ex: 201780067437A0).
+    candidates = foreign_target_literature_candidates(
+        {
+            "country": "CN",
+            "registration_number": "109891454",
+            "application_number": "201780067437.9",
+            "application_date": "2017-04-26",
+        }
+    )
+
+    # 출원번호 기반(검증숫자 제외 12자리)이 맨 앞에서 시도된다.
+    assert candidates[0]["country_code"] == "CN"
+    assert candidates[0]["document_number"] == "201780067437"
+    assert candidates[0]["source_field"] == "application_number"
+    # 검증숫자 포함 13자리는 본체가 아니다.
+    assert all(c["document_number"] != "2017800674379" or c["source_field"] != "application_number"
+               for c in candidates[:1])
+    docnums = {c["document_number"] for c in candidates}
+    assert "201780067437" in docnums
+
+
 def test_foreign_reference_candidate_from_pdf_prior_art():
     assert foreign_reference_candidate_from_text("US 2010241261 A1") == {
         "direction": "cited_by_target",
@@ -1976,10 +1998,10 @@ def test_foreign_literature_number_candidates_try_twelve_digit_kind_first():
         "display_number": "JP7401073 B2",
     }
 
-    assert _foreign_literature_number_candidates(candidate)[:2] == [
-        "000007401073B2",
-        "7401073B2",
-    ]
+    # 12자리 패딩 형식만 시도한다(패딩 안 한 7401073B2는 KIPRIS 매칭 안 돼 제거됨).
+    candidates = _foreign_literature_number_candidates(candidate)
+    assert candidates[0] == "000007401073B2"
+    assert "7401073B2" not in candidates
 
 
 def test_foreign_literature_number_candidates_adds_a0_for_open_publications():
@@ -1993,12 +2015,12 @@ def test_foreign_literature_number_candidates_adds_a0_for_open_publications():
 
     candidates = _foreign_literature_number_candidates(candidate)
 
+    # 공개문헌(A)은 12자리 패딩 + A0/A만 시도(패딩 안 한 형식은 제거).
     assert candidates[:2] == [
         "000113039310A0",
-        "113039310A0",
+        "000113039310A",
     ]
-    assert "000113039310A" in candidates
-    assert "113039310A" in candidates
+    assert "113039310A0" not in candidates
 
 
 def test_foreign_literature_number_candidates_converts_jp_era_open_number():
@@ -2013,11 +2035,13 @@ def test_foreign_literature_number_candidates_converts_jp_era_open_number():
 
     candidates = _foreign_literature_number_candidates(candidate)
 
+    # 일본 연호 변환된 공개번호(2017047511)를 12자리 패딩 + A0/A로 먼저 시도한다.
     assert candidates[:2] == [
         "002017047511A0",
-        "2017047511A0",
+        "002017047511A",
     ]
     assert "000029047511A0" in candidates
+    assert "2017047511A0" not in candidates
 
 
 import pytest
@@ -2073,3 +2097,33 @@ def test_extract_claim_dependency_requires_citation_terminator(text, expected):
 )
 def test_strip_register_suffix_handles_compact_and_hyphenated_numbers(value, expected):
     assert _strip_register_suffix(value) == expected
+
+
+def test_google_patents_backward_reference_documents_parses_cited_prior_art():
+    from services.patent.kipris_patent_service import _google_patents_backward_reference_documents
+
+    html = """
+    <tr itemprop="backwardReferences" itemscope>
+      <td><span itemprop="publicationNumber">CN1894652A</span></td>
+      <td><span itemprop="title">Automatic monitoring</span></td>
+      <span itemprop="examinerCited">*</span>
+    </tr>
+    <tr itemprop="backwardReferencesFamily" itemscope>
+      <td><span itemprop="publicationNumber">JP2011060012A</span></td>
+      <td><span itemprop="title">Plant monitoring</span></td>
+    </tr>
+    <tr itemprop="forwardReferences" itemscope>
+      <td><span itemprop="publicationNumber">US9999999B2</span></td>
+    </tr>
+    """
+    docs = _google_patents_backward_reference_documents(html)
+    numbers = [d["display_number"] for d in docs]
+    # backward(인용)만 잡고 forward(피인용)는 제외한다.
+    assert "CN 1894652 A" in numbers
+    assert "JP 2011060012 A" in numbers
+    assert all("9999999" not in n for n in numbers)
+    cn = next(d for d in docs if d["display_number"] == "CN 1894652 A")
+    assert cn["direction"] == "cited_by_target"
+    assert cn["country_code"] == "CN"
+    assert cn["document_number"] == "1894652"
+    assert cn["source"] == "google_patents_html_backward_references"

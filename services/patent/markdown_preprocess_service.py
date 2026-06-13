@@ -580,6 +580,9 @@ def extract_pdf_support_metadata(text: str, *, db_metadata: dict[str, Any] | Non
         "application_number": db_metadata.get("application_number"),
         "registration_number": db_metadata.get("registration_number"),
         "title": db_metadata.get("title_final"),
+        # 해외특허는 KIPRIS 서지 API가 IPC를 비워주는 경우가 있어(CN 등) 본문 (51) Int.Cl. 표기에서
+        # 직접 보강한다. API가 IPC를 주면 merge_api_metadata가 그쪽을 우선하고, 없을 때만 본문값을 쓴다.
+        "ipc": _extract_classifications(text, "국제특허분류", "Int.Cl", "Int. Cl"),
         "cpc": _extract_classifications(text, "CPC특허분류"),
         "prior_art": _extract_prior_art(text),
     }
@@ -1173,16 +1176,21 @@ def _normalize_korean_date(value: str | None) -> str | None:
     return f"{year}-{int(month):02d}-{int(day):02d}"
 
 
-def _extract_classifications(text: str, label: str) -> list[str]:
+def _extract_classifications(text: str, *labels: str) -> list[str]:
+    # 라벨(한국어 "국제특허분류" 또는 해외 PDF의 "Int.Cl." 등)을 만나면 이후 몇 줄에서
+    # IPC/CPC 코드를 수집한다. 해외특허는 KIPRIS 서지 API가 분류를 비워주는 경우가 있어
+    # 본문의 (51) Int.Cl. 표기에서 직접 추출해야 한다.
+    lowered_labels = [label.lower() for label in labels]
     values: list[str] = []
     capture_remaining = 0
     for line in text.splitlines():
-        if label in line:
+        is_label_line = any(label in line.lower() for label in lowered_labels)
+        if is_label_line:
             capture_remaining = 8
         if capture_remaining <= 0:
             continue
         values.extend(re.findall(r"[A-HY]\d{2}[A-Z]\s*\d+/\d+", line))
-        if re.search(r"\(\d{2}\)|명\s*세\s*서|청구범위", line) and label not in line:
+        if re.search(r"\(\d{2}\)|명\s*세\s*서|청구범위", line) and not is_label_line:
             capture_remaining = 0
             continue
         capture_remaining -= 1

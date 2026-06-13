@@ -284,3 +284,56 @@ def test_resolve_foreign_prior_art_falls_back_to_google_patents_pdf(monkeypatch,
     assert result["representative_claims"][0]["claim_no"] == 1
     assert result["representative_claims"][0]["text"] == "A method comprising a processor and a memory."
     assert result["comparison_status"] == "claim_comparison_ready"
+
+
+def test_resolve_cn_prior_art_skips_kipris_fulltext_and_uses_google(monkeypatch, tmp_path):
+    # CN 인용은 공개번호만 있어 KIPRIS 전문(출원번호 기반)이 항상 실패한다. 쿼터 낭비를 막기 위해
+    # KIPRIS 전문 호출을 아예 하지 않고 곧장 Google Patents PDF로 가야 한다.
+    class Client:
+        def __init__(self):
+            self.session = Session()
+            self.timeout = 30.0
+            self.open_calls = []
+            self.registration_calls = []
+
+        def overseas_open_fulltext(self, literature_number, country_code):
+            self.open_calls.append((literature_number, country_code))
+            return {"response": {"body": {"items": {}}}}
+
+        def overseas_registration_fulltext(self, literature_number, country_code):
+            self.registration_calls.append((literature_number, country_code))
+            return {"response": {"body": {"items": {}}}}
+
+    client = Client()
+    monkeypatch.setattr("services.patent.prior_art_patent_service.KiprisClient", lambda: client)
+    monkeypatch.setattr(
+        "services.patent.prior_art_patent_service.google_patents_pdf_url",
+        lambda *args, **kwargs: "https://example.com/cn-publication.pdf",
+    )
+    monkeypatch.setattr(
+        "services.patent.prior_art_patent_service.parse_single_patent_pdf",
+        lambda pdf_path, output_dir: {
+            "markdown_paths": [str(output_dir / "cn.md")],
+            "markdown_text": "权利要求\n1. 一种半导体工艺监测方法。",
+        },
+    )
+
+    result = resolve_prior_art_candidate(
+        {
+            "display_number": "CN 1894652 A",
+            "country_code": "CN",
+            "document_number": "1894652",
+            "standard_number": "1894652",
+            "kind_code": "A",
+            "original_number": "CN 1894652 A",
+        },
+        output_dir=tmp_path,
+        collect_pdf=True,
+        text_limit=None,
+    )
+
+    # KIPRIS 전문 메서드는 한 번도 호출되지 않아야 한다(쿼터 0).
+    assert client.open_calls == []
+    assert client.registration_calls == []
+    assert result["foreign_fulltext_type"] == "google_patents"
+    assert result["pdf_collected"] is True

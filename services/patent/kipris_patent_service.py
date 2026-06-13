@@ -1858,48 +1858,70 @@ def _foreign_literature_number_candidates(candidate: dict[str, Any]) -> list[str
         if parsed:
             candidates.append(parsed)
     if document_number:
+        # 마지막 보루로 kind 없는 12자리 패딩만 둔다(패딩 안 한 raw는 매칭 안 돼 제거).
         candidates.append(document_number.zfill(12))
-        candidates.append(document_number)
     return _unique_texts(candidates)
 
 
 def foreign_target_literature_candidates(patent: dict[str, Any]) -> list[dict[str, Any]]:
     country = str(patent.get("country") or "").strip().upper()
     candidates = []
-    for source_field in ("registration_number", "application_number"):
+    # CN 해외 문헌번호는 출원번호 기반(12자리+A0/B0)만 유효하다. 등록/공개번호 기반은 전부 빈값을
+    # 돌려줘 헛호출만 되므로 CN은 출원번호를 먼저 시도한다. US/JP는 등록번호 기반이 맞아 기존 순서 유지.
+    source_order = ("application_number", "registration_number") if country == "CN" else ("registration_number", "application_number")
+    for source_field in source_order:
         value = _clean(patent.get(source_field))
         if not value:
             continue
-        document_number = re.sub(r"\D+", "", value)
-        if not document_number:
+        document_numbers = _foreign_target_document_numbers(country, value, source_field=source_field)
+        if not document_numbers:
             continue
         kind_codes = foreign_target_kind_codes(country, value, source_field=source_field)
-        for kind_code in kind_codes:
-            candidates.append(
-                {
-                    "direction": "target_foreign_patent",
-                    "country_code": country,
-                    "document_number": document_number,
-                    "kind_code": kind_code,
-                    "original_number": value,
-                    "display_number": " ".join(part for part in [country + document_number, kind_code] if part),
-                    "lookup_source": "target_foreign_patent",
-                    "publication_date": patent.get("registration_date") or patent.get("application_date"),
-                    "source_field": source_field,
-                }
-            )
+        for document_number in document_numbers:
+            for kind_code in kind_codes:
+                candidates.append(
+                    {
+                        "direction": "target_foreign_patent",
+                        "country_code": country,
+                        "document_number": document_number,
+                        "kind_code": kind_code,
+                        "original_number": value,
+                        "display_number": " ".join(part for part in [country + document_number, kind_code] if part),
+                        "lookup_source": "target_foreign_patent",
+                        "publication_date": patent.get("registration_date") or patent.get("application_date"),
+                        "source_field": source_field,
+                    }
+                )
     return _dedupe_foreign_claim_lookup_candidates(candidates)
+
+
+def _foreign_target_document_numbers(country: str, value: str, *, source_field: str) -> list[str]:
+    """KIPRIS 해외 문헌번호의 숫자 본체 후보를 만든다.
+
+    CN 출원번호는 끝에 검증숫자(점 뒤 1자리)가 붙어 13자리가 되는데, KIPRIS 해외 문헌번호는
+    검증숫자를 뺀 12자리 출원번호 본체를 요구한다(ex: 201780067437.9 → 201780067437A0).
+    따라서 CN 출원번호는 점 앞 본체를 먼저 시도하도록 앞에 둔다.
+    """
+    full = re.sub(r"\D+", "", value)
+    if country == "CN" and source_field == "application_number" and "." in value:
+        # CN 출원번호는 검증숫자(점 뒤 1자리)를 뺀 12자리 본체만 KIPRIS에 매칭된다.
+        # 검증숫자 포함 13자리(full)는 매칭 안 돼 호출만 낭비하므로 본체만 쓴다.
+        base = re.sub(r"\D+", "", value.split(".")[0])
+        if base:
+            return [base]
+    return _unique_texts([full] if full else [])
 
 
 def foreign_target_kind_codes(country: str, value: str, *, source_field: str) -> list[str]:
     parsed = re.search(r"\b([A-Z][0-9]?)\b\s*$", str(value or "").strip().upper())
     parsed_kind = parsed.group(1) if parsed else ""
+    # CN은 출원번호 12자리+A0(공개)/B0(등록)만 KIPRIS에 매칭된다. A/A1/B2/B 등 변형은 호출만 낭비.
     if source_field == "application_number":
-        return _unique_texts([parsed_kind, "A0", "A", "A1"] if country == "CN" else [parsed_kind, "A1", "A"])
+        return _unique_texts([parsed_kind, "A0"] if country == "CN" else [parsed_kind, "A1", "A"])
     if country in {"US", "JP"}:
         return _unique_texts([parsed_kind, "B2", "B1", "B"])
     if country == "CN":
-        return _unique_texts([parsed_kind, "B2", "B", "A0", "A", "A1"])
+        return _unique_texts([parsed_kind, "A0", "B0"])
     return _unique_texts([parsed_kind, "B2", "B"])
 
 
@@ -1964,16 +1986,24 @@ def fetch_foreign_target_reference_data(
             break
 
     cited_documents = dedupe_foreign_reference_documents(cited_documents)[:max_documents]
+    cited_source = "kipris_foreign_patent_documents"
+
+    # Google Patents HTML 1회로 인용(backward)·피인용(forward)을 함께 받는다.
+    google_cited, citing_documents, citing_available = fetch_google_patents_references(
+        client,
+        patent or {},
+        max_documents=max_documents,
+    )
+    # KIPRIS 해외 인용이 비는 국가(예: CN)는 Google Patents 인용으로 비교문헌 후보를 채운다.
+    if not cited_documents and google_cited:
+        cited_documents = dedupe_foreign_reference_documents(google_cited)[:max_documents]
+        cited_source = "google_patents_html_backward_references"
+
     stats = {
         "total_count": len(cited_documents),
         "standardized_count": len(cited_documents),
         "non_standardized_count": 0,
     }
-    citing_documents, citing_available = fetch_google_patents_citing_documents(
-        client,
-        patent or {},
-        max_documents=max_documents,
-    )
     citing_stats = build_citing_stats(citing_documents)
     citing_stats["available"] = citing_available
     if not citing_available:
@@ -1981,7 +2011,7 @@ def fetch_foreign_target_reference_data(
     api_collection = {
         "target_cited_references": {
             "available": bool(cited_documents),
-            "source": "kipris_foreign_patent_documents",
+            "source": cited_source,
             "used_literature_numbers": used_literature_numbers,
             "count": len(cited_documents),
         },
@@ -2041,6 +2071,35 @@ def fetch_google_patents_citing_documents(
         html = decode_google_patents_html_response(response)
         return _google_patents_forward_references(html)[:max_documents], True
     return [], False
+
+
+def fetch_google_patents_references(
+    client: Any,
+    patent: dict[str, Any],
+    *,
+    max_documents: int = 20,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    """Google Patents HTML을 한 번만 받아 인용(backward)·피인용(forward)을 함께 파싱한다.
+
+    반환: (cited_documents, citing_documents, available).
+    """
+    publication_id = google_patents_publication_id(patent)
+    if not publication_id:
+        return [], [], False
+    for language in ("en", "zh", "ja"):
+        try:
+            response = client.session.get(
+                f"https://patents.google.com/patent/{publication_id}/{language}",
+                timeout=getattr(client, "timeout", 20.0),
+            )
+            response.raise_for_status()
+        except Exception:
+            continue
+        html = decode_google_patents_html_response(response)
+        cited = _google_patents_backward_reference_documents(html)[:max_documents]
+        citing = _google_patents_forward_references(html)[:max_documents]
+        return cited, citing, True
+    return [], [], False
 
 
 def normalize_foreign_reference_documents(raw: Any, *, source: str, direction: str) -> list[dict[str, Any]]:
@@ -2570,6 +2629,50 @@ def _google_patents_forward_references(text: str) -> list[dict[str, Any]]:
     return documents
 
 
+def _google_patents_backward_reference_documents(text: str) -> list[dict[str, Any]]:
+    """Google Patents 본문에서 인용 선행문헌(backward references)을 문서 dict로 파싱한다.
+
+    KIPRIS 해외 인용 서비스가 빈값을 주는 국가(예: CN)의 비교문헌 확보용 폴백. forward(피인용)
+    파서와 동일 구조이며 itemprop만 backwardReferences 계열로 바꾼다. 반환 dict는 KIPRIS 인용과
+    같은 형태라 기존 비교문헌 파이프라인(collect_prior_art_candidates)에 그대로 흘러간다.
+    """
+    documents = []
+    seen = set()
+    for row in re.findall(
+        r'<tr\b[^>]*itemprop=["\']backwardReferences(?:Orig|Family)?["\'][^>]*>(.*?)</tr>',
+        text or "",
+        re.I | re.S,
+    ):
+        publication_number = _google_patents_itemprop_text(row, "publicationNumber")
+        normalized = re.sub(r"[^0-9A-Z]", "", str(publication_number or "").upper())
+        match = re.fullmatch(r"([A-Z]{2})(\d+)([A-Z]\d?)", normalized)
+        if not match or normalized in seen:
+            continue
+        seen.add(normalized)
+        country_code, document_number, kind_code = match.groups()
+        documents.append(
+            {
+                "direction": "cited_by_target",
+                "country_code": country_code,
+                "document_number": document_number,
+                "standard_number": document_number,
+                "kind_code": kind_code,
+                "display_number": f"{country_code} {document_number} {kind_code}",
+                "publication_number": normalized,
+                "priority_date": _google_patents_itemprop_text(row, "priorityDate"),
+                "publication_date": _google_patents_itemprop_text(row, "publicationDate"),
+                "assignee": _google_patents_itemprop_text(row, "assigneeOriginal"),
+                "title": _google_patents_itemprop_text(row, "title"),
+                "examiner_cited": bool(
+                    re.search(r'itemprop=["\']examinerCited["\']', row, re.I)
+                ),
+                "is_standardized": True,
+                "source": "google_patents_html_backward_references",
+            }
+        )
+    return documents
+
+
 def _google_patents_reference_display_number(value: str | None) -> str | None:
     normalized = re.sub(r"[^0-9A-Z]", "", str(value or "").upper())
     match = re.fullmatch(r"([A-Z]{2})(\d+)([A-Z]\d?)", normalized)
@@ -2925,20 +3028,13 @@ def _foreign_literature_base_numbers(candidate: dict[str, Any], document_number:
 def _foreign_literature_candidates_for_number(document_number: str, kind_code: str) -> list[str]:
     if not document_number:
         return []
+    # KIPRIS 해외 문헌번호는 12자리 영(0) 패딩 + kind 형식만 매칭된다(ex: US000012417849B2, CN201780067437A0).
+    # 패딩 안 한 형식이나 A0/A/A1 같은 여분 변형은 매칭이 안 돼 KIPRIS 호출만 낭비하므로 제거한다.
+    padded = document_number.zfill(12)
     if kind_code == "A":
-        return [
-            f"{document_number.zfill(12)}A0",
-            f"{document_number}A0",
-            f"{document_number.zfill(12)}A",
-            f"{document_number}A",
-            f"{document_number.zfill(12)}A1",
-            f"{document_number}A1",
-        ]
+        return _unique_texts([f"{padded}A0", f"{padded}A"])
     if kind_code:
-        return [
-            f"{document_number.zfill(12)}{kind_code}",
-            f"{document_number}{kind_code}",
-        ]
+        return [f"{padded}{kind_code}"]
     return []
 
 

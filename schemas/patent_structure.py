@@ -25,6 +25,26 @@ def _none_if_nullish(value: Any) -> Any:
     return value
 
 
+def _normalize_claim_type_value(value: Any) -> str | None:
+    """청구항 유형 표기를 한국어 enum('독립항'/'종속항')으로 정규화한다.
+
+    해외특허 구조화 시 LLM이 현지어 표기(独立項, 独立权利要求, independent claim,
+    '独立항' 같은 혼용 등)를 낼 수 있어 이를 흡수한다. 매핑 불가면 None을 반환한다.
+    ('independent'가 'dependent'를 부분 문자열로 포함하므로 독립을 먼저 판정한다.)
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if any(token in text for token in ("독립", "独立", "獨立")) or "independent" in lowered:
+        return "독립항"
+    if any(token in text for token in ("종속", "従属", "従屬", "從屬", "从属")) or "dependent" in lowered:
+        return "종속항"
+    return None
+
+
 class SpecSupport(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -92,6 +112,22 @@ class Claim(BaseModel):
     depends_on: str | None = None
     added_limitation: str | None = None
     claim_elements: list[ClaimElement] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_claim_type(cls, data: Any) -> Any:
+        # 해외특허(외국어) 구조화 시 LLM이 청구항 유형을 현지 표기로 내보낼 수 있다.
+        # 검증으로 막아 전체 구조화를 실패시키는 대신, 항상 한국어 enum으로 강제 변환한다.
+        # 1) 알려진 다국어 표기는 매핑, 2) 매핑 불가(예상 못한 언어 등)면 depends_on 유무로
+        #    독립/종속을 언어 무관하게 추론 → 어떤 입력이 와도 깨지지 않는다.
+        if not isinstance(data, dict):
+            return data
+        normalized = _normalize_claim_type_value(data.get("type"))
+        if normalized is None:
+            normalized = "종속항" if _none_if_nullish(data.get("depends_on")) else "독립항"
+        if normalized != data.get("type"):
+            data = {**data, "type": normalized}
+        return data
 
     @field_validator("depends_on", "added_limitation", mode="before")
     @classmethod

@@ -367,7 +367,12 @@ def download_foreign_prior_art_fulltext(
     if not country_code:
         return None, None, None, None, ["country_code_missing"]
 
-    for literature_number in _foreign_literature_number_candidates(candidate):
+    # CN 인용문헌은 Google에서 받은 공개번호만 있는데, KIPRIS 해외 전문은 CN을 출원번호(12자리+A0/B0)로만
+    # 조회한다. 즉 공개번호로는 KIPRIS가 항상 실패하므로, 쿼터 낭비를 막기 위해 KIPRIS 시도를 건너뛰고
+    # 곧장 Google Patents PDF로 간다(공개→출원 변환 비용도 없앤다).
+    skip_kipris_fulltext = country_code.upper() == "CN"
+
+    for literature_number in ([] if skip_kipris_fulltext else _foreign_literature_number_candidates(candidate)):
         for fulltext_type, method_name in foreign_fulltext_operation_order(candidate):
             try:
                 raw = getattr(client, method_name)(literature_number, country_code)
