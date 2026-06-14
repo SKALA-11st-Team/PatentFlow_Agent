@@ -2102,7 +2102,7 @@ def test_llm_final_report_markdown_is_used_when_enabled(monkeypatch):
         captured_prompts.append(prompt)
         if "Return ONLY Markdown" not in prompt:
             return '{"score":70,"grade":"B","rationale":"r","evidence_ids":[],"risk_factors":["r"],"missing_information":[],"confidence":0.7}'
-        return "## 1. 의사결정 요약\n\n- AI 권고: 추가 정보 필요"
+        return "## 1. 의사결정 요약\n\n- AI 권고: 유지 권고"
 
     monkeypatch.setattr("agents.valuation.call_llm", fake_call_llm)
     monkeypatch.setattr("agents.writing.final_report.call_llm", fake_call_llm)
@@ -2233,7 +2233,6 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
         "total_score": 280,
         "average_score": 70,
         "recommendation": "유지 권고",
-        "final_indicator": "조건부 유지",
         "final_report_markdown": "# 기존 보고서",
         "axes": {
             "legal": {
@@ -2369,7 +2368,7 @@ def test_final_report_input_payload_ignores_structured_drawing_context(tmp_path)
     valuation_result = {
         "total_score": 300,
         "average_score": 75,
-        "final_indicator": "조건부 유지",
+        "recommendation": "유지 권고",
         "axes": {},
     }
 

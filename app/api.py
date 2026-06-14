@@ -304,7 +304,7 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         averageScore=valuation_average_score(valuation_result),
         finalGrade=valuation_result.get("final_grade")
         or final_grade_for_average(valuation_average_score(valuation_result), applied_config),
-        finalIndicator=valuation_result.get("final_indicator"),
+        finalIndicator=None,
         degraded=is_degraded(final_state, valuation_result),
         failureReason=failure_reason(final_state, valuation_result),
         warnings=workflow_warnings(final_state),

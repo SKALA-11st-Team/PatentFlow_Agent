@@ -144,11 +144,11 @@ def test_build_final_valuation_result_threshold_flips_recommendation():
 def test_build_final_valuation_result_business_fit_override_wins_over_threshold():
     config = resolve_valuation_config({"maintainThreshold": 75})
 
-    # business_fit ≥ 60이면 임계 미달이어도 종합 지표·권고를 유지로 본다(제품 정책 오버라이드).
+    # business_fit ≥ 60이면 임계 미달이어도 AI 권고를 유지 권고로 본다(제품 정책 오버라이드).
     result = build_final_valuation_result(four_axes(70, 70, 70, 70), config=config)
 
     assert result["business_fit_override"] is True
-    assert result["final_indicator"] == "유지"
+    assert "final_indicator" not in result
     assert result["recommendation"] == "유지 권고"
 
 

@@ -946,10 +946,11 @@ def test_report_validation_flags_recommendation_mismatch():
 
     md = (
         "\n".join(f"## {i}. 섹션" for i in range(1, 7))
-        + "\n| 종합 검토 의견 | 조건부 유지 |\n종합 점수 223/400점"
+        + "\n| 종합 검토 의견 | 유지 권고 |\n종합 점수 223/400점"
     )
     state = _report_state(md)
-    state.valuation_result["recommendation"] = "추가 정보 필요"
+    # 보고서 본문("유지 권고")과 다른 값으로 두어 recommendation 불일치를 검증한다.
+    state.valuation_result["recommendation"] = "포기 검토"
 
     result = report_validation_node(state).report_validation_result
 
