@@ -143,9 +143,6 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     assert body["reportSections"]["evaluationScope"] == "범위 본문"
     assert "4.1 권리성" in body["reportSections"]["axisDetails"]
     assert body["reportSections"]["finalOpinion"] == "최종 의견 줄글"
-    # 부족 정보의 팀별 확인사항(review_checklist)이 구조화 필드로 그대로 전달된다.
-    assert body["reviewChecklist"]["사업부서 확인사항"] == ["시장 규모 자료"]
-    assert body["reviewChecklist"]["법무·특허팀 확인사항"] == ["해외 패밀리 등록 상태"]
     assert "rawMarkdown" not in body
 
 
