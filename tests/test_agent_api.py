@@ -75,6 +75,7 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
             "title": "테스트 특허",
             "plain_summary": "테스트 특허 요약",
             "summary_markdown": "# 요약\n\n테스트 특허 요약",
+            "summary_brief": {"one_line_summary": "한 줄 요약", "key_components": ["A", "B", "C"]},
         }
         state.valuation_result = {
             "recommendation": "유지 권고",
@@ -86,7 +87,19 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
                 "market": {"label": "시장성", "score": 65, "grade": "B", "rationale": "시장성 근거"},
                 "business_fit": {"label": "사업 연계성", "score": 70, "grade": "B", "rationale": "사업 연계성 근거"},
             },
-            "final_report_markdown": "# 특허 가치판단 종합 보고서\n\n본문",
+            "review_checklist": {
+                "사업부서 확인사항": ["시장 규모 자료"],
+                "법무·특허팀 확인사항": ["해외 패밀리 등록 상태"],
+            },
+            "final_report_markdown": (
+                "# 특허 가치판단 종합 보고서\n\n"
+                "## 1. 한눈에 보는 검토 결과\n표\n\n"
+                "## 2. 평가대상 및 범위\n범위 본문\n\n"
+                "## 3. 판단 근거\n근거 본문\n\n"
+                "## 4. 평가축별 상세 근거\n### 4.1 권리성\n권리성 본문\n\n"
+                "## 5. 역할별 확인 사항\n### 5.1 사업부 확인 사항\n- 사업부 줄글\n\n"
+                "## 6. 최종 검토 의견\n최종 의견 줄글\n"
+            ),
         }
         state.final_report = {
             "summary": state.summary_result,
@@ -116,7 +129,20 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     assert body["finalGrade"] == "B"
     assert "finalIndicator" not in body
     assert body["summaryMarkdown"].startswith("# 요약")
+    # FE 카드용 구조화 요약본이 그대로 전달된다.
+    assert body["summaryBrief"]["one_line_summary"] == "한 줄 요약"
     assert body["valuationReportMarkdown"].startswith("# 특허 가치판단 종합 보고서")
+    # 보고서 2~6번 섹션이 헤더 제외 본문으로 분리되어 전달된다(1번은 구조화 필드로 대체).
+    assert set(body["reportSections"]) == {
+        "evaluationScope",
+        "judgmentBasis",
+        "axisDetails",
+        "roleChecklist",
+        "finalOpinion",
+    }
+    assert body["reportSections"]["evaluationScope"] == "범위 본문"
+    assert "4.1 권리성" in body["reportSections"]["axisDetails"]
+    assert body["reportSections"]["finalOpinion"] == "최종 의견 줄글"
     assert "rawMarkdown" not in body
 
 

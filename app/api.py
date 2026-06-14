@@ -3,6 +3,7 @@ from __future__ import annotations
 import hmac
 import hashlib
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import BoundedSemaphore
@@ -130,7 +131,14 @@ class PatentEvaluationResponse(BaseModel):
     scores: list[PatentEvaluationScore]
     recommendation: str
     summaryMarkdown: str | None = None
+    # FE 카드용 구조화 요약(요약본을 한 번 더 요약). 생성 경로가 없는 배포에서는 null.
+    # 필드: one_line_summary, problem, core_idea, key_components[], operation_steps[], expected_effect.
+    summaryBrief: dict[str, Any] | None = None
     valuationReportMarkdown: str | None = None
+    # 보고서 본문을 섹션별로 분리한 구조화 필드(헤더 제외, 줄글 본문). FE가 섹션별로 렌더링할 수 있다.
+    # 키: evaluationScope(2. 평가대상 및 범위), judgmentBasis(3. 판단 근거),
+    #     axisDetails(4. 평가축별 상세 근거), roleChecklist(5. 역할별 확인 사항), finalOpinion(6. 최종 검토 의견).
+    reportSections: dict[str, str] = Field(default_factory=dict)
     artifactDir: str | None = None
     totalScore: int | None = None
     averageScore: float | None = None
@@ -312,9 +320,11 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
     return PatentEvaluationResponse(
         patentId=patent_id,
         scores=valuation_scores(valuation_result, evidence_bundle),
-        recommendation=valuation_result.get("recommendation") or "추가 정보 필요",
+        recommendation=valuation_result.get("recommendation") or "포기 검토",
         summaryMarkdown=summary_markdown or None,
+        summaryBrief=summary_result.get("summary_brief") or None,
         valuationReportMarkdown=valuation_markdown or None,
+        reportSections=build_report_sections(valuation_markdown),
         artifactDir=str(final_state.user_input.get("artifact_dir") or "") or None,
         totalScore=valuation_result.get("total_score"),
         averageScore=valuation_average_score(valuation_result),
@@ -450,6 +460,34 @@ def build_axis_evidence_details(
         if len(details) >= _MAX_AXIS_EVIDENCE_DETAILS:
             break
     return details
+
+
+# 보고서 최상위 섹션 번호 → FE 계약용 키. 1번(한눈에 보는 검토 결과)은 구조화 필드로 이미
+# 제공되므로 제외하고, 2~6번 본문을 섹션별로 내보낸다.
+REPORT_SECTION_KEYS = {
+    "2": "evaluationScope",
+    "3": "judgmentBasis",
+    "4": "axisDetails",
+    "5": "roleChecklist",
+    "6": "finalOpinion",
+}
+
+
+def build_report_sections(markdown: str | None) -> dict[str, str]:
+    """가치평가 보고서 마크다운을 `## N. 제목` 최상위 섹션 단위로 분리한다(헤더 제외, 본문만).
+
+    각 섹션 본문은 다음 `## N.` 헤더 직전까지이며, 4번의 4.1~4.4 같은 `### ` 하위 섹션은 그대로 포함된다.
+    """
+    if not markdown:
+        return {}
+    # 캡처 split: [머리말, "2", 본문, "3", 본문, ...]
+    parts = re.split(r"(?m)^##[ \t]+(\d+)\.[^\n]*$\n?", markdown)
+    sections: dict[str, str] = {}
+    for number, body in zip(parts[1::2], parts[2::2]):
+        key = REPORT_SECTION_KEYS.get(number.strip())
+        if key:
+            sections[key] = body.strip()
+    return sections
 
 
 def valuation_scores(
