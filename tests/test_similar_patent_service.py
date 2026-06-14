@@ -1,6 +1,27 @@
 from services.patent import similar_patent_service
 
 
+def test_build_similar_patent_context_foreign_target_skips_with_explicit_warning(monkeypatch):
+    # 해외 타깃은 국내 검색만 가용해 항상 0건이 된다 → 무용한 KIPRIS 호출 없이
+    # "미지원(검색 건너뜀)"을 명시 경고로 노출해야 한다("찾았으나 없음"과 구분).
+    def _fail_if_called(*args, **kwargs):  # pragma: no cover - 호출되면 테스트 실패
+        raise AssertionError("foreign target must not trigger a KIPRIS search")
+
+    monkeypatch.setattr(similar_patent_service, "KiprisClient", _fail_if_called)
+
+    result = similar_patent_service.build_similar_patent_context(
+        target_metadata={"title": "AI accelerator", "abstract": "...", "filing_date": "20200101"},
+        representative_cpc=None,
+        representative_ipc="G06F 15/00",
+        country_code="US",
+        collect_pdf=True,
+    )
+
+    assert result["similar_patents"] == []
+    assert result["candidate_count"] == 0
+    assert result["warnings"] == ["similar_patent_skipped:foreign_target_unsupported"]
+
+
 def test_collect_similar_patent_pdfs_exposes_claims_and_technical_content(monkeypatch, tmp_path):
     monkeypatch.setattr(
         similar_patent_service,
