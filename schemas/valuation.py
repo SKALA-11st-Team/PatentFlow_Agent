@@ -8,7 +8,7 @@ VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market", "b
 # 종합 점수(total_score/average_score)는 권리성·기술성·시장성 3축으로만 산정한다.
 # 사업 연계성(business_fit)은 합산 대신 AI 권고 라벨 오버라이드로만 작용한다.
 CORE_VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market")
-FinalRecommendation = Literal["유지 권고", "포기 검토"]
+FinalRecommendation = Literal["유지 권고", "조건부 유지", "포기 검토"]
 FinalGrade = Literal["A", "B", "C", "D"]
 
 # 운영 설정으로 재정의 가능한 가치평가 기준의 기본값. BE가 valuationConfig를 보내지 않으면

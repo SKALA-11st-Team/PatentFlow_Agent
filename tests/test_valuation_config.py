@@ -90,9 +90,13 @@ def test_grade_for_score_uses_custom_cutoffs():
     assert grade_for_score(49, cutoffs) == "D"
 
 
-def test_score_to_final_recommendation_uses_threshold():
-    assert score_to_final_recommendation(55, threshold=50) == "유지 권고"
-    assert score_to_final_recommendation(55) == "포기 검토"
+def test_score_to_final_recommendation_three_tier_cutoffs():
+    # ≥70 유지 권고, 50~69 조건부 유지, <50 포기 검토.
+    assert score_to_final_recommendation(70) == "유지 권고"
+    assert score_to_final_recommendation(60) == "조건부 유지"
+    assert score_to_final_recommendation(49) == "포기 검토"
+    # 컷오프는 파라미터로 조정 가능하다.
+    assert score_to_final_recommendation(55, maintain_cutoff=50) == "유지 권고"
 
 
 def test_build_final_valuation_result_defaults_match_legacy_equal_average():
@@ -131,14 +135,15 @@ def test_build_final_valuation_result_applies_weighted_average_and_cutoffs():
     assert result["axes"]["legal"]["grade"] == "A"
 
 
-def test_build_final_valuation_result_threshold_flips_recommendation():
+def test_recommendation_uses_fixed_cutoffs_not_config_threshold():
+    # recommendation은 고정 컷오프(70/50)를 적용하며 maintainThreshold 설정에 영향받지 않는다.
     config = resolve_valuation_config({"maintainThreshold": 75})
 
-    # business_fit < 60(오버라이드 없음)에서 임계만으로 권고가 뒤집히는지 본다.
+    # business_fit < 60(오버라이드 없음), 평균 70 → 설정과 무관하게 유지 권고(70 ≥ 70).
     result = build_final_valuation_result(four_axes(70, 70, 70, 50), config=config)
 
     assert result["average_score"] == 70.0
-    assert result["recommendation"] == "포기 검토"
+    assert result["recommendation"] == "유지 권고"
 
 
 def test_build_final_valuation_result_business_fit_override_wins_over_threshold():
@@ -152,13 +157,13 @@ def test_build_final_valuation_result_business_fit_override_wins_over_threshold(
     assert result["recommendation"] == "유지 권고"
 
 
-def test_build_final_valuation_result_honors_zero_maintain_threshold():
-    """maintainThreshold=0(항상 유지 권고)이 `or 60`으로 무시되던 버그 회귀 테스트."""
+def test_recommendation_ignores_maintain_threshold_config():
+    # recommendation은 점수 기반 고정 컷오프(70/50)를 쓰므로 maintainThreshold 설정에 좌우되지 않는다.
     config = resolve_valuation_config({"maintainThreshold": 0})
 
     result = build_final_valuation_result(four_axes(10, 10, 10, 10), config=config)
 
-    assert result["recommendation"] == "유지 권고"
+    assert result["recommendation"] == "포기 검토"
 
 
 def test_reconcile_legal_scores_uses_configured_subscore_max():

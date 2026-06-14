@@ -371,12 +371,7 @@ def build_final_valuation_result(
     required_actions = []
     if business_fit.get("missing_information"):
         required_actions.append("사업부 적용 여부 및 향후 적용 계획 확인")
-    # `or 60`은 유효 설정값 0(항상 유지 권고)을 기본값 60으로 되돌리는 버그라 None 체크로 처리한다.
-    configured_threshold = applied_config.get("maintainThreshold")
-    recommendation = score_to_final_recommendation(
-        average_score,
-        threshold=60.0 if configured_threshold is None else float(configured_threshold),
-    )
+    recommendation = score_to_final_recommendation(average_score)
     if business_fit_override:
         recommendation = "유지 권고"
     result = {
@@ -444,9 +439,22 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
-def score_to_final_recommendation(average_score: float, *, threshold: float = 60) -> str:
-    if average_score >= threshold:
+# AI 검토 의견(recommendation) 점수 컷오프(평균점 기준):
+#   ≥70 유지 권고 · 50~69 조건부 유지 · <50 포기 검토.
+MAINTAIN_RECOMMENDATION_CUTOFF = 70.0
+CONDITIONAL_RECOMMENDATION_CUTOFF = 50.0
+
+
+def score_to_final_recommendation(
+    average_score: float,
+    *,
+    maintain_cutoff: float = MAINTAIN_RECOMMENDATION_CUTOFF,
+    conditional_cutoff: float = CONDITIONAL_RECOMMENDATION_CUTOFF,
+) -> str:
+    if average_score >= maintain_cutoff:
         return "유지 권고"
+    if average_score >= conditional_cutoff:
+        return "조건부 유지"
     return "포기 검토"
 
 
