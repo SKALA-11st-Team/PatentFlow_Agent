@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
-from agents.valuation_axes.common import grade_for_score, select_by_source_types
+from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_source_types
 from agents.valuation_axes.market import clamp_int, extract_patent_country, extract_representative_cpc, extract_representative_ipc
-from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context
-from services.patent.prior_art_patent_service import build_prior_art_patent_context
+from agents.valuation_axes.payload_common import (
+    build_base_input_payload,
+    build_claim_context,
+    build_element_structure_payload,
+)
+from services.patent.prior_art_patent_service import build_prior_art_patent_context, has_prior_art_fulltext
 from services.patent.similar_patent_service import build_similar_patent_context
 from workflow.state import PatentWorkflowState
 
@@ -14,10 +19,25 @@ from workflow.state import PatentWorkflowState
 AXIS = "technology"
 LABEL = "기술성"
 PROMPT_PATH = "valuation/valuation_technology.md"
-TECHNOLOGY_COMPARISON_TARGET_COUNT = 5
-TECHNOLOGY_SUBSCORE_CANDIDATES = {
-    "technical_differentiation": (4, 8, 12, 16, 20, 5, 10, 15, 20, 25, 3, 6, 9, 12, 15),
-    "implementation_specificity": (0, 10, 15, 25, 30, 40),
+TECHNOLOGY_COMPARISON_TARGET_COUNT = 3
+COMPARISON_CLAIM_TEXT_LIMIT = 1200
+COMPARISON_TECHNICAL_CONTENT_LIMITS = {
+    "problem": 1200,
+    "solution": 2500,
+    "effect": 1500,
+    "detailed_description": 5000,
+}
+TECHNOLOGY_DETAIL_SCORE_CANDIDATES = {
+    "technical_differentiation": {
+        "configuration_operation_differentiation": (0, 8, 17, 25),
+        "effect_differentiation": (0, 5, 10, 15),
+        "imitation_avoidance_difficulty": (0, 3, 7, 10),
+    },
+    "implementation_specificity": {
+        "component_specificity": (0, 7, 14, 20),
+        "procedure_specificity": (0, 7, 14, 20),
+        "implementation_utilization_specificity": (0, 3, 7, 10),
+    },
 }
 
 
@@ -39,24 +59,56 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     del state
+    # AG-01(EVID-02 복원): KIPRIS 경쟁특허 근거를 기술성 축에 포함 — 인접 출원 대비 차별성 판단.
     return select_by_source_types(
         items,
-        source_types={"portfolio_context", "industry_report", "patent_api"},
+        source_types={"portfolio_context", "industry_report", "patent_api", "competitor_patent"},
     )
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    return build_base_input_payload(
+    payload = build_base_input_payload(
         state=state,
         evidence=evidence,
-        claim_context=build_claim_context(state, include_dependent_claims=False),
+        claim_context=build_claim_context(state, include_dependent_claims=True),
     )
+    payload["patent"]["technical_context"] = build_target_technical_context(state)
+    # 주요구성요소(구조화 결과)도 비교 근거로 함께 제공한다(하이브리드).
+    payload["element_structure"] = build_element_structure_payload(state)
+    return payload
+
+
+def build_target_technical_context(state: PatentWorkflowState) -> dict[str, Any]:
+    preprocessed = state.preprocessed_patent or {}
+    sections = preprocessed.get("sections") if isinstance(preprocessed.get("sections"), dict) else {}
+    drawing_context = (
+        preprocessed.get("drawing_context")
+        if isinstance(preprocessed.get("drawing_context"), dict)
+        else {}
+    )
+    return {
+        "technical_field": normalize_text(sections.get("technical_field")),
+        "background_art": normalize_text(sections.get("background_art")),
+        "problem": normalize_text(sections.get("problem")),
+        "solution": normalize_text(sections.get("solution")),
+        "effect": normalize_text(sections.get("effect")),
+        "detailed_description": normalize_text(sections.get("detailed_description")),
+        "figure_description": normalize_text(drawing_context.get("figure_description")),
+        "representative_figure_detail": normalize_text(
+            drawing_context.get("representative_figure_detail")
+        ),
+    }
 
 
 def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
     preprocessed = state.preprocessed_patent or {}
     sections = (preprocessed.get("sections") or {}) if isinstance(preprocessed, dict) else {}
     claims = (preprocessed.get("claims") or []) if isinstance(preprocessed, dict) else []
+    drawing_context = (
+        preprocessed.get("drawing_context")
+        if isinstance(preprocessed.get("drawing_context"), dict)
+        else {}
+    )
     metadata = {
         **(state.patent_structured or {}),
         **((preprocessed.get("metadata")) or {}),
@@ -78,7 +130,7 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
     artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
     similar_dir = Path(artifact_dir) / "similar_patents" if artifact_dir else None
     prior_art_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
-    return build_hybrid_context(
+    metrics = build_hybrid_context(
         metadata=metadata,
         kipris_api_data=state.kipris_api_data,
         representative_cpc=representative_cpc,
@@ -88,6 +140,79 @@ def build_technology_metrics(state: PatentWorkflowState) -> dict[str, Any]:
         prior_art_dir=prior_art_dir,
         prior_art_context=state.prior_art_context,
     )
+    metrics["target_document_indicators"] = build_document_indicators(
+        text_parts=[
+            sections.get("solution"),
+            sections.get("effect"),
+            sections.get("detailed_description"),
+            sections.get("figure_description"),
+            drawing_context.get("representative_figure_detail"),
+        ],
+        claims=claims,
+    )
+    metrics["similar_patents"] = [
+        attach_comparison_document_indicators(item)
+        for item in metrics.get("similar_patents") or []
+    ]
+    return metrics
+
+
+DOCUMENT_INDICATOR_PATTERNS = {
+    "embodiment_mentions": r"실시예|실시\s*형태|example|embodiment|実施例|実施形態|实施例|具体实施方式",
+    "figure_mentions": r"(?:도|도면|fig(?:ure)?\.?|図|附图)\s*\d+",
+    "formula_mentions": r"수학식|산식|equation|formula|式\s*\d+|公式",
+    "parameter_mentions": r"파라미터|매개변수|임계값|가중치|parameter|threshold|weight|閾値|参数|阈值",
+    "data_structure_mentions": r"데이터\s*구조|테이블|리스트|배열|행렬|벡터|그래프|data\s*structure|table|list|array|matrix|vector|graph",
+    "input_output_mentions": r"입력|출력|input|output|入力|出力|输入|输出",
+    "condition_branch_mentions": r"조건|분기|경우|이면|반복|\b(?:condition|branch|if|when|loop)\b|条件|分岐|分支",
+    "control_mentions": r"제어|피드백|상태|동기화|control|feedback|state|synchroni[sz]|制御|控制|反馈",
+    "step_reference_mentions": r"\bS\d{2,4}\b|단계|step\s*\d+|ステップ|步骤",
+}
+
+
+def build_document_indicators(
+    *,
+    text_parts: list[Any],
+    claims: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    text = "\n".join(normalize_text(value) for value in text_parts if normalize_text(value))
+    claims = claims or []
+    indicators = {
+        key: len(re.findall(pattern, text, flags=re.IGNORECASE))
+        for key, pattern in DOCUMENT_INDICATOR_PATTERNS.items()
+    }
+    return {
+        "text_available": bool(text),
+        "independent_claim_count": sum(1 for claim in claims if claim.get("is_independent")),
+        "dependent_claim_count": sum(1 for claim in claims if not claim.get("is_independent")),
+        **indicators,
+    }
+
+
+def attach_comparison_document_indicators(item: dict[str, Any]) -> dict[str, Any]:
+    technical_content = item.get("technical_content")
+    if not isinstance(technical_content, dict):
+        technical_content = {}
+    claims = item.get("representative_claims")
+    if not isinstance(claims, list):
+        claims = []
+    structured_text_parts = [
+        technical_content.get("problem"),
+        technical_content.get("solution"),
+        technical_content.get("effect"),
+        technical_content.get("detailed_description"),
+    ]
+    return {
+        **item,
+        "document_indicators": build_document_indicators(
+            text_parts=(
+                structured_text_parts
+                if any(normalize_text(value) for value in structured_text_parts)
+                else [item.get("pdf_text")]
+            ),
+            claims=[claim for claim in claims if isinstance(claim, dict)],
+        ),
+    }
 
 
 def build_similar_context(
@@ -130,6 +255,8 @@ def build_prior_art_context(
     metadata: dict[str, Any],
     kipris_api_data: dict[str, Any] | None,
     output_dir: Path | None,
+    home_country: str | None = None,
+    target_fulltext_count: int | None = TECHNOLOGY_COMPARISON_TARGET_COUNT,
 ) -> dict[str, Any]:
     try:
         return build_prior_art_patent_context(
@@ -138,6 +265,8 @@ def build_prior_art_context(
             collect_pdf=True,
             output_dir=output_dir,
             pdf_text_limit=None,
+            home_country=home_country,
+            target_fulltext_count=target_fulltext_count,
         )
     except Exception as exc:
         return {
@@ -165,10 +294,13 @@ def build_hybrid_context(
         metadata=metadata,
         kipris_api_data=kipris_api_data,
         output_dir=prior_art_dir,
+        home_country=country_code,
     )
     prior_items = list(prior_art.get("similar_patents") or [])
+    # 비교문헌은 전문(본문)이 있어야 쓸 수 있으므로, "후보 수"가 아니라 "전문 성공 수"로 충분 여부를 판정한다.
+    prior_fulltext_items = [item for item in prior_items if has_prior_art_fulltext(item)]
 
-    if len(prior_items) >= target_top_k:
+    if len(prior_fulltext_items) >= target_top_k:
         return {
             "comparison_mode": "hybrid",
             "selection_policy": "prior-art-only",
@@ -176,7 +308,7 @@ def build_hybrid_context(
             "representative_ipc": representative_ipc,
             "country_code": country_code,
             "candidate_count": int(prior_art.get("candidate_count") or 0),
-            "similar_patents": compact_comparison_items(prior_items[:target_top_k]),
+            "similar_patents": compact_comparison_items(prior_fulltext_items[:target_top_k]),
             "target_count": target_top_k,
             "warnings": list(prior_art.get("warnings") or []),
         }
@@ -188,8 +320,9 @@ def build_hybrid_context(
         country_code=country_code,
         output_dir=similar_dir,
     )
+    # 부족분만 CPC/IPC 유사특허로 채운다. 전문 있는 선행문헌을 앞에 두고, 그다음 유사특허.
     hybrid_items = merge_hybrid_items(
-        prior_items=prior_items,
+        prior_items=prior_fulltext_items,
         similar_items=list(similar.get("similar_patents") or []),
         target_count=target_top_k,
     )
@@ -235,85 +368,89 @@ def merge_hybrid_items(*, prior_items: list[dict[str, Any]], similar_items: list
 
 
 def compact_comparison_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    drop_keys = {"pdf_text_excerpt", "similarity_text", "resolved_search_matches"}
+    drop_keys = {
+        "pdf_text",
+        "pdf_text_excerpt",
+        "similarity_text",
+        "resolved_search_matches",
+        "markdown_paths",
+    }
     return [
         {
             "document_role": "prior_art_or_similar_comparison",
-            **{key: value for key, value in item.items() if key not in drop_keys},
+            **{
+                key: compact_comparison_value(key, value)
+                for key, value in item.items()
+                if key not in drop_keys
+            },
         }
         for item in items
     ]
+
+
+def compact_comparison_value(key: str, value: Any) -> Any:
+    if key == "representative_claims" and isinstance(value, list):
+        return [
+            {
+                **claim,
+                "text": normalize_text(claim.get("text"))[:COMPARISON_CLAIM_TEXT_LIMIT],
+            }
+            for claim in value[:5]
+            if isinstance(claim, dict) and normalize_text(claim.get("text"))
+        ]
+    if key == "technical_content" and isinstance(value, dict):
+        return {
+            field: normalize_text(value.get(field))[:limit]
+            for field, limit in COMPARISON_TECHNICAL_CONTENT_LIMITS.items()
+            if normalize_text(value.get(field))
+        }
+    return value
+
+
 def apply_technology_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
     subscores = normalize_candidate_subscores(result.get("subscores") or {})
     technical_differentiation_score = int(subscores["technical_differentiation"]["score"])
     implementation_specificity_score = int(subscores["implementation_specificity"]["score"])
     score = technical_differentiation_score + implementation_specificity_score
-    # VAL-06: 비교군(유사특허) 충족도에 따라 confidence를 강등하고 부족을 표면화한다(시장성 축과 대칭).
-    comparison_count = len(metrics.get("similar_patents") or [])
-    target_count = int(metrics.get("target_count") or TECHNOLOGY_COMPARISON_TARGET_COUNT)
-    confidence = float(result.get("confidence") or 0)
-    missing_information = list(result.get("missing_information") or [])
-    if comparison_count == 0:
-        confidence = min(confidence, 0.49)
-        message = "비교군 미수집: 기술 차별성 비교 근거 없음(KIPRIS 선행기술/유사특허 검색 0건)"
-        if message not in missing_information:
-            missing_information.append(message)
-    elif comparison_count < target_count:
-        confidence = min(confidence, 0.69)
-        message = f"비교군 부족: 확보 {comparison_count}/{target_count}건"
-        if message not in missing_information:
-            missing_information.append(message)
     return {
         **result,
         "score": max(0, min(100, score)),
         "grade": grade_for_score(score),
         "subscores": subscores,
         "technology_metrics": metrics,
-        "confidence": max(0.0, min(1.0, confidence)),
-        "missing_information": missing_information,
     }
 
 
 def normalize_candidate_subscores(subscores: dict[str, Any]) -> dict[str, Any]:
     normalized: dict[str, Any] = {}
-    for key, candidates in TECHNOLOGY_SUBSCORE_CANDIDATES.items():
+    for key in TECHNOLOGY_DETAIL_SCORE_CANDIDATES:
         item = dict(subscores.get(key) or {})
-        if key == "technical_differentiation":
-            item["score"] = normalize_technology_differentiation_candidate_score(item)
-        elif key == "implementation_specificity":
-            item["score"] = normalize_implementation_specificity_candidate_score(item)
+        item["score"] = normalize_technology_detail_scores(item, key=key)
+        item["max_score"] = 50
         normalized[key] = item
     return normalized
 
 
-def normalize_technology_differentiation_candidate_score(item: dict[str, Any]) -> int:
+def normalize_technology_detail_scores(item: dict[str, Any], *, key: str) -> int:
     details = item.get("details")
-    if isinstance(details, dict):
-        configuration = nearest_candidate_score(details.get("configuration_differentiation"), (4, 8, 12, 16, 20))
-        operation = nearest_candidate_score(details.get("operation_differentiation"), (5, 10, 15, 20, 25))
-        effect = nearest_candidate_score(details.get("effect_differentiation"), (3, 6, 9, 12, 15))
-        item["details"] = {
-            "configuration_differentiation": configuration,
-            "operation_differentiation": operation,
-            "effect_differentiation": effect,
-        }
-        return configuration + operation + effect
-    return clamp_int(item.get("score"), default=0, max_value=60)
-
-
-def normalize_implementation_specificity_candidate_score(item: dict[str, Any]) -> int:
-    details = item.get("details")
-    if isinstance(details, dict):
-        component = nearest_candidate_score(details.get("component_specificity"), (0, 15))
-        procedure = nearest_candidate_score(details.get("procedure_specificity"), (0, 15))
-        implementation = nearest_candidate_score(details.get("implementation_specificity_detail"), (0, 10))
-        item["details"] = {
-            "component_specificity": component,
-            "procedure_specificity": procedure,
-            "implementation_specificity_detail": implementation,
-        }
-        return component + procedure + implementation
-    return clamp_int(item.get("score"), default=0, max_value=40)
+    candidates_by_detail = TECHNOLOGY_DETAIL_SCORE_CANDIDATES[key]
+    if not isinstance(details, dict):
+        return clamp_int(item.get("score"), default=0, max_value=50)
+    normalized_details = {}
+    for detail_key, candidates in candidates_by_detail.items():
+        raw_detail = details.get(detail_key)
+        if isinstance(raw_detail, dict):
+            normalized_details[detail_key] = {
+                **raw_detail,
+                "score": nearest_candidate_score(raw_detail.get("score"), candidates),
+            }
+        else:
+            normalized_details[detail_key] = nearest_candidate_score(raw_detail, candidates)
+    item["details"] = normalized_details
+    return sum(
+        detail.get("score", 0) if isinstance(detail, dict) else detail
+        for detail in normalized_details.values()
+    )
 
 
 def nearest_candidate_score(value: Any, candidates: tuple[int, ...]) -> int:

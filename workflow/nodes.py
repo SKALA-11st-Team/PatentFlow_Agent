@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import contextvars
+import json
 import re
 
 from app.config import settings
@@ -16,6 +17,10 @@ from services.patent.prior_art_patent_service import (
     build_prior_art_patent_context,
     prior_art_context_citation_documents,
 )
+from services.patent.patent_structuring_service import (
+    COMPARISON_TARGET_COUNT,
+    structure_target_and_comparisons,
+)
 from services.patent.portfolio_service import analyze_portfolio_siblings, save_portfolio_evidence_result
 from services.evidence.compression_service import (
     DEFAULT_RAG_SCORE_THRESHOLD,
@@ -24,9 +29,12 @@ from services.evidence.compression_service import (
 )
 from services.evidence.external_search_service import MAX_SEARCH_QUERIES, collect_external_evidence, rewrite_search_queries
 from services.evidence.news_filter_service import filter_news_evidence, save_filtered_news_result
-from services.evidence.quality_service import score_and_rank_evidence_items
+from services.evidence.news_localization import is_foreign_country, resolve_domestic_locale
 from services.evidence.skax_site_search_service import collect_skax_site_evidence
-from services.evidence.store_service import save_filtered_evidence_bundle
+from services.evidence.store_service import (
+    save_filtered_evidence_bundle,
+    save_skax_site_search_result,
+)
 from services.rag.industry_rag_service import (
     resolve_patent_industries,
     search_and_save_patent_industry_evidence,
@@ -72,6 +80,7 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 "family_patents": state.kipris_family_patents,
                 "citation_stats": state.kipris_api_data.get("citation_stats", {}),
                 "citing_stats": state.kipris_api_data.get("citing_stats", {}),
+                "citing_documents": state.kipris_api_data.get("citing_document_records", []),
             },
         }
     patent_country = str((patent or {}).get("country") or "").strip().upper()
@@ -237,12 +246,15 @@ def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
     artifact_dir = state.user_input.get("artifact_dir") if state.user_input else None
     output_dir = Path(artifact_dir) / "prior_art_patents" if artifact_dir else None
     try:
+        home_country = str((state.patent_structured or {}).get("country") or "").strip().upper() or None
         state.prior_art_context = build_prior_art_patent_context(
             target_metadata=metadata,
             kipris_api_data=state.kipris_api_data,
             collect_pdf=bool(output_dir),
             output_dir=output_dir,
             pdf_text_limit=None,
+            home_country=home_country,
+            target_fulltext_count=COMPARISON_TARGET_COUNT if output_dir else None,
         )
     except Exception as exc:
         state.prior_art_context = {
@@ -263,6 +275,144 @@ def prior_art_fulltext_node(state: PatentWorkflowState) -> PatentWorkflowState:
         if state.kipris_api_data is not None:
             state.kipris_api_data["citation_evidence"] = state.citation_evidence
     return state
+
+
+@trace(run_type="tool")
+def patent_structuring_node(state: PatentWorkflowState) -> PatentWorkflowState:
+    """타깃 + 비교 특허군(선행문헌)을 동일 schema로 구조화한다.
+
+    구조화 결과(target_structure/comparison_structures)는 권리성·기술성이
+    element 단위 비교에 쓴다. 비교 특허는 prior_art_context(선행문헌, pdf_text 보유)에서
+    직접 가져온다 — 기술성 비교군 조립과는 분리한다.
+    """
+    if state.target_structure is not None or state.comparison_structures:
+        return state
+
+    target_input = build_target_structuring_input(state)
+    comparison_inputs = build_comparison_structuring_inputs(state)
+    if not target_input and not comparison_inputs:
+        return state
+
+    target_structure, comparison_structures, failures = structure_target_and_comparisons(
+        target_input=target_input or {},
+        comparison_inputs=comparison_inputs,
+    )
+    state.target_structure = target_structure
+    state.comparison_structures = comparison_structures
+    save_patent_structures(
+        state,
+        target_structure,
+        comparison_structures,
+        failures,
+        comparison_input_count=len(comparison_inputs),
+    )
+    return state
+
+
+def save_patent_structures(
+    state: PatentWorkflowState,
+    target_structure: dict | None,
+    comparison_structures: list[dict],
+    failures: list[dict] | None = None,
+    *,
+    comparison_input_count: int | None = None,
+) -> None:
+    """구조화 결과(타깃 + 비교군)를 artifact_dir/patent_structures 아래 JSON으로 저장한다."""
+    if state.user_input.get("no_save", False):
+        return
+    failures = failures or []
+    output_dir = artifact_subdir(state, "patent_structures")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if target_structure is not None:
+        _write_json(output_dir / "target.json", target_structure)
+
+    for index, structure in enumerate(comparison_structures, start=1):
+        doc_id = _safe_filename(str((structure or {}).get("doc_id") or f"comparison_{index}"))
+        _write_json(output_dir / f"comparison_{index:02d}_{doc_id}.json", structure)
+
+    # 타깃 + 비교군을 한 파일로도 묶어 둔다(전체 조회용 + 누락/실패 추적용).
+    _write_json(
+        output_dir / "all_structures.json",
+        {
+            "target": target_structure,
+            "comparisons": comparison_structures,
+            "target_structured": target_structure is not None,
+            "comparison_input_count": comparison_input_count
+            if comparison_input_count is not None
+            else len(comparison_structures) + len(failures),
+            "comparison_structured_count": len(comparison_structures),
+            "failure_count": len(failures),
+            "failures": failures,
+        },
+    )
+
+
+def _write_json(path: Path, payload: object) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _safe_filename(value: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z._-]", "_", value).strip("_")
+    return cleaned[:80] or "unknown"
+
+
+def build_target_structuring_input(state: PatentWorkflowState) -> dict | None:
+    preprocessed = state.preprocessed_patent or {}
+    sections = preprocessed.get("sections") if isinstance(preprocessed.get("sections"), dict) else {}
+    specification_text = "\n\n".join(
+        str(sections.get(key) or "").strip()
+        for key in ("solution", "detailed_description", "effect")
+        if str(sections.get(key) or "").strip()
+    )
+    claims_text = str(sections.get("claims_text") or "").strip()
+    if not claims_text:
+        claims_text = "\n".join(
+            str((claim or {}).get("text") or "").strip()
+            for claim in (preprocessed.get("claims") or [])
+            if str((claim or {}).get("text") or "").strip()
+        )
+    if not specification_text and not claims_text:
+        return None
+    structured = state.patent_structured or {}
+    doc_id = str(
+        structured.get("application_number")
+        or structured.get("registration_number")
+        or (preprocessed.get("metadata") or {}).get("application_number")
+        or ""
+    )
+    return {
+        "doc_id": doc_id,
+        "specification_text": specification_text,
+        "claims_text": claims_text,
+        "drawings_text": str(sections.get("drawings") or "").strip(),
+    }
+
+
+def build_comparison_structuring_inputs(state: PatentWorkflowState) -> list[dict]:
+    # 비교 특허는 prior_art_context(선행문헌, pdf_text 보유)에서 직접 가져온다.
+    context = state.prior_art_context or {}
+    items = context.get("prior_art_patents") or context.get("similar_patents") or []
+    inputs: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        specification_text = str(item.get("pdf_text") or item.get("pdf_text_excerpt") or "").strip()
+        if not specification_text:
+            continue
+        doc_id = str(item.get("display_number") or item.get("application_number") or item.get("title") or "")
+        inputs.append(
+            {
+                "doc_id": doc_id,
+                "specification_text": specification_text,
+                "claims_text": "",
+                "drawings_text": "",
+                "comparison_source": "prior_art",
+            }
+        )
+        if len(inputs) >= COMPARISON_TARGET_COUNT:
+            break
+    return inputs
 
 
 def merge_prior_art_citation_evidence(
@@ -376,17 +526,22 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
         state.current_stage = "evidence_check"
         return state
 
+    country = (state.patent_structured or {}).get("country")
+    is_foreign = is_foreign_country(country)
+    domestic_country, domestic_language = resolve_domestic_locale(country)
     rewritten = rewrite_search_queries(
         preprocessed_patent=preprocessed,
         missing_evidence=state.missing_evidence,
         previous_queries=state.search_queries,
         retry_count=state.retry_count,
         use_llm=True,
+        domestic_language=domestic_language,
+        is_foreign=is_foreign,
     )
     state.search_queries = compact_workflow_queries(
         [
             *state.search_queries,
-            *rewritten.get("ko", []),
+            *rewritten.get("domestic", []),
             *rewritten.get("en", []),
             *rewritten.get("industry_rag", []),
             *rewritten.get("skax_site", []),
@@ -394,11 +549,14 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
     )
     state.query_plan = {
         "source": "query_rewriting",
-        "ko_queries": rewritten.get("ko", []),
+        "domestic_queries": rewritten.get("domestic", []),
         "en_queries": rewritten.get("en", []),
         "industry_rag_queries": rewritten.get("industry_rag", []),
         "skax_site_queries": rewritten.get("skax_site", []),
         "rewrite_meta": rewritten.get("meta", {}),
+        "is_foreign": is_foreign,
+        "domestic_country": domestic_country,
+        "domestic_language": domestic_language,
     }
     state.current_stage = "query_rewriting"
     return state
@@ -430,8 +588,11 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             include_gnews=not skip_news_evidence,
             # EVID-02: 경쟁특허 근거(KIPRIS)를 기본 수집한다(application_number 있을 때만 실효).
             include_kipris=state.user_input.get("include_kipris_competitor", True),
-            ko_queries_override=query_plan.get("ko_queries", []),
-            en_queries_override=query_plan.get("en_queries", []),
+            # 해외특허는 domestic 채널을 Tavily(country=대상국, 현지어)로 대체한다.
+            is_foreign=bool(query_plan.get("is_foreign")),
+            domestic_country=query_plan.get("domestic_country"),
+            domestic_queries_override=query_plan.get("domestic_queries") or None,
+            en_queries_override=query_plan.get("en_queries") or None,
             output_dir=artifact_subdir(state, "api_evidence"),
             save=not no_save,
         )
@@ -492,10 +653,6 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     skax_items = skax_result.get("items", [])
     if skax_items:
         evidence_items = merge_evidence_items(evidence_items, skax_items)
-    # EVID-12: 출처 신뢰도·최신성 가중치(quality_weight)를 부여하고 가중치 내림차순으로
-    # 정렬 + 제목 근사중복 제거. 이후 압축/선택 절단에서 고품질 근거가 먼저 살아남는다.
-    quality_result = score_and_rank_evidence_items(evidence_items)
-    evidence_items = quality_result["items"]
     filtered_evidence_path = save_filtered_evidence_safely(
         patent_id=patent.get("id") or preprocessed.get("patent_id"),
         news_items=news_filter_result.get("kept", []),
@@ -504,12 +661,20 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
         output_dir=artifact_subdir(state, "filtered_evidence"),
         save=not state.user_input.get("no_save", False),
     )
+    # 뉴스처럼 SK AX 검색의 raw 결과·진단(실제 전송 쿼리·후보 URL·필터 통계)을 별도 artifact로 남긴다.
+    skax_search_path = save_skax_site_search_safely(
+        patent_id=patent.get("id") or preprocessed.get("patent_id"),
+        skax_result=skax_result,
+        output_dir=artifact_subdir(state, "skax_site_search"),
+        save=not no_save,
+    )
     state.evidence_bundle = evidence_items
     state.query_plan = {
         **query_plan,
-        "selected_ko_queries": result.get("queries", []),
+        "selected_domestic_queries": result.get("queries", []),
         "selected_en_queries": result.get("gnews_queries", []),
         "search_warnings": result.get("warnings", []),
+        "rewrite_meta": result.get("rewrite_meta", query_plan.get("rewrite_meta", {})),
         "news_filter": {
             "output_path": news_filter_result.get("output_path"),
             "stats": news_filter_result.get("stats", {}),
@@ -529,6 +694,7 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             "item_count": len(skax_items),
             "failed_urls": skax_result.get("failed_urls", []),
             "warning": skax_result.get("warning"),
+            "output_path": skax_search_path,
         },
         # EXT-03: 외부 게이트웨이 호출이 전부 실패해 증거 0건이면 missing_reason으로 표면화한다.
         "external_evidence": {
@@ -543,8 +709,6 @@ def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
             "industry_report_count": len(industry_result.get("items", [])),
             "other_count": len(non_news_items) + len(skax_items),
         },
-        # EVID-12: 품질 가중치 적용·근사중복 제거 통계.
-        "evidence_quality": quality_result["stats"],
     }
     state.retry_count += 1
     state.current_stage = "evidence_check"
@@ -774,6 +938,27 @@ def save_filtered_evidence_safely(
         return None
 
 
+def save_skax_site_search_safely(
+    *,
+    patent_id: str | int | None,
+    skax_result: dict,
+    output_dir: Path,
+    save: bool,
+) -> str | None:
+    if not save:
+        return None
+    try:
+        return str(
+            save_skax_site_search_result(
+                patent_id=patent_id,
+                skax_result=skax_result,
+                output_dir=output_dir,
+            )
+        )
+    except Exception:
+        return None
+
+
 def filter_news_safely(
     *,
     items: list[dict],
@@ -898,6 +1083,12 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
                 issues.append(
                     f"Final report recommendation does not match valuation recommendation ({recommendation})"
                 )
+        country = str((state.patent_structured or {}).get("country") or "").strip().upper()
+        if country and country != "KR":
+            if re.search(r"국내\s*(?:권|특허|출원|등록)", markdown):
+                issues.append("Foreign patent report contains domestic-patent wording")
+            if "권리범위 참고도 및 이해" in markdown:
+                issues.append("Foreign patent report must omit the representative-drawing rights-scope block")
     # Forbidden expressions / evaluator tone are judged by the LLM final check
     # (it reads the report body), not by brittle substring matching here.
     passed = not issues

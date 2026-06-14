@@ -386,7 +386,6 @@ def build_query_generation_plan(
         [
             compact_query([related_product]),
             compact_query(["SK AX", related_product]),
-            compact_query([related_product, "news room"]),
         ]
         if related_product
         else []
@@ -416,8 +415,10 @@ def build_query_generation_plan(
     dropped_duplicate_queries: list[str] = []
     base_candidates = [candidate for candidate in candidates if candidate]
     override_queries = normalize_skax_site_queries(queries_override or [], max_queries=max_queries)
-    raw_queries = [f"site:{SK_AX_DOMAIN} {candidate}" for candidate in base_candidates]
-    raw_queries.extend(override_queries)
+    # query rewriting(LLM)이 만든 검색어를 우선 배치하고, 남는 슬롯을 rule-based 후보로 채운다.
+    # (예전엔 rule-based를 먼저 넣어 max_queries를 다 채워, LLM 검색어가 한 건도 안 쓰이고 버려졌다.)
+    raw_queries = list(override_queries)
+    raw_queries.extend(f"site:{SK_AX_DOMAIN} {candidate}" for candidate in base_candidates)
     for query in raw_queries:
         query = " ".join(str(query or "").split())
         if not query:
@@ -530,7 +531,8 @@ def collect_skax_site_evidence(
         if include_related_media
         else []
     )
-    queries = [*base_queries, *related_media_queries]
+    # base와 관련매체 쿼리가 겹치면(예: 둘 다 'SK AX {제품}') 중복 검색을 막는다.
+    queries = unique_texts([*base_queries, *related_media_queries])
     searched_result_count = 0
     search_results: list[dict[str, Any]] = []
     search_diagnostics: list[dict[str, Any]] = []
@@ -703,12 +705,17 @@ def search_with_default_fallback(
 
 
 def build_related_media_queries(base_queries: list[str], *, max_queries: int = DEFAULT_MAX_QUERIES) -> list[str]:
+    # 관련매체(skcareersjournal.com·openapi.sk.com)는 검색 단계의 include_domains(SK_OWNED_DOMAINS)가
+    # 이미 모두 커버한다. 예전엔 도메인마다 site:<domain>을 붙여 base당 도메인 수만큼(×2) 쿼리를 만들었지만,
+    # site: 토큰은 Tavily 전에 제거되어 동일 키워드 쿼리가 도메인 수만큼 중복 생성됐다(15개 중 10개 중복).
+    # base당 'SK AX {키워드}' 한 건만 만들어 SK AX 언급을 가산 검색한다.
     related_queries: list[str] = []
     for base_query in base_queries[: max(1, int(max_queries))]:
-        query_body = re.sub(r"^site\s*:\s*skax\.co\.kr\s*", "", base_query, flags=re.IGNORECASE).strip()
-        query_body = compact_query(["SK AX", query_body])
-        for domain in SK_RELATED_MEDIA_DOMAINS:
-            related_queries.append(f"site:{domain} {query_body}".strip())
+        body = re.sub(r"^site\s*:\s*skax\.co\.kr\s*", "", base_query, flags=re.IGNORECASE).strip()
+        if not re.match(r"(?i)^sk\s*ax\b", body):  # 이미 'SK AX'로 시작하면 접두 중복(SK AX SK AX) 방지
+            body = compact_query(["SK AX", body])
+        if body:
+            related_queries.append(body)
     return unique_texts(related_queries)
 
 

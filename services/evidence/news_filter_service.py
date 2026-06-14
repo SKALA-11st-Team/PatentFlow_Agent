@@ -127,7 +127,10 @@ def evaluate_news_item(
     matched_keywords = sorted(extract_keywords(f"{title}\n{preview}") & patent_keywords)
     # EVID-07: 특허 키워드와 한 건도 매칭되지 않는 무관 뉴스는 거른다.
     # 단 특허 키워드 자체가 비어 있으면(빈 메타데이터) 전체 전멸을 막기 위해 필터를 적용하지 않는다.
-    if patent_keywords and not matched_keywords:
+    # 해외특허 현지어 뉴스(domestic_news)는 Tavily country+현지어 쿼리로 이미 관련성이 확보됐고,
+    # 한국어 patent_keywords와는 언어가 달라 교집합이 비어 대량 오거부되므로 키워드 매칭 거부를 면제한다.
+    is_localized_foreign_news = str(item.get("source") or "") == "domestic_news"
+    if patent_keywords and not matched_keywords and not is_localized_foreign_news:
         return reject("no_patent_keyword_match", preview, content_char_count)
 
     content_truncated = content_char_count > max_content_chars

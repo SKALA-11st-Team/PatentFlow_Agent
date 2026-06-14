@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import io
+import shutil
+import subprocess
+import tempfile
+import zipfile
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -9,6 +14,7 @@ from services.evidence.api_normalizers import extract_kipris_items
 from services.patent.kipris_patent_service import (
     _download_pdf_url,
     _foreign_literature_number_candidates,
+    decode_google_patents_html_response,
     download_and_parse_patent_pdf,
     fetch_kipris_bibliography_basic,
     google_patents_pdf_url,
@@ -24,6 +30,17 @@ from services.patent.markdown_preprocess_service import (
 
 DEFAULT_PRIOR_ART_TOP_K = 5
 
+# 전문 성공 목표를 채우기 위해 자국 우선 순서로 인용을 순회할 때, 다운로드를 시도하는 최대 후보 수.
+# (전문 다운로드는 네트워크/OCR 비용이 크므로 무한 순회를 막는 안전장치)
+PRIOR_ART_MAX_RESOLUTION_ATTEMPTS = 15
+
+
+def has_prior_art_fulltext(item: dict[str, Any]) -> bool:
+    """비교문헌으로 쓸 수 있는 전문(본문)이 확보됐는지 판정한다."""
+    if not isinstance(item, dict):
+        return False
+    return bool(str(item.get("pdf_text") or item.get("pdf_text_excerpt") or "").strip())
+
 
 def build_prior_art_patent_context(
     *,
@@ -33,25 +50,86 @@ def build_prior_art_patent_context(
     collect_pdf: bool = False,
     output_dir: str | Path | None = None,
     pdf_text_limit: int | None = None,
+    home_country: str | None = None,
+    target_fulltext_count: int | None = None,
+    max_resolution_attempts: int = PRIOR_ART_MAX_RESOLUTION_ATTEMPTS,
 ) -> dict[str, Any]:
     citation_documents = list((kipris_api_data or {}).get("citation_documents") or [])
-    prior_art_candidates = collect_prior_art_candidates(target_metadata=target_metadata, citation_documents=citation_documents)
+    prior_art_candidates = collect_prior_art_candidates(
+        target_metadata=target_metadata,
+        citation_documents=citation_documents,
+        home_country=home_country,
+    )
     warnings: list[str] = []
 
     if not prior_art_candidates:
         return {
             "comparison_mode": "prior-art",
             "candidate_count": 0,
+            "fulltext_count": 0,
             "similar_patents": [],
             "prior_art_patents": [],
             "warnings": ["prior_art_candidates_not_found"],
         }
 
-    selected_candidates = prior_art_candidates if top_k is None else prior_art_candidates[:top_k]
-    resolved = [
-        resolve_prior_art_candidate(candidate, output_dir=Path(output_dir) if output_dir else None, collect_pdf=collect_pdf, text_limit=pdf_text_limit)
-        for candidate in selected_candidates
-    ]
+    output_path = Path(output_dir) if output_dir else None
+
+    if collect_pdf and target_fulltext_count:
+        # 자국 우선 순서대로 순회하며 전문 성공 건수가 목표(target_fulltext_count)에 도달하면 멈춘다.
+        # 앞쪽 후보가 전문 확보에 실패해도 뒤 후보로 계속 시도하므로 [:top_k] 고정 컷의 누락을 없앤다.
+        attempt_cap = min(len(prior_art_candidates), max(max_resolution_attempts, target_fulltext_count))
+        attempt_candidates = prior_art_candidates[:attempt_cap]
+        resolved: list[dict[str, Any]] = []
+        fulltext_count = 0
+        for candidate in attempt_candidates:
+            item = resolve_prior_art_candidate(
+                candidate,
+                output_dir=output_path,
+                collect_pdf=collect_pdf,
+                text_limit=pdf_text_limit,
+                fulltext_source="remote",
+            )
+            resolved.append(item)
+            if has_prior_art_fulltext(item):
+                fulltext_count += 1
+                if fulltext_count >= target_fulltext_count:
+                    break
+        if fulltext_count < target_fulltext_count:
+            for index, item in enumerate(resolved):
+                if has_prior_art_fulltext(item):
+                    continue
+                google_item = resolve_prior_art_candidate(
+                    attempt_candidates[index],
+                    output_dir=output_path,
+                    collect_pdf=collect_pdf,
+                    text_limit=pdf_text_limit,
+                    fulltext_source="google",
+                )
+                if has_prior_art_fulltext(google_item):
+                    resolved[index] = google_item
+                    fulltext_count += 1
+                    if fulltext_count >= target_fulltext_count:
+                        break
+                    continue
+                google_item["_warnings"] = [
+                    *(item.get("_warnings") or []),
+                    *(google_item.get("_warnings") or []),
+                ]
+                resolved[index] = google_item
+    else:
+        selected_candidates = prior_art_candidates if top_k is None else prior_art_candidates[:top_k]
+        resolved = [
+            resolve_prior_art_candidate(
+                candidate,
+                output_dir=output_path,
+                collect_pdf=collect_pdf,
+                text_limit=pdf_text_limit,
+                fulltext_source="remote",
+            )
+            for candidate in selected_candidates
+        ]
+        fulltext_count = sum(1 for item in resolved if has_prior_art_fulltext(item))
+
     warnings.extend(
         warning
         for item in resolved
@@ -60,29 +138,60 @@ def build_prior_art_patent_context(
     return {
         "comparison_mode": "prior-art",
         "candidate_count": len(prior_art_candidates),
+        "fulltext_count": fulltext_count,
         "similar_patents": resolved,
         "prior_art_patents": resolved,
         "warnings": warnings,
     }
 
 
-def collect_prior_art_candidates(*, target_metadata: dict[str, Any], citation_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _rank_prior_art_citations(citation_documents: list[dict[str, Any]], home_country: str | None) -> list[dict[str, Any]]:
+    """자국(대상국) 인용을 앞으로 정렬한다.
+
+    자국 문헌은 KIPRIS 본문/전문 다운로드 성공률이 높아 비교문헌 확보에 유리하므로
+    표준화·등록 여부와 함께 자국 우선으로 정렬한다. home_country 미지정 시 KR을 자국으로 본다.
+    """
+    home = (normalize_text(home_country) or "KR").upper()
+
+    def _key(item: dict[str, Any]) -> tuple[int, int, int, str]:
+        kind = str(item.get("kind_code") or "").upper()
+        country = str(item.get("country_code") or "").upper()
+        return (
+            0 if item.get("is_standardized") else 1,
+            0 if kind.startswith("B") else 1,
+            0 if country == home else 1,
+            str(item.get("display_number") or ""),
+        )
+
+    return sorted(citation_documents, key=_key)
+
+
+def collect_prior_art_candidates(
+    *,
+    target_metadata: dict[str, Any],
+    citation_documents: list[dict[str, Any]],
+    home_country: str | None = None,
+) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     seen = set()
 
-    for citation in citation_documents:
+    for citation in _rank_prior_art_citations(citation_documents, home_country):
         display_number = normalize_text(citation.get("display_number"))
         if not display_number or display_number in seen:
             continue
         seen.add(display_number)
+        # 해외 인용(normalize_foreign_reference_documents)은 번호를 standard_number가 아닌 document_number로 준다.
+        # 해외 전문 다운로드(_foreign_literature_number_candidates)가 document_number를 읽으므로 함께 보존한다.
+        document_number = normalize_text(citation.get("document_number"))
         items.append(
             {
                 "display_number": display_number,
                 "source": "kipris_citation",
                 "country_code": normalize_text(citation.get("country_code")),
                 "kind_code": normalize_text(citation.get("kind_code")),
-                "standard_number": normalize_digits(citation.get("standard_number")),
-                "original_number": normalize_text(citation.get("original_number")),
+                "standard_number": normalize_digits(citation.get("standard_number") or document_number),
+                "document_number": document_number,
+                "original_number": normalize_text(citation.get("original_number")) or document_number,
                 "citation_type_names": list(citation.get("citation_type_names") or []),
                 "publication_date": normalize_text(citation.get("publication_date")),
                 "is_standardized": bool(citation.get("is_standardized")),
@@ -119,6 +228,7 @@ def resolve_prior_art_candidate(
     output_dir: Path | None,
     collect_pdf: bool,
     text_limit: int | None,
+    fulltext_source: str = "remote",
 ) -> dict[str, Any]:
     item = {
         "source_type": "prior_art",
@@ -159,6 +269,7 @@ def resolve_prior_art_candidate(
                 candidate,
                 output_dir=output_dir or Path("artifacts/runs/manual/technology_prior_art"),
                 text_limit=text_limit,
+                fulltext_source=fulltext_source,
             )
         return item
 
@@ -254,10 +365,12 @@ def attach_foreign_prior_art_fulltext(
     *,
     output_dir: Path,
     text_limit: int | None,
+    fulltext_source: str,
 ) -> None:
     parsed, literature_number, fulltext_type, pdf_path, errors = download_foreign_prior_art_fulltext(
         candidate,
         output_dir=output_dir,
+        fulltext_source=fulltext_source,
     )
     if parsed and literature_number and pdf_path:
         markdown_text = preprocess_patent_markdown(str(parsed.get("markdown_text") or ""))
@@ -290,35 +403,46 @@ def download_foreign_prior_art_fulltext(
     candidate: dict[str, Any],
     *,
     output_dir: Path,
+    fulltext_source: str = "remote",
 ) -> tuple[dict[str, Any] | None, str | None, str | None, str | None, list[str]]:
     client = KiprisClient()
     errors: list[str] = []
     country_code = normalize_text(candidate.get("country_code"))
     if not country_code:
         return None, None, None, None, ["country_code_missing"]
+    country = country_code.upper()
 
-    for literature_number in _foreign_literature_number_candidates(candidate):
-        for fulltext_type, method_name in foreign_fulltext_operation_order(candidate):
+    if fulltext_source == "remote":
+        # 선행문헌 전문 1차 패스는 KIPRIS 해외 전문 공개 다운로드(remoteFile.do)만 시도한다.
+        # ServiceKey/쿼터를 쓰지 않는 공개 파일 URL이고 publ_key가 결정론적이라, 쿼터 쓰는 전문 API 호출을
+        # 생략한다. (US/JP는 공개번호 기반, CN은 Google 페이지에서 출원번호를 받아 publ_key를 만든다.)
+        for publ_key in foreign_fulltext_remote_publ_keys(client, candidate, country):
             try:
-                raw = getattr(client, method_name)(literature_number, country_code)
-                document = extract_foreign_fulltext_document(raw)
-                path = document.get("path")
-                if not path:
-                    errors.append(f"{literature_number}:{fulltext_type}:path_not_found")
+                remote = download_kipris_remote_fulltext(client, publ_key, country, output_dir=output_dir)
+                if remote is None:
+                    errors.append(f"{publ_key}:not_pdf")
                     continue
-                pdf_path = download_foreign_fulltext_pdf(
-                    client,
-                    str(path),
-                    output_dir=output_dir,
-                    filename=normalize_text(document.get("doc_name")) or f"{literature_number}_{fulltext_type}.pdf",
-                )
+                if remote["kind"] == "ocr":
+                    # 구형 스캔본은 OCR로 이미 전문 텍스트를 확보했다(opendataloader 파싱 불필요).
+                    parsed = {
+                        "markdown_paths": [str(remote["markdown_path"])],
+                        "markdown_text": remote["markdown_text"],
+                        "parse_warning": "remote_image_ocr",
+                    }
+                    return parsed, publ_key, "kipris_remote_ocr", str(remote["markdown_path"]), errors
+                pdf_path = remote["pdf_path"]
                 parsed = parse_single_patent_pdf(
                     pdf_path,
                     output_dir=output_dir / safe_filename(Path(pdf_path).stem),
+                    country=country,
                 )
-                return parsed, literature_number, fulltext_type, str(pdf_path), errors
+                return parsed, publ_key, "kipris_remote_fulltext", str(pdf_path), errors
             except Exception as exc:
-                errors.append(f"{literature_number}:{fulltext_type}:{exc.__class__.__name__}:{str(exc)[:180]}")
+                errors.append(f"{publ_key}:{exc.__class__.__name__}:{str(exc)[:180]}")
+        return None, None, None, None, errors
+
+    if fulltext_source != "google":
+        return None, None, None, None, [f"unsupported_fulltext_source:{fulltext_source}"]
 
     patent = {
         "country": country_code,
@@ -338,12 +462,145 @@ def download_foreign_prior_art_fulltext(
             parsed = parse_single_patent_pdf(
                 pdf_path,
                 output_dir=output_dir / safe_filename(publication_id),
+                country=country,
             )
             return parsed, publication_id, "google_patents", str(pdf_path), errors
         errors.append("google_patents:pdf_not_found")
     except Exception as exc:
         errors.append(f"google_patents:{exc.__class__.__name__}:{str(exc)[:180]}")
     return None, None, None, None, errors
+
+
+def foreign_fulltext_remote_publ_keys(client: Any, candidate: dict[str, Any], country: str) -> list[str]:
+    """remoteFile.do용 publ_key 후보를 만든다(국가 + 12자리 번호 + A0/B0).
+
+    US/JP는 공개번호 기반 문헌번호를 그대로 쓴다. CN은 remoteFile.do가 출원번호로만 조회되므로
+    인용문헌의 Google 페이지에서 출원번호를 받아 CN{출원12자리}A0/B0를 만든다.
+    """
+    if country == "CN":
+        application_number = resolve_cn_application_number(client, candidate)
+        if not application_number:
+            return []
+        return [f"CN{application_number}A0", f"CN{application_number}B0"]
+    return [f"{country}{literature_number}" for literature_number in _foreign_literature_number_candidates(candidate)]
+
+
+def resolve_cn_application_number(client: Any, candidate: dict[str, Any]) -> str | None:
+    """CN 인용문헌의 Google Patents 페이지에서 출원번호(12자리)를 추출한다(KIPRIS 쿼터 미사용)."""
+    publication_id = google_patents_publication_id(
+        {
+            "country": "CN",
+            "registration_number": candidate.get("display_number")
+            or candidate.get("publication_number")
+            or candidate.get("original_number"),
+        }
+    )
+    if not publication_id:
+        return None
+    try:
+        response = client.session.get(
+            f"https://patents.google.com/patent/{publication_id}/en",
+            timeout=getattr(client, "timeout", 20.0),
+        )
+        response.raise_for_status()
+        html = decode_google_patents_html_response(response)
+    except Exception:
+        return None
+    match = re.search(r'itemprop=["\']applicationNumber["\'][^>]*>([^<]+)<', html)
+    if not match:
+        return None
+    digits = re.sub(r"\D+", "", match.group(1))
+    # CN 출원번호는 12자리(+검증숫자 1자리). 앞 12자리만 KIPRIS publ_key에 쓴다.
+    return digits[:12] if len(digits) >= 12 else None
+
+
+# 구형 특허 스캔본 OCR 언어팩(apply_foreign_pdf_ocr_fallback과 동일 매핑). 그 외 국가는 영어.
+REMOTE_FULLTEXT_OCR_LANGUAGE = {"CN": "chi_sim+eng", "JP": "jpn+eng", "TW": "chi_tra+eng"}
+_REMOTE_FULLTEXT_IMAGE_EXTS = (".tif", ".tiff", ".png", ".jpg", ".jpeg")
+
+
+def download_kipris_remote_fulltext(client: Any, publ_key: str, country: str, *, output_dir: Path) -> dict[str, Any] | None:
+    """KIPRIS 해외 전문 공개 다운로드(remoteFile.do)에서 전문을 받는다(ServiceKey/쿼터 미사용).
+
+    반환:
+      - PDF: {"kind": "pdf", "pdf_path": Path}
+      - 구형 스캔본(ZIP of TIFF·단일 TIFF): tesseract OCR → {"kind": "ocr", "markdown_path": Path, "markdown_text": str}
+      - 전문 없음(빈 응답·HTML 에러·OCR 실패): None → 호출부가 다음 후보/Google 폴백으로.
+    """
+    url = f"http://www.kipris.or.kr/abpat/remoteFile.do?method=fullText&publ_key={publ_key}&cntry={country}"
+    from services.evidence.news_article_extraction_service import validate_article_url
+
+    block_reason = validate_article_url(url)
+    if block_reason:
+        raise RuntimeError(f"document_url_blocked:{block_reason}")
+    response = client.session.get(url, timeout=getattr(client, "timeout", None))
+    response.raise_for_status()
+    content = response.content
+    if content[:5].startswith(b"%PDF"):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        path = output_dir / safe_filename(f"{publ_key}.pdf")
+        path.write_bytes(content)
+        return {"kind": "pdf", "pdf_path": path}
+    # 구형 특허는 PDF 대신 스캔 이미지(ZIP of TIFF 또는 단일 TIFF)로 온다 → OCR로 전문 텍스트 확보.
+    if content[:2] == b"PK" or content[:2] in (b"II", b"MM"):
+        ocr = ocr_remote_fulltext_images(content, country, output_dir=output_dir, publ_key=publ_key)
+        if ocr:
+            markdown_path, markdown_text = ocr
+            return {"kind": "ocr", "markdown_path": markdown_path, "markdown_text": markdown_text}
+    return None
+
+
+def ocr_remote_fulltext_images(content: bytes, country: str, *, output_dir: Path, publ_key: str) -> tuple[Path, str] | None:
+    """remoteFile.do가 PDF 대신 준 스캔 이미지(ZIP of TIFF·단일 TIFF)를 tesseract로 OCR한다.
+
+    국가별 언어팩으로 페이지별 OCR 후 합쳐 마크다운으로 저장한다. 인식 텍스트가 너무 짧으면 None.
+    """
+    tesseract_path = shutil.which("tesseract")
+    if not tesseract_path:
+        return None
+    language = REMOTE_FULLTEXT_OCR_LANGUAGE.get(str(country or "").strip().upper(), "eng")
+    texts: list[str] = []
+    with tempfile.TemporaryDirectory(prefix="remote_fulltext_ocr_") as temp_dir:
+        temp_path = Path(temp_dir)
+        image_paths: list[Path] = []
+        if content[:2] == b"PK":
+            try:
+                with zipfile.ZipFile(io.BytesIO(content)) as archive:
+                    for name in sorted(archive.namelist()):
+                        if name.lower().endswith(_REMOTE_FULLTEXT_IMAGE_EXTS):
+                            image_path = temp_path / safe_filename(Path(name).name)
+                            image_path.write_bytes(archive.read(name))
+                            image_paths.append(image_path)
+            except zipfile.BadZipFile:
+                return None
+        else:
+            image_path = temp_path / f"{safe_filename(publ_key)}.tif"
+            image_path.write_bytes(content)
+            image_paths.append(image_path)
+        if not image_paths:
+            return None
+        for image_path in image_paths:
+            try:
+                completed = subprocess.run(
+                    [tesseract_path, str(image_path), "stdout", "-l", language, "--psm", "6"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                )
+            except (OSError, subprocess.CalledProcessError):
+                continue
+            page_text = completed.stdout.strip()
+            if page_text:
+                texts.append(page_text)
+    markdown_text = "\n\n".join(texts).strip()
+    # OCR 노이즈만 잡힌 경우는 버린다(비교문헌으로 쓸 본문이 안 됨).
+    if len(re.sub(r"\s+", "", markdown_text)) < 300:
+        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = output_dir / safe_filename(f"{publ_key}_ocr.md")
+    markdown_path.write_text(markdown_text, encoding="utf-8")
+    return markdown_path, markdown_text
 
 
 def foreign_fulltext_operation_order(candidate: dict[str, Any]) -> list[tuple[str, str]]:
@@ -626,10 +883,17 @@ def prior_art_legal_content_from_markdown(
         if normalize_text(claim.get("text"))
     ]
     abstract = normalize_text((preprocessed.get("sections") or {}).get("abstract"))
+    sections = preprocessed.get("sections") or {}
     return {
         "abstract": abstract,
         "claim_stats": preprocessed.get("claim_stats") or {},
         "representative_claims": representative_claims,
+        "technical_content": {
+            "problem": normalize_text(sections.get("problem")),
+            "solution": normalize_text(sections.get("solution")),
+            "effect": normalize_text(sections.get("effect")),
+            "detailed_description": normalize_text(sections.get("detailed_description")),
+        },
         "lookup_status": "resolved",
         "lookup_source": "prior_art_pdf_fulltext",
         "comparison_status": (

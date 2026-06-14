@@ -7,6 +7,9 @@ import subprocess
 from typing import Any
 import io
 import re
+import shutil
+import subprocess
+import tempfile
 
 import requests
 
@@ -118,9 +121,11 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
         result["citing_documents"] = normalize_kipris_citing_documents(
             client.citing_info(kipris_application_number)
         )
+        result["citing_document_records"] = citing_document_records(result["citing_documents"])
         result["citing_stats"] = build_citing_stats(result["citing_documents"])
     except Exception as exc:
         result["citing_documents"] = []
+        result["citing_document_records"] = []
         result["citing_stats"] = {"total_count": 0, "standardized_count": 0, "non_standardized_count": 0}
         result.setdefault("warnings", []).append(
             f"citing_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
@@ -208,7 +213,32 @@ def fetch_foreign_patent_rights_data(
     client = _kipris_client()
     candidates = foreign_target_literature_candidates(patent)
     result["foreign_literature_candidates"] = candidates
-    result.update(fetch_foreign_target_reference_data(client, candidates))
+    try:
+        bibliography = fetch_foreign_target_bibliography(client, candidates, patent=patent)
+        if bibliography:
+            result["metadata"] = merge_foreign_metadata(result["metadata"], bibliography.get("metadata") or {})
+            result["sections"] = {
+                **result["sections"],
+                **(bibliography.get("sections") or {}),
+            }
+            if bibliography.get("source_type"):
+                result["source_type"] = bibliography["source_type"]
+            if bibliography.get("foreign_bibliography_literature_number"):
+                result["foreign_bibliography_literature_number"] = bibliography["foreign_bibliography_literature_number"]
+            if bibliography.get("raw") is not None:
+                result["raw_bibliography"] = bibliography["raw"]
+    except Exception as exc:
+        result["warnings"].append(
+            f"foreign_bibliography_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
+        )
+    result.update(fetch_foreign_target_reference_data(client, candidates, patent=patent))
+    # 해외 인용(citation_documents)에서 prior_art 목록을 채운다. 국내 경로(normalize_kipris_citations)는
+    # metadata["prior_art"]를 채우지만 해외 경로는 비워두던 탓에 비교문헌 빌드 게이트가 막혀 있었다.
+    result["metadata"]["prior_art"] = [
+        item["display_number"]
+        for item in (result.get("citation_documents") or [])
+        if isinstance(item, dict) and item.get("display_number")
+    ]
     if country in {"US", "JP", "CN"}:
         claims, used_literature_number = fetch_foreign_target_claims(client, candidates)
     else:
@@ -249,11 +279,20 @@ def fetch_foreign_patent_rights_data(
             "pdf_path": parsed_pdf.get("pdf_path"),
             "manual_upload_required": False,
         }
-        if not claims and (pdf_claims := extract_foreign_claims_from_text(parsed_pdf.get("markdown_text") or "")):
-            result["claims"] = pdf_claims
-            result["claim_stats"] = _build_api_claim_stats(len(pdf_claims), pdf_claims)
-            result["metadata"]["claim_count"] = len(pdf_claims)
-            result["metadata"]["reported_claim_count"] = len(pdf_claims)
+        if not claims:
+            pdf_claims = extract_foreign_claims_from_text(parsed_pdf.get("markdown_text") or "")
+            google_claims = fetch_google_patents_target_claims(client, patent)
+            resolved_claims = google_claims if len(google_claims) > len(pdf_claims) else pdf_claims
+        else:
+            resolved_claims = []
+        if resolved_claims:
+            result["claims"] = resolved_claims
+            result["claim_stats"] = _build_api_claim_stats(len(resolved_claims), resolved_claims)
+            result["metadata"]["claim_count"] = len(resolved_claims)
+            result["metadata"]["reported_claim_count"] = len(resolved_claims)
+            result["warnings"] = [
+                warning for warning in result["warnings"] if warning != "kipris_foreign_claims_not_found"
+            ]
         elif not claims:
             result["warnings"].append("foreign_pdf_claims_not_extracted")
     except Exception as exc:
@@ -276,6 +315,29 @@ def foreign_pdf_source(selected_type: Any) -> str | None:
     if value.startswith("FOREIGN_"):
         return "kipris"
     return None
+
+
+def fetch_google_patents_target_claims(client: Any, patent: dict[str, Any]) -> list[dict[str, Any]]:
+    publication_id = google_patents_publication_id(patent)
+    if not publication_id:
+        return []
+    best_claims: list[dict[str, Any]] = []
+    for language in ("en", "zh", "ja"):
+        try:
+            response = client.session.get(
+                f"https://patents.google.com/patent/{publication_id}/{language}",
+                timeout=client.timeout,
+            )
+            response.raise_for_status()
+        except Exception:
+            continue
+        html = decode_google_patents_html_response(response)
+        claims = extract_foreign_claims_from_text("\n".join(_google_patents_claim_texts(html)))
+        for claim in claims:
+            claim["source"] = "google_patents_html_claims"
+        if len(claims) > len(best_claims):
+            best_claims = claims
+    return best_claims
 
 
 def foreign_patent_metadata_from_db(patent: dict[str, Any]) -> dict[str, Any]:
@@ -309,6 +371,19 @@ def foreign_patent_metadata_from_db(patent: dict[str, Any]) -> dict[str, Any]:
         "assignee_count": 0,
         "has_co_assignee": False,
     }
+
+
+def merge_foreign_metadata(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(base or {})
+    for key, value in (override or {}).items():
+        if value in (None, "", []):
+            continue
+        merged[key] = value
+    if not merged.get("representative_ipc") and (merged.get("ipc") or []):
+        merged["representative_ipc"] = merged["ipc"][0]
+    merged["assignee_count"] = len(merged.get("assignee") or [])
+    merged["has_co_assignee"] = merged["assignee_count"] > 1
+    return merged
 def normalize_kipris_bibliography(raw: dict[str, Any], *, application_number: str) -> dict[str, Any]:
     item = _get_path(raw, ["response", "body", "item"]) or {}
     summary = _first_item(_get_path(item, ["biblioSummaryInfoArray", "biblioSummaryInfo"])) or {}
@@ -362,6 +437,187 @@ def normalize_kipris_bibliography(raw: dict[str, Any], *, application_number: st
     }
 
 
+def fetch_foreign_target_bibliography(
+    client: Any,
+    candidates: list[dict[str, Any]],
+    *,
+    patent: dict[str, Any],
+) -> dict[str, Any] | None:
+    attempts: list[dict[str, Any]] = []
+    for candidate in candidates:
+        country_code = candidate.get("country_code")
+        if not country_code:
+            continue
+        for literature_number in _foreign_literature_number_candidates(candidate):
+            try:
+                raw = client.overseas_bibliographic_info(literature_number, country_code)
+            except Exception as exc:
+                attempts.append(
+                    {
+                        "literature_number": literature_number,
+                        "country_code": country_code,
+                        "status": "exception",
+                        "error": f"{exc.__class__.__name__}:{str(exc)[:300]}",
+                    }
+                )
+                continue
+            normalized = normalize_foreign_bibliography(
+                raw,
+                patent=patent,
+                literature_number=literature_number,
+                country_code=country_code,
+            )
+            if normalized:
+                normalized["bibliography_attempts"] = attempts + [
+                    {
+                        "literature_number": literature_number,
+                        "country_code": country_code,
+                        "status": "matched",
+                        "raw_excerpt": summarize_foreign_bibliography_raw(raw),
+                    }
+                ]
+                return normalized
+            attempts.append(
+                {
+                    "literature_number": literature_number,
+                    "country_code": country_code,
+                    "status": "no_match",
+                    "raw_excerpt": summarize_foreign_bibliography_raw(raw),
+                }
+            )
+    if attempts:
+        return {
+            "source_type": "kipris_foreign_bibliographic_info",
+            "metadata": {},
+            "sections": {},
+            "bibliography_attempts": attempts,
+        }
+    return None
+
+
+def normalize_foreign_bibliography(
+    raw: dict[str, Any],
+    *,
+    patent: dict[str, Any],
+    literature_number: str,
+    country_code: str,
+) -> dict[str, Any] | None:
+    node = (
+        _get_path(raw, ["response", "body", "items", "bibliographicInfo"])
+        or _get_path(raw, ["response", "body", "bibliographicInfo"])
+        or _get_path(raw, ["response", "body", "items", "item"])
+        or _get_path(raw, ["response", "body", "item"])
+        or _get_path(raw, ["response", "body", "items"])
+        or _get_path(raw, ["response", "body"])
+        or {}
+    )
+    if not isinstance(node, dict):
+        return None
+
+    summary = (
+        _get_path(node, ["bibliographicSummaryInfo"])
+        or _find_first_mapping_with_keys(
+            node,
+            (
+                "inventionTitle",
+                "title",
+                "applicationNumber",
+                "registerNumber",
+                "publicationNumber",
+                "ipcNumber",
+                "astrtCont",
+                "abstract",
+            ),
+        )
+        or node
+    )
+    abstract_mapping = _find_first_mapping_with_keys(node, ("astrtCont", "abstract", "abstractText", "abstractContent")) or {}
+    applicants = _find_people_values(
+        node,
+        name_keys=("applicantName", "name", "applicant", "assigneeName"),
+        eng_name_keys=("applicantEngName", "engName", "applicantNameEng", "assigneeEngName"),
+        container_hints=("applicant", "assignee"),
+    )
+    inventors = _find_people_values(
+        node,
+        name_keys=("inventorName", "name", "inventor"),
+        eng_name_keys=("inventorEngName", "engName", "inventorNameEng"),
+        container_hints=("inventor",),
+    )
+    ipc_values = _unique_texts(
+        [
+            *_find_recursive_values(node, ("ipcCd",)),
+            *_find_recursive_values(node, ("ipcNumber", "internationalpatentclassificationNumber", "ipc")),
+        ]
+    )
+    cpc_values = _unique_texts(
+        [
+            *_find_recursive_values(node, ("cpcCd",)),
+            *_find_recursive_values(node, ("cpcNumber", "cooperativePatentClassificationNumber", "cpc")),
+        ]
+    )
+    abstract = _first_present_text(abstract_mapping, ("astrtCont", "abstract", "abstractText", "abstractContent"))
+    title = _first_present_text(summary, ("inventionTitle", "title", "inventionTitleEng"))
+
+    metadata = {
+        "country": country_code,
+        "patent_type": "등록특허" if patent.get("status") == "등록" else None,
+        "registration_number": _strip_register_suffix(
+            _first_present_text(summary, ("registerNumber", "registrationNumber", "patentNumber"))
+            or patent.get("registration_number")
+        ),
+        "application_number": _first_present_text(summary, ("applicationNumber",)) or patent.get("application_number"),
+        "publication_number": _first_present_text(summary, ("publicationNumber", "openNumber", "usNo")),
+        "title": title or patent.get("title_final") or patent.get("title_draft"),
+        "title_eng": _first_present_text(summary, ("inventionTitleEng", "titleEng")) or patent.get("title_draft"),
+        "assignee": applicants["names"],
+        "assignee_eng": applicants["eng_names"],
+        "inventors": inventors["names"],
+        "inventors_eng": inventors["eng_names"],
+        "filing_date": _normalize_foreign_date(
+            _first_present_text(summary, ("applicationDate", "filingDate"))
+            or patent.get("application_date")
+        ),
+        "registration_date": _normalize_foreign_date(
+            _first_present_text(summary, ("registerDate", "registrationDate"))
+            or patent.get("registration_date")
+        ),
+        "publication_date": _normalize_foreign_date(_first_present_text(summary, ("publicationDate", "openDate"))),
+        "open_date": _normalize_foreign_date(_first_present_text(summary, ("openDate",))),
+        "ipc": ipc_values,
+        "representative_ipc": ipc_values[0] if ipc_values else "",
+        "cpc": cpc_values,
+        "examiner": _first_present_text(summary, ("examinerName", "examiner")),
+        "claim_count": _int_or_none(_first_present_text(summary, ("claimCount",))),
+        "reported_claim_count": _int_or_none(_first_present_text(summary, ("claimCount",))),
+        "register_status": _first_present_text(summary, ("registerStatus", "status")) or patent.get("status"),
+        "final_disposal": _first_present_text(summary, ("finalDisposal",)),
+        "prior_art": [],
+        "expected_expiration_date": patent.get("expected_expiration_date"),
+    }
+    metadata["assignee_count"] = len(metadata["assignee"])
+    metadata["has_co_assignee"] = metadata["assignee_count"] > 1
+
+    if not any(
+        [
+            metadata.get("title"),
+            metadata.get("ipc"),
+            abstract,
+            metadata.get("assignee"),
+            metadata.get("inventors"),
+        ]
+    ):
+        return None
+
+    return {
+        "source_type": "kipris_foreign_bibliographic_info",
+        "foreign_bibliography_literature_number": literature_number,
+        "metadata": metadata,
+        "sections": {"abstract": abstract or ""},
+        "raw": raw,
+    }
+
+
 def download_and_parse_patent_pdf(
     application_number: str,
     *,
@@ -407,7 +663,24 @@ def parse_single_patent_pdf(
     *,
     output_dir: str | Path,
     output_format: str = "markdown-with-images",
+    country: str | None = None,
 ) -> dict[str, Any]:
+    java_path = shutil.which("java")
+    if not java_path:
+        raise RuntimeError(
+            "java_runtime_missing: install Java or configure JAVA_HOME before PDF parsing"
+        )
+    java_check = subprocess.run(
+        [java_path, "-version"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if java_check.returncode != 0:
+        raise RuntimeError(
+            "java_runtime_unavailable: install Java or configure JAVA_HOME before PDF parsing"
+        )
+
     import opendataloader_pdf
 
     pdf_path = Path(pdf_path)
@@ -426,13 +699,212 @@ def parse_single_patent_pdf(
         after = sorted(output_dir.rglob("*.md"))
 
     markdown_text = "\n\n".join(path.read_text(encoding="utf-8", errors="ignore") for path in after)
+    parse_warning = None
+    # 좌→우 컬럼 추출(left_right)과 일반 Tesseract(eng) OCR은 **미국 특허 전용** 경로다(US 2단 조판,
+    # 이미지형 PDF 대응). 그 외(KR 국내·CN/JP/TW 해외·country 미상)는 이 경로를 타지 않고
+    # opendataloader가 만든 마크다운을 그대로 사용한다:
+    #  - KR 국내: KIPRIS 전문 PDF를 opendataloader로 파싱(원래 알고리즘).
+    #  - CN/JP/TW: opendataloader 이미지 마크다운을 두고 하위 apply_foreign_pdf_ocr_fallback이
+    #    국가별 언어팩(chi_sim/jpn/chi_tra)으로 OCR.
+    # country가 "US"일 때만 left_right를 적용한다(None=KR 국내 등은 opendataloader).
+    is_us_layout = str(country or "").strip().upper() == "US"
+    if is_us_layout:
+        column_text = extract_pdf_text_left_then_right(pdf_path)
+        if has_meaningful_pdf_text(column_text):
+            markdown_text = column_text
+        if should_run_ocr_fallback(markdown_text):
+            ocr_text = extract_pdf_text_with_ocr(pdf_path)
+            if not has_meaningful_pdf_text(ocr_text):
+                raise RuntimeError("foreign_pdf_text_extraction_failed_after_ocr")
+            markdown_text = ocr_text
+            parse_warning = "ocr_fallback_used"
+    suffix = "_left_right" if is_us_layout else ""
+    normalized_markdown_path = output_dir / f"{pdf_path.stem}{suffix}.md"
+    normalized_markdown_path.write_text(markdown_text, encoding="utf-8")
+    for path in after:
+        if path.resolve() == normalized_markdown_path.resolve():
+            continue
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            continue
     return {
-        "markdown_paths": [str(path) for path in after],
+        "markdown_paths": [str(normalized_markdown_path)],
         "markdown_text": markdown_text,
+        "parse_warning": parse_warning,
     }
 
 
 _kipris_client_instance: Any = None
+
+
+def has_meaningful_pdf_text(text: str | None) -> bool:
+    normalized = str(text or "").strip()
+    if re.search(r"\babstract\b", normalized, re.I):
+        return True
+    if re.search(r"\bclaims?\b", normalized, re.I):
+        return True
+    if re.search(r"\b\d+\.\s+\S+", normalized):
+        return True
+    if len(normalized) < 200:
+        return False
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    non_image_lines = [line for line in lines if not re.fullmatch(r"!\[image\s+\d+\]\(.+\)", line, re.I)]
+    return len(" ".join(non_image_lines)) >= 400
+
+
+def should_run_ocr_fallback(markdown_text: str | None) -> bool:
+    normalized = str(markdown_text or "")
+    if has_meaningful_pdf_text(normalized):
+        return False
+    image_only_lines = [
+        line.strip()
+        for line in normalized.splitlines()
+        if line.strip()
+    ]
+    if image_only_lines and all(line.startswith("![image ") for line in image_only_lines):
+        return True
+    return True
+
+
+def extract_pdf_text_with_ocr(pdf_path: str | Path) -> str:
+    tesseract_cmd = shutil.which("tesseract")
+    pdftoppm_cmd = shutil.which("pdftoppm")
+    if not tesseract_cmd or not pdftoppm_cmd:
+        missing = []
+        if not tesseract_cmd:
+            missing.append("tesseract")
+        if not pdftoppm_cmd:
+            missing.append("pdftoppm")
+        raise RuntimeError(f"ocr_tools_not_available:{','.join(missing)}")
+
+    pdf_path = Path(pdf_path)
+    with tempfile.TemporaryDirectory(prefix="patent_ocr_") as temp_dir:
+        image_prefix = Path(temp_dir) / "page"
+        subprocess.run(
+            [pdftoppm_cmd, "-png", str(pdf_path), str(image_prefix)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        image_paths = sorted(Path(temp_dir).glob("page-*.png"))
+        if not image_paths:
+            raise RuntimeError("ocr_page_render_failed")
+        texts: list[str] = []
+        for image_path in image_paths:
+            page_text = ocr_page_left_then_right(image_path, tesseract_cmd=tesseract_cmd, temp_dir=Path(temp_dir))
+            if page_text and not should_exclude_pdf_page_text(page_text):
+                texts.append(page_text)
+        return trim_foreign_front_matter("\n\n".join(texts))
+
+
+def ocr_page_left_then_right(image_path: Path, *, tesseract_cmd: str, temp_dir: Path) -> str:
+    from PIL import Image
+
+    with Image.open(image_path) as image:
+        width, height = image.size
+        midpoint = width // 2
+        crops = [
+            ("left", image.crop((0, 0, midpoint, height))),
+            ("right", image.crop((midpoint, 0, width, height))),
+        ]
+        page_parts: list[str] = []
+        for label, crop in crops:
+            crop_path = temp_dir / f"{image_path.stem}_{label}.png"
+            crop.save(crop_path)
+            text = ocr_image_text(crop_path, tesseract_cmd=tesseract_cmd).strip()
+            if text:
+                page_parts.append(text)
+        return "\n\n".join(page_parts)
+
+
+def extract_pdf_text_left_then_right(pdf_path: str | Path) -> str:
+    try:
+        import pdfplumber
+    except Exception:
+        return ""
+
+    pdf_path = Path(pdf_path)
+    pages: list[str] = []
+    with pdfplumber.open(str(pdf_path)) as pdf:
+        for page in pdf.pages:
+            width = float(page.width or 0)
+            height = float(page.height or 0)
+            if width <= 0 or height <= 0:
+                text = page.extract_text() or ""
+                if text.strip():
+                    pages.append(text)
+                continue
+
+            midpoint = width / 2.0
+            page_parts: list[str] = []
+            for bbox in ((0, 0, midpoint, height), (midpoint, 0, width, height)):
+                cropped = page.crop(bbox)
+                text = cropped.extract_text() or ""
+                text = text.strip()
+                if text:
+                    page_parts.append(text)
+            if page_parts:
+                page_text = "\n\n".join(page_parts)
+                if not should_exclude_pdf_page_text(page_text):
+                    pages.append(page_text)
+    return trim_foreign_front_matter("\n\n".join(pages))
+
+
+def should_exclude_pdf_page_text(text: str | None) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return True
+
+    if re.search(r"(?i)\b(?:sheet|heet)\s+\d+\s+of\s+\d+\b", normalized):
+        return True
+
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    figure_lines = sum(1 for line in lines if re.search(r"(?i)\bFIG(?:S)?\b", line))
+    drawing_sheet_lines = sum(
+        1
+        for line in lines
+        if re.search(r"(?i)\b(?:sheet|heet)\s+\d+\s+of\s+\d+\b", line)
+        or re.search(r"(?i)\bU\.?S\.?\s+Patent\b", line)
+    )
+    prose_lines = sum(1 for line in lines if re.search(r"[A-Za-z]{4,}.*[A-Za-z]{4,}", line))
+
+    if figure_lines >= 2 and prose_lines <= 8:
+        return True
+    if drawing_sheet_lines >= 2 and prose_lines <= 10:
+        return True
+
+    alpha_chars = sum(1 for ch in normalized if ch.isalpha())
+    digit_chars = sum(1 for ch in normalized if ch.isdigit())
+    if alpha_chars < 200 and digit_chars > alpha_chars // 2 and (figure_lines or drawing_sheet_lines):
+        return True
+
+    return False
+
+
+def trim_foreign_front_matter(text: str | None) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return ""
+
+    body_heading = re.search(
+        r"(?im)^\s*(?:TECHNICAL FIELD|BACKGROUND ART|BACKGROUND|DISCLOSURE|SUMMARY|BEST MODE|DETAILED DESCRIPTION|DESCRIPTION OF DRAWINGS|BRIEF DESCRIPTION OF (?:THE )?DRAWINGS)\b.*$",
+        normalized,
+    )
+    if not body_heading:
+        return normalized
+
+    return normalized[body_heading.start() :].strip()
+
+
+def ocr_image_text(image_path: Path, *, tesseract_cmd: str) -> str:
+    result = subprocess.run(
+        [tesseract_cmd, str(image_path), "stdout"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return str(result.stdout or "").strip()
 
 
 def _kipris_client() -> Any:
@@ -554,6 +1026,30 @@ def build_citing_stats(citing_documents: list[dict[str, Any]]) -> dict[str, int]
         "standardized_count": sum(1 for item in citing_documents if item.get("is_standardized")),
         "non_standardized_count": sum(1 for item in citing_documents if not item.get("is_standardized")),
     }
+
+
+def citing_document_records(citing_documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    fields = (
+        "country_code",
+        "document_number",
+        "kind_code",
+        "display_number",
+        "publication_number",
+        "priority_date",
+        "publication_date",
+        "assignee",
+        "title",
+        "examiner_cited",
+        "citing_application_number",
+        "standard_citation_application_number",
+        "is_standardized",
+        "source",
+    )
+    return [
+        {key: item.get(key) for key in fields if item.get(key) is not None}
+        for item in citing_documents
+        if isinstance(item, dict)
+    ]
 
 
 def resolve_citation_evidence(
@@ -1080,6 +1576,7 @@ def _google_patents_pdf_document(
         parsed = parse_single_patent_pdf(
             pdf_path,
             output_dir=Path(settings.output_dir) / "prior_art_markdown" / publication_id,
+            country=str(candidate.get("country_code") or "").strip().upper() or None,
         )
         claims = extract_foreign_claims_from_text(parsed.get("markdown_text") or "")
         return _foreign_prior_art_document(
@@ -1108,12 +1605,13 @@ def _google_patents_html_document(
             response.raise_for_status()
         except Exception:
             continue
-        title = _google_patents_meta_content(response.text, "DC.title")
+        html = decode_google_patents_html_response(response)
+        title = _google_patents_meta_content(html, "DC.title")
         abstract = (
-            _google_patents_meta_content(response.text, "DC.description")
-            or _google_patents_section_text(response.text, "abstract")
+            _google_patents_meta_content(html, "DC.description")
+            or _google_patents_section_text(html, "abstract")
         )
-        claim_text = "\n".join(_google_patents_claim_texts(response.text))
+        claim_text = "\n".join(_google_patents_claim_texts(html))
         claims = extract_foreign_claims_from_text(claim_text)
         document = _foreign_prior_art_document(
             candidate,
@@ -1188,6 +1686,28 @@ def _google_patents_section_text(text: str, class_name: str) -> str | None:
 
 
 def _google_patents_claim_texts(text: str) -> list[str]:
+    numbered_claims = []
+    for attributes, body in re.findall(
+        r'<div\b([^>]*)>\s*'
+        r'<div\b[^>]*class=["\'][^"\']*\bclaim-text\b[^"\']*["\'][^>]*>(.*?)</div>',
+        text or "",
+        re.I | re.S,
+    ):
+        parsed_attributes = {
+            key.lower(): unescape(value)
+            for key, _, value in re.findall(r"""([:\w-]+)\s*=\s*(["'])(.*?)\2""", attributes, re.S)
+        }
+        if "claim" not in parsed_attributes.get("class", "").split():
+            continue
+        number = parsed_attributes.get("num")
+        if not number or not number.isdigit():
+            continue
+        cleaned = _strip_html(body)
+        if cleaned:
+            numbered_claims.append(f"{number}. {cleaned}")
+    if numbered_claims:
+        return numbered_claims
+
     return [
         cleaned
         for body in re.findall(
@@ -1339,48 +1859,70 @@ def _foreign_literature_number_candidates(candidate: dict[str, Any]) -> list[str
         if parsed:
             candidates.append(parsed)
     if document_number:
+        # 마지막 보루로 kind 없는 12자리 패딩만 둔다(패딩 안 한 raw는 매칭 안 돼 제거).
         candidates.append(document_number.zfill(12))
-        candidates.append(document_number)
     return _unique_texts(candidates)
 
 
 def foreign_target_literature_candidates(patent: dict[str, Any]) -> list[dict[str, Any]]:
     country = str(patent.get("country") or "").strip().upper()
     candidates = []
-    for source_field in ("registration_number", "application_number"):
+    # CN 해외 문헌번호는 출원번호 기반(12자리+A0/B0)만 유효하다. 등록/공개번호 기반은 전부 빈값을
+    # 돌려줘 헛호출만 되므로 CN은 출원번호를 먼저 시도한다. US/JP는 등록번호 기반이 맞아 기존 순서 유지.
+    source_order = ("application_number", "registration_number") if country == "CN" else ("registration_number", "application_number")
+    for source_field in source_order:
         value = _clean(patent.get(source_field))
         if not value:
             continue
-        document_number = re.sub(r"\D+", "", value)
-        if not document_number:
+        document_numbers = _foreign_target_document_numbers(country, value, source_field=source_field)
+        if not document_numbers:
             continue
         kind_codes = foreign_target_kind_codes(country, value, source_field=source_field)
-        for kind_code in kind_codes:
-            candidates.append(
-                {
-                    "direction": "target_foreign_patent",
-                    "country_code": country,
-                    "document_number": document_number,
-                    "kind_code": kind_code,
-                    "original_number": value,
-                    "display_number": " ".join(part for part in [country + document_number, kind_code] if part),
-                    "lookup_source": "target_foreign_patent",
-                    "publication_date": patent.get("registration_date") or patent.get("application_date"),
-                    "source_field": source_field,
-                }
-            )
+        for document_number in document_numbers:
+            for kind_code in kind_codes:
+                candidates.append(
+                    {
+                        "direction": "target_foreign_patent",
+                        "country_code": country,
+                        "document_number": document_number,
+                        "kind_code": kind_code,
+                        "original_number": value,
+                        "display_number": " ".join(part for part in [country + document_number, kind_code] if part),
+                        "lookup_source": "target_foreign_patent",
+                        "publication_date": patent.get("registration_date") or patent.get("application_date"),
+                        "source_field": source_field,
+                    }
+                )
     return _dedupe_foreign_claim_lookup_candidates(candidates)
+
+
+def _foreign_target_document_numbers(country: str, value: str, *, source_field: str) -> list[str]:
+    """KIPRIS 해외 문헌번호의 숫자 본체 후보를 만든다.
+
+    CN 출원번호는 끝에 검증숫자(점 뒤 1자리)가 붙어 13자리가 되는데, KIPRIS 해외 문헌번호는
+    검증숫자를 뺀 12자리 출원번호 본체를 요구한다(ex: 201780067437.9 → 201780067437A0).
+    따라서 CN 출원번호는 점 앞 본체를 먼저 시도하도록 앞에 둔다.
+    """
+    full = re.sub(r"\D+", "", value)
+    if country == "CN" and source_field == "application_number" and "." in value:
+        # CN 출원번호는 검증숫자(점 뒤 1자리)를 뺀 12자리 본체만 KIPRIS에 매칭된다.
+        # 검증숫자 포함 13자리(full)는 매칭 안 돼 호출만 낭비하므로 본체만 쓴다.
+        base = re.sub(r"\D+", "", value.split(".")[0])
+        if base:
+            return [base]
+    return _unique_texts([full] if full else [])
 
 
 def foreign_target_kind_codes(country: str, value: str, *, source_field: str) -> list[str]:
     parsed = re.search(r"\b([A-Z][0-9]?)\b\s*$", str(value or "").strip().upper())
     parsed_kind = parsed.group(1) if parsed else ""
+    # CN은 출원번호 12자리+A0(공개)/B0(등록)만 KIPRIS에 매칭된다. A/A1/B2/B 등 변형은 호출만 낭비.
     if source_field == "application_number":
-        return _unique_texts([parsed_kind, "A0", "A", "A1"] if country == "CN" else [parsed_kind, "A1", "A"])
+        return _unique_texts([parsed_kind, "A0"] if country == "CN" else [parsed_kind, "A1", "A"])
     if country in {"US", "JP"}:
         return _unique_texts([parsed_kind, "B2", "B1", "B"])
     if country == "CN":
-        return _unique_texts([parsed_kind, "B2", "B", "A0", "A", "A1"])
+        return _unique_texts([parsed_kind, "A0", "B0"])
     return _unique_texts([parsed_kind, "B2", "B"])
 
 
@@ -1404,6 +1946,7 @@ def fetch_foreign_target_reference_data(
     client: Any,
     candidates: list[dict[str, Any]],
     *,
+    patent: dict[str, Any] | None = None,
     max_documents: int = 20,
 ) -> dict[str, Any]:
     cited_documents: list[dict[str, Any]] = []
@@ -1444,22 +1987,40 @@ def fetch_foreign_target_reference_data(
             break
 
     cited_documents = dedupe_foreign_reference_documents(cited_documents)[:max_documents]
+    cited_source = "kipris_foreign_patent_documents"
+
+    # Google Patents HTML 1회로 인용(backward)·피인용(forward)을 함께 받는다.
+    google_cited, citing_documents, citing_available = fetch_google_patents_references(
+        client,
+        patent or {},
+        max_documents=max_documents,
+    )
+    # KIPRIS 해외 인용이 비는 국가(예: CN)는 Google Patents 인용으로 비교문헌 후보를 채운다.
+    if not cited_documents and google_cited:
+        cited_documents = dedupe_foreign_reference_documents(google_cited)[:max_documents]
+        cited_source = "google_patents_html_backward_references"
+
     stats = {
         "total_count": len(cited_documents),
         "standardized_count": len(cited_documents),
         "non_standardized_count": 0,
     }
+    citing_stats = build_citing_stats(citing_documents)
+    citing_stats["available"] = citing_available
+    if not citing_available:
+        citing_stats["missing_reason"] = "google_patents_forward_references_unavailable"
     api_collection = {
         "target_cited_references": {
             "available": bool(cited_documents),
-            "source": "kipris_foreign_patent_documents",
+            "source": cited_source,
             "used_literature_numbers": used_literature_numbers,
             "count": len(cited_documents),
         },
         "target_citing_references": {
-            "available": False,
-            "source": None,
-            "missing_reason": "foreign_citing_api_not_connected",
+            "available": citing_available,
+            "source": "google_patents_html_forward_references" if citing_available else None,
+            "count": len(citing_documents) if citing_available else None,
+            "missing_reason": None if citing_available else "google_patents_forward_references_unavailable",
         },
         "target_family": {
             "available": False,
@@ -1475,14 +2036,9 @@ def fetch_foreign_target_reference_data(
     return {
         "citation_documents": cited_documents,
         "citation_stats": stats,
-        "citing_documents": [],
-        "citing_stats": {
-            "available": False,
-            "total_count": None,
-            "standardized_count": None,
-            "non_standardized_count": None,
-            "missing_reason": "foreign_citing_api_not_connected",
-        },
+        "citing_documents": citing_documents,
+        "citing_document_records": citing_document_records(citing_documents),
+        "citing_stats": citing_stats,
         "citation_evidence": {
             "kr_citation_documents": [],
             "foreign_claim_lookup_candidates": [],
@@ -1495,15 +2051,71 @@ def fetch_foreign_target_reference_data(
     }
 
 
+def fetch_google_patents_citing_documents(
+    client: Any,
+    patent: dict[str, Any],
+    *,
+    max_documents: int = 20,
+) -> tuple[list[dict[str, Any]], bool]:
+    publication_id = google_patents_publication_id(patent)
+    if not publication_id:
+        return [], False
+    for language in ("en", "zh", "ja"):
+        try:
+            response = client.session.get(
+                f"https://patents.google.com/patent/{publication_id}/{language}",
+                timeout=getattr(client, "timeout", 20.0),
+            )
+            response.raise_for_status()
+        except Exception:
+            continue
+        html = decode_google_patents_html_response(response)
+        return _google_patents_forward_references(html)[:max_documents], True
+    return [], False
+
+
+def fetch_google_patents_references(
+    client: Any,
+    patent: dict[str, Any],
+    *,
+    max_documents: int = 20,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], bool]:
+    """Google Patents HTML을 한 번만 받아 인용(backward)·피인용(forward)을 함께 파싱한다.
+
+    반환: (cited_documents, citing_documents, available).
+    """
+    publication_id = google_patents_publication_id(patent)
+    if not publication_id:
+        return [], [], False
+    for language in ("en", "zh", "ja"):
+        try:
+            response = client.session.get(
+                f"https://patents.google.com/patent/{publication_id}/{language}",
+                timeout=getattr(client, "timeout", 20.0),
+            )
+            response.raise_for_status()
+        except Exception:
+            continue
+        html = decode_google_patents_html_response(response)
+        cited = _google_patents_backward_reference_documents(html)[:max_documents]
+        citing = _google_patents_forward_references(html)[:max_documents]
+        return cited, citing, True
+    return [], [], False
+
+
 def normalize_foreign_reference_documents(raw: Any, *, source: str, direction: str) -> list[dict[str, Any]]:
     documents = []
     for item in iter_foreign_reference_items(raw):
         if not isinstance(item, dict):
             continue
-        country_code = first_mapping_value(item, ("countryCode", "CountryCode", "citationCountryCode", "documentCountryCode"))
+        # KIPRIS 해외 인용 API(usPatentDocuments/foreignPatentDocuments)는 인용 선행문헌 번호를
+        # `corgPatno`(Cited ORiGinal PATent No)로, 국가를 `cntryCodeLink`(자국)·`countryCode`(타국)로,
+        # 공개일을 `patDt`로 준다. 이 필드명을 빠뜨려 번호가 전부 null로 떨어지던 것을 보완한다.
+        country_code = first_mapping_value(item, ("countryCode", "CountryCode", "cntryCodeLink", "cntryCode", "citationCountryCode", "documentCountryCode"))
         document_number = first_mapping_value(
             item,
             (
+                "corgPatno",
                 "literatureNumber",
                 "LiteratureNumber",
                 "documentNumber",
@@ -1516,7 +2128,7 @@ def normalize_foreign_reference_documents(raw: Any, *, source: str, direction: s
         )
         kind_code = first_mapping_value(item, ("kindCode", "KindCode", "publicationKindCode", "PublicationKindCode"))
         title = first_mapping_value(item, ("inventionTitle", "title", "Title", "documentTitle"))
-        publication_date = first_mapping_value(item, ("publicationDate", "PublicationDate", "openDate", "OpenDate"))
+        publication_date = first_mapping_value(item, ("publicationDate", "PublicationDate", "openDate", "OpenDate", "patDt"))
         if not (country_code or document_number or title):
             continue
         documents.append(
@@ -1635,6 +2247,7 @@ def download_and_parse_foreign_patent_pdf(
     if foreign_fulltext_parse_is_usable(parsed_result.get("markdown_text") or ""):
         return parsed_result
 
+    downloaded_pdf_result = parsed_result
     if selected.get("selected_type") != "GOOGLE_PATENTS_FULLTEXT":
         google_selection = google_patents_fulltext_selection(client, patent)
         if google_selection:
@@ -1645,6 +2258,7 @@ def download_and_parse_foreign_patent_pdf(
                 pdf_dir=pdf_dir,
                 parse_output_dir=parse_output_dir / "google_patents",
             )
+            downloaded_pdf_result = google_result
             if foreign_fulltext_parse_is_usable(google_result.get("markdown_text") or ""):
                 google_result["fallback_reason"] = "kipris_pdf_parse_unusable"
                 return google_result
@@ -1656,6 +2270,8 @@ def download_and_parse_foreign_patent_pdf(
     )
     if foreign_fulltext_parse_is_usable(html_result.get("markdown_text") or ""):
         html_result["fallback_reason"] = "foreign_pdf_parse_unusable"
+        html_result["pdf_path"] = downloaded_pdf_result.get("pdf_path")
+        html_result["pdf_source_path"] = downloaded_pdf_result.get("source_path")
         return html_result
     raise RuntimeError("Foreign fulltext was downloaded but no usable text or claims were extracted.")
 
@@ -1675,7 +2291,7 @@ def _download_and_parse_foreign_selection(
         session=client.session,
         timeout=client.timeout,
     )
-    parsed = parse_single_patent_pdf(pdf_path, output_dir=parse_output_dir)
+    parsed = parse_single_patent_pdf(pdf_path, output_dir=parse_output_dir, country=country)
     parsed = apply_foreign_pdf_ocr_fallback(parsed, country=country)
     return {
         "literature_number": selected["literature_number"],
@@ -1698,7 +2314,11 @@ def apply_foreign_pdf_ocr_fallback(
     country: Any,
 ) -> dict[str, Any]:
     country_code = str(country or "").strip().upper()
-    language = {"CN": "chi_sim+eng", "JP": "jpn+eng"}.get(country_code)
+    language = {
+        "CN": "chi_sim+eng",
+        "JP": "jpn+eng",
+        "TW": "chi_tra+eng",
+    }.get(country_code)
     markdown_text = str(parsed.get("markdown_text") or "")
     if not language or foreign_fulltext_parse_is_usable(markdown_text):
         return parsed
@@ -1835,6 +2455,8 @@ def download_google_patents_html_fulltext(
     publication_id = google_patents_publication_id(patent)
     if not publication_id:
         return {}
+    fallback_candidate: tuple[str, str, str] | None = None
+    selected_candidate: tuple[str, str, str] | None = None
     for language in ("en", "zh", "ja"):
         url = f"https://patents.google.com/patent/{publication_id}/{language}"
         try:
@@ -1842,13 +2464,23 @@ def download_google_patents_html_fulltext(
             response.raise_for_status()
         except Exception:
             continue
-        markdown_text = google_patents_html_to_markdown(response.text)
+        html = decode_google_patents_html_response(response)
+        markdown_text = google_patents_html_to_markdown(html)
         if not foreign_fulltext_parse_is_usable(markdown_text):
             continue
+        candidate = (url, html, markdown_text)
+        if extract_foreign_claims_from_text(markdown_text):
+            selected_candidate = candidate
+            break
+        if fallback_candidate is None:
+            fallback_candidate = candidate
+    selected_candidate = selected_candidate or fallback_candidate
+    if selected_candidate:
+        url, html, markdown_text = selected_candidate
         output_dir.mkdir(parents=True, exist_ok=True)
         figure_markdown = download_google_patents_representative_figure(
             client,
-            response.text,
+            html,
             publication_id=publication_id,
             output_dir=output_dir,
         )
@@ -1867,6 +2499,13 @@ def download_google_patents_html_fulltext(
             "markdown_text": markdown_text,
         }
     return {}
+
+
+def decode_google_patents_html_response(response: Any) -> str:
+    content = getattr(response, "content", None)
+    if isinstance(content, bytes) and content:
+        return content.decode("utf-8-sig", errors="replace")
+    return str(getattr(response, "text", "") or "")
 
 
 def google_patents_html_to_markdown(text: str) -> str:
@@ -1953,6 +2592,88 @@ def _google_patents_backward_references(text: str) -> list[str]:
     return values
 
 
+def _google_patents_forward_references(text: str) -> list[dict[str, Any]]:
+    documents = []
+    seen = set()
+    for row in re.findall(
+        r'<tr\b[^>]*itemprop=["\']forwardReferences(?:Family)?["\'][^>]*>(.*?)</tr>',
+        text or "",
+        re.I | re.S,
+    ):
+        publication_number = _google_patents_itemprop_text(row, "publicationNumber")
+        normalized = re.sub(r"[^0-9A-Z]", "", str(publication_number or "").upper())
+        match = re.fullmatch(r"([A-Z]{2})(\d+)([A-Z]\d?)", normalized)
+        if not match or normalized in seen:
+            continue
+        seen.add(normalized)
+        country_code, document_number, kind_code = match.groups()
+        documents.append(
+            {
+                "direction": "cites_target",
+                "country_code": country_code,
+                "document_number": document_number,
+                "kind_code": kind_code,
+                "display_number": f"{country_code} {document_number} {kind_code}",
+                "publication_number": normalized,
+                "priority_date": _google_patents_itemprop_text(row, "priorityDate"),
+                "publication_date": _google_patents_itemprop_text(row, "publicationDate"),
+                "assignee": _google_patents_itemprop_text(row, "assigneeOriginal"),
+                "title": _google_patents_itemprop_text(row, "title"),
+                "examiner_cited": bool(
+                    re.search(r'itemprop=["\']examinerCited["\']', row, re.I)
+                ),
+                "citing_application_number": normalized,
+                "is_standardized": True,
+                "source": "google_patents_html_forward_references",
+            }
+        )
+    return documents
+
+
+def _google_patents_backward_reference_documents(text: str) -> list[dict[str, Any]]:
+    """Google Patents 본문에서 인용 선행문헌(backward references)을 문서 dict로 파싱한다.
+
+    KIPRIS 해외 인용 서비스가 빈값을 주는 국가(예: CN)의 비교문헌 확보용 폴백. forward(피인용)
+    파서와 동일 구조이며 itemprop만 backwardReferences 계열로 바꾼다. 반환 dict는 KIPRIS 인용과
+    같은 형태라 기존 비교문헌 파이프라인(collect_prior_art_candidates)에 그대로 흘러간다.
+    """
+    documents = []
+    seen = set()
+    for row in re.findall(
+        r'<tr\b[^>]*itemprop=["\']backwardReferences(?:Orig|Family)?["\'][^>]*>(.*?)</tr>',
+        text or "",
+        re.I | re.S,
+    ):
+        publication_number = _google_patents_itemprop_text(row, "publicationNumber")
+        normalized = re.sub(r"[^0-9A-Z]", "", str(publication_number or "").upper())
+        match = re.fullmatch(r"([A-Z]{2})(\d+)([A-Z]\d?)", normalized)
+        if not match or normalized in seen:
+            continue
+        seen.add(normalized)
+        country_code, document_number, kind_code = match.groups()
+        documents.append(
+            {
+                "direction": "cited_by_target",
+                "country_code": country_code,
+                "document_number": document_number,
+                "standard_number": document_number,
+                "kind_code": kind_code,
+                "display_number": f"{country_code} {document_number} {kind_code}",
+                "publication_number": normalized,
+                "priority_date": _google_patents_itemprop_text(row, "priorityDate"),
+                "publication_date": _google_patents_itemprop_text(row, "publicationDate"),
+                "assignee": _google_patents_itemprop_text(row, "assigneeOriginal"),
+                "title": _google_patents_itemprop_text(row, "title"),
+                "examiner_cited": bool(
+                    re.search(r'itemprop=["\']examinerCited["\']', row, re.I)
+                ),
+                "is_standardized": True,
+                "source": "google_patents_html_backward_references",
+            }
+        )
+    return documents
+
+
 def _google_patents_reference_display_number(value: str | None) -> str | None:
     normalized = re.sub(r"[^0-9A-Z]", "", str(value or "").upper())
     match = re.fullmatch(r"([A-Z]{2})(\d+)([A-Z]\d?)", normalized)
@@ -1963,7 +2684,8 @@ def _google_patents_reference_display_number(value: str | None) -> str | None:
 
 def _google_patents_itemprop_text(text: str, itemprop: str) -> str | None:
     match = re.search(
-        rf'<(?P<tag>section|div)\b[^>]*itemprop=["\']{re.escape(itemprop)}["\'][^>]*>(.*?)</(?P=tag)>',
+        rf'<(?P<tag>[a-z][\w:-]*)\b[^>]*itemprop=["\']{re.escape(itemprop)}["\'][^>]*>'
+        rf'(.*?)</(?P=tag)>',
         text or "",
         re.I | re.S,
     )
@@ -2060,7 +2782,7 @@ def google_patents_pdf_url(
             response.raise_for_status()
         except Exception:
             continue
-        html = response.text
+        html = decode_google_patents_html_response(response)
         match = re.search(r'<meta\s+name=["\']citation_pdf_url["\']\s+content=["\']([^"\']+)["\']', html, re.I)
         if match:
             return match.group(1)
@@ -2094,6 +2816,43 @@ def google_patents_publication_id(patent: dict[str, Any]) -> str | None:
     if country == "US" and kind.startswith("A"):
         digits = _normalize_us_publication_digits(digits)
     return f"{country}{digits}{kind}"
+
+
+def find_cached_foreign_patent_pdf(
+    patent: dict[str, Any],
+    *,
+    pdf_dir: str | Path | None = None,
+) -> Path | None:
+    pdf_dir = Path(pdf_dir or settings.patent_pdf_dir)
+    candidates: list[str] = []
+
+    publication_id = google_patents_publication_id(patent)
+    if publication_id:
+        candidates.append(publication_id)
+
+    registration_number = _clean(patent.get("registration_number"))
+    if registration_number:
+        normalized_registration = re.sub(r"[^0-9A-Z]+", "", registration_number.upper())
+        if normalized_registration:
+            candidates.append(normalized_registration)
+
+    application_number = _clean(patent.get("application_number"))
+    country = str(patent.get("country") or "").strip().upper()
+    if country and application_number:
+        normalized_application = re.sub(r"[^0-9A-Z]+", "", application_number.upper())
+        if normalized_application:
+            candidates.append(f"{country}{normalized_application}")
+            candidates.append(normalized_application)
+
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        path = pdf_dir / f"{candidate}.pdf"
+        if path.exists():
+            return path
+    return None
 
 
 def _normalize_us_publication_id(publication_id: str) -> str:
@@ -2146,6 +2905,7 @@ def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
     normalized_text = _foreign_claims_section_text(str(text or ""))
     patterns = [
         r"(?im)^\s*(?:claim|claims?)\s*([0-9]+)\s*[:.)-]?\s*(.*)$",
+        r"(?m)^\s*【\s*第\s*([0-9]{1,3})\s*項\s*】\s*(.*)$",
         r"(?m)^\s*([0-9]{1,3})\s*[、．]\s*(.*)$",
         r"(?m)^\s*-?\s*([0-9]{1,3})\s*[.)]\s*(.*)$",
         r"(?m)^\s*权利要求\s*([0-9]+)\s*(.*)$",
@@ -2165,7 +2925,7 @@ def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
         else:
             next_ocr_page = re.search(r"(?m)^\s*##\s*페이지\s+\d+\s*$", normalized_text[start:])
             end = start + next_ocr_page.start() if next_ocr_page else len(normalized_text)
-        body = re.sub(r"\s+", " ", f"{first_line} {normalized_text[start:end]}").strip()
+        body = _clean_foreign_claim_body(f"{first_line} {normalized_text[start:end]}")
         if len(body) < 20:
             continue
         dependency = extract_foreign_claim_dependency(body)
@@ -2185,6 +2945,28 @@ def extract_foreign_claims_from_text(text: str) -> list[dict[str, Any]]:
     return [claims_by_number[claim_no] for claim_no in sorted(claims_by_number)]
 
 
+def _clean_foreign_claim_body(text: str) -> str:
+    cleaned_lines = []
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if (
+            not stripped
+            or stripped.startswith("![")
+            or re.fullmatch(r"#{2,6}\s*(?:페이지\s+\d+|OCR 텍스트)", stripped, re.I)
+            or re.fullmatch(r"```(?:text)?", stripped, re.I)
+            or re.fullmatch(r"\d{1,3}", stripped)
+            or re.match(r"^\d{6,}[\d.\s]*.*第.*(?:页|頁|丰)\s*$", stripped)
+        ):
+            continue
+        cleaned_lines.append(stripped)
+    cleaned = re.sub(r"\s+", " ", " ".join(cleaned_lines)).strip()
+    return re.sub(
+        r"(权利要求)\s*[|Il](?=\s|所述|记载|記載|的)",
+        r"\g<1> 1",
+        cleaned,
+    )
+
+
 def _foreign_claims_section_text(text: str) -> str:
     markers = [
         r"\bwhat\s+is\s+claimed\s+is\s*:",
@@ -2192,6 +2974,7 @@ def _foreign_claims_section_text(text: str) -> str:
         r"(?im)^\s*#{1,6}\s*claims?\s*$",
         r"(?im)^\s*claims?\s*$",
         r"(?im)^\s*权利要求书\s*$",
+        r"(?im)^\s*申請專利範圍\s*$",
     ]
     starts = []
     for marker in markers:
@@ -2213,6 +2996,7 @@ def extract_foreign_claim_dependency(text: str) -> int | None:
     patterns = [
         r"claims?\s*([0-9]+)\b",
         r"权利要求\s*([0-9]+)",
+        r"申請專利範圍\s*第?\s*([0-9]+)\s*項",
         (
             r"請求項\s*([0-9０-９]+)"
             r"(?:\s*(?:又は|若しくは|ないし|乃至|～|〜|-)\s*[0-9０-９]+)?"
@@ -2245,20 +3029,13 @@ def _foreign_literature_base_numbers(candidate: dict[str, Any], document_number:
 def _foreign_literature_candidates_for_number(document_number: str, kind_code: str) -> list[str]:
     if not document_number:
         return []
+    # KIPRIS 해외 문헌번호는 12자리 영(0) 패딩 + kind 형식만 매칭된다(ex: US000012417849B2, CN201780067437A0).
+    # 패딩 안 한 형식이나 A0/A/A1 같은 여분 변형은 매칭이 안 돼 KIPRIS 호출만 낭비하므로 제거한다.
+    padded = document_number.zfill(12)
     if kind_code == "A":
-        return [
-            f"{document_number.zfill(12)}A0",
-            f"{document_number}A0",
-            f"{document_number.zfill(12)}A",
-            f"{document_number}A",
-            f"{document_number.zfill(12)}A1",
-            f"{document_number}A1",
-        ]
+        return _unique_texts([f"{padded}A0", f"{padded}A"])
     if kind_code:
-        return [
-            f"{document_number.zfill(12)}{kind_code}",
-            f"{document_number}{kind_code}",
-        ]
+        return [f"{padded}{kind_code}"]
     return []
 
 
@@ -2358,6 +3135,16 @@ def _normalize_yyyymmdd(value: str | None) -> str | None:
     return f"{text[:4]}-{text[4:6]}-{text[6:8]}"
 
 
+def _normalize_foreign_date(value: str | None) -> str | None:
+    text = _clean(value)
+    if not text:
+        return None
+    digits = re.sub(r"\D+", "", text)
+    if len(digits) == 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return text
+
+
 def _clean(value: Any) -> str | None:
     text = str(value or "").strip()
     return text or None
@@ -2394,6 +3181,118 @@ def _get_path(data: dict[str, Any], keys: list[str]) -> Any:
             return None
         current = current.get(key)
     return current
+
+
+def _find_recursive_values(value: Any, keys: tuple[str, ...]) -> list[str]:
+    matches: list[str] = []
+    lower_keys = {key.lower() for key in keys}
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if str(key).lower() in lower_keys:
+                    if isinstance(child, list):
+                        matches.extend(str(item).strip() for item in child if _clean(item))
+                    else:
+                        cleaned = _clean(child)
+                        if cleaned:
+                            matches.append(cleaned)
+                walk(child)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child)
+
+    walk(value)
+    return matches
+
+
+def _find_first_mapping_with_keys(value: Any, keys: tuple[str, ...]) -> dict[str, Any] | None:
+    lower_keys = {key.lower() for key in keys}
+    if isinstance(value, dict):
+        if any(str(key).lower() in lower_keys for key in value.keys()):
+            return value
+        for child in value.values():
+            found = _find_first_mapping_with_keys(child, keys)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for child in value:
+            found = _find_first_mapping_with_keys(child, keys)
+            if found:
+                return found
+    return None
+
+
+def _first_present_text(mapping: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        cleaned = _clean(mapping.get(key))
+        if cleaned:
+            return cleaned
+    return None
+
+
+def _find_people_values(
+    value: Any,
+    *,
+    name_keys: tuple[str, ...],
+    eng_name_keys: tuple[str, ...],
+    container_hints: tuple[str, ...],
+) -> dict[str, list[str]]:
+    names: list[str] = []
+    eng_names: list[str] = []
+    hint_tokens = tuple(token.lower() for token in container_hints)
+    name_tokens = {key.lower() for key in name_keys}
+    eng_name_tokens = {key.lower() for key in eng_name_keys}
+
+    def walk(node: Any, parent_key: str = "") -> None:
+        lowered_parent = str(parent_key).lower()
+        if isinstance(node, dict):
+            for key, child in node.items():
+                lowered = str(key).lower()
+                if lowered in name_tokens and any(token in lowered_parent or token in lowered for token in hint_tokens):
+                    cleaned = _clean(child)
+                    if cleaned:
+                        names.append(cleaned)
+                elif lowered in eng_name_tokens and any(token in lowered_parent or token in lowered for token in hint_tokens):
+                    cleaned = _clean(child)
+                    if cleaned:
+                        eng_names.append(cleaned)
+                walk(child, lowered)
+        elif isinstance(node, list):
+            for child in node:
+                walk(child, parent_key)
+
+    walk(value)
+    return {
+        "names": _unique_texts(names),
+        "eng_names": _unique_texts(eng_names),
+    }
+
+
+def summarize_foreign_bibliography_raw(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {"raw_type": type(raw).__name__}
+
+    node = (
+        _get_path(raw, ["response", "body", "items", "item"])
+        or _get_path(raw, ["response", "body", "item"])
+        or _get_path(raw, ["response", "body", "items"])
+        or _get_path(raw, ["response", "body"])
+        or raw
+    )
+    if not isinstance(node, dict):
+        return {"node_type": type(node).__name__}
+
+    keys = sorted(str(key) for key in node.keys())
+    return {
+        "top_level_keys": keys[:30],
+        "application_number": _first_present_text(node, ("applicationNumber",)),
+        "register_number": _first_present_text(node, ("registerNumber", "registrationNumber")),
+        "publication_number": _first_present_text(node, ("publicationNumber", "openNumber")),
+        "title": _first_present_text(node, ("inventionTitle", "title")),
+        "abstract": _first_present_text(node, ("astrtCont", "abstract", "abstractText", "abstractContent")),
+        "ipc_values": _find_recursive_values(node, ("ipcNumber", "internationalpatentclassificationNumber", "ipc"))[:10],
+    }
 
 
 def _strip_register_suffix(value: str | None) -> str | None:

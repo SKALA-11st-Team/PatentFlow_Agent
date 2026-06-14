@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from agents.valuation_axes.common import grade_for_score, normalize_text, select_by_source_types
-from agents.valuation_axes.payload_common import build_base_input_payload, build_claim_context, unique_texts
-from schemas.valuation import DEFAULT_SUBSCORE_WEIGHTS
+from agents.valuation_axes.payload_common import (
+    build_base_input_payload,
+    build_claim_context,
+    build_element_structure_payload,
+    unique_texts,
+)
 from workflow.state import PatentWorkflowState
 
 
@@ -28,19 +32,27 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     return attach_legal_context(result, payload=payload, state=state)
 
 
-LEGAL_SUBSCORE_MAX = dict(DEFAULT_SUBSCORE_WEIGHTS["legal"])
+LEGAL_SUBSCORE_MAX = {
+    "right_stability": 40,
+    "claim_protection": 40,
+    "portfolio_defensive_value": 20,
+}
 
 
 FOREIGN_LEGAL_EXCLUDED_DETAILS = {"prior_art_overlap"}
 LEGAL_DETAIL_MAX = {
-    "prior_art_overlap": 25,
-    "claim_structure_stability": 10,
+    "prior_art_overlap": 20,
     "follow_on_right_signal": 4,
 }
 
 
 def legal_subscore_max_map(state: PatentWorkflowState) -> dict[str, int]:
-    """운영 설정(valuation_config.subscoreWeights.legal)이 있으면 그 배점을, 없으면 기본 배점을 쓴다."""
+    """운영 설정(valuation_config.subscoreWeights.legal)이 있으면 그 배점을, 없으면 기본 배점을 쓴다.
+
+    BE가 권리성 하위 배점을 코드 수정 없이 조정할 수 있게 한다(business_fit과 동일 계약).
+    세부지표(details)는 프롬프트 본문의 기본 배점(40/40/20 스케일)으로 보고되므로,
+    reconcile에서 설정 배점으로 비례 변환한다.
+    """
     config = state.user_input.get("valuation_config") if isinstance(state.user_input, dict) else None
     configured = ((config or {}).get("subscoreWeights") or {}).get("legal") or {}
     return {
@@ -49,56 +61,15 @@ def legal_subscore_max_map(state: PatentWorkflowState) -> dict[str, int]:
     }
 
 
-def legal_detail_max_map(subscore_max: dict[str, int]) -> dict[str, int]:
-    """right_stability 만점이 조정되면 그 하위 세부지표(prior_art_overlap/claim_structure_stability)
-    배점도 같은 비율로 스케일한다(합계는 right_stability 만점과 정확히 일치)."""
-    right_stability_max = int(subscore_max.get("right_stability") or 0)
-    # follow_on_right_signal은 portfolio_defensive_value 하위라 합산 기준(35)에서 제외한다.
-    default_total = LEGAL_DETAIL_MAX["prior_art_overlap"] + LEGAL_DETAIL_MAX["claim_structure_stability"]  # 35
-    if right_stability_max == default_total:
-        return dict(LEGAL_DETAIL_MAX)
-    if right_stability_max <= 0 or default_total <= 0:
-        return {
-            "prior_art_overlap": 0,
-            "claim_structure_stability": 0,
-            "follow_on_right_signal": LEGAL_DETAIL_MAX["follow_on_right_signal"],
-        }
-    prior_art = round(LEGAL_DETAIL_MAX["prior_art_overlap"] * right_stability_max / default_total)
-    prior_art = max(0, min(right_stability_max, prior_art))
-    return {
-        "prior_art_overlap": prior_art,
-        "claim_structure_stability": right_stability_max - prior_art,
-        # follow_on_right_signal은 portfolio_defensive_value 하위라 right_stability 스케일과 무관하다.
-        "follow_on_right_signal": LEGAL_DETAIL_MAX["follow_on_right_signal"],
-    }
-# 각 권리성 subscore가 가져야 할 세부지표 키 전체 목록(docs/valuation_legal 공표 기준).
-LEGAL_SUBSCORE_DETAIL_KEYS = {
-    "right_stability": ["prior_art_overlap", "claim_structure_stability"],
-    "claim_protection": [
-        "core_solution_coverage",
-        "independent_claim_scope",
-        "dependent_claim_support",
-        "claim_type_diversity",
-    ],
-    "portfolio_defensive_value": [
-        "portfolio_connection_coverage",
-        "overseas_right_coverage",
-        "follow_on_right_signal",
-    ],
-}
-
-
 def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState) -> dict[str, Any]:
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     reconciled: dict[str, Any] = {}
     total = 0
-    total_max = 0
-    foreign_patent = is_foreign_patent(state)
-    exclude_prior_art_metric = foreign_patent and not has_comparison_ready_prior_art(state)
-    exclude_citing_metric = foreign_patent and not has_available_citing_signal(state)
+    exclude_prior_art_metric = is_foreign_patent(state) and not has_comparison_ready_prior_art(state)
+    exclude_citing_metric = is_foreign_patent(state) and not has_available_citing_signal(state)
     subscore_max_map = legal_subscore_max_map(state)
-    detail_max_map = legal_detail_max_map(subscore_max_map)
-    for key, max_score in subscore_max_map.items():
+    for key, default_max in LEGAL_SUBSCORE_MAX.items():
+        configured_max = subscore_max_map[key]
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         details = item.get("details") if isinstance(item.get("details"), dict) else {}
         excluded_detail_keys: set[str] = set()
@@ -106,58 +77,30 @@ def reconcile_legal_scores(result: dict[str, Any], *, state: PatentWorkflowState
             excluded_detail_keys.update(FOREIGN_LEGAL_EXCLUDED_DETAILS)
         if exclude_citing_metric and key == "portfolio_defensive_value":
             excluded_detail_keys.add("follow_on_right_signal")
-        effective_max_score = max_score
         if excluded_detail_keys:
-            effective_max_score = legal_subscore_max_without_details(
-                max_score=max_score,
-                details=details,
-                excluded_detail_keys=excluded_detail_keys,
-                detail_max_map=detail_max_map,
-            )
-        detail_sum, missing_keys = sum_detail_scores(
+            details = mark_legal_details_unknown(details, excluded_detail_keys)
+        detail_sum = sum_detail_scores(
             details,
-            expected_keys=LEGAL_SUBSCORE_DETAIL_KEYS.get(key, []),
             excluded_detail_keys=excluded_detail_keys or None,
         )
         raw_score = coerce_int(item.get("score"))
-        # 세부지표(details) 점수는 프롬프트 본문의 기본 배점(35/40/25 스케일) 기준으로 보고된다.
-        # 운영 설정으로 subscore 만점이 바뀌면 detail 부분합을 설정 배점으로 비례 변환해야 한다 —
-        # 변환 없이는 만점 특허도 detail_sum(기본 스케일)이 그대로 쓰여 축 점수가 체계적으로 왜곡된다.
-        default_max = DEFAULT_SUBSCORE_WEIGHTS["legal"][key]
-        default_effective_max = default_max
-        if excluded_detail_keys:
-            default_effective_max = legal_subscore_max_without_details(
-                max_score=default_max,
-                details=details,
-                excluded_detail_keys=excluded_detail_keys,
-                detail_max_map=LEGAL_DETAIL_MAX,
-            )
-        score_status = None
-        if not missing_keys and detail_sum is not None:
-            score = detail_sum
-            if effective_max_score != default_effective_max and default_effective_max > 0:
-                score = round(detail_sum * effective_max_score / default_effective_max)
-        elif detail_sum is None:
-            # 세부지표가 전무하면 부분합 대신 LLM 자기보고로 폴백하되 표면화한다.
-            score = raw_score if raw_score is not None else 0
-            score_status = "no_details_self_report"
-        elif raw_score is not None:
-            # 일부 세부지표 누락 시 부분합으로 조용히 저평가하지 않고 자기보고를 사용한다.
-            score = raw_score
-            score_status = "partial_details_fallback_to_self_report"
-        else:
-            score = detail_sum
-            score_status = "details_unavailable"
-        score = max(0, min(effective_max_score, score or 0))
-        reconciled_item = {**item, "score": score, "max_score": effective_max_score}
-        if score_status:
-            reconciled_item["score_status"] = score_status
-            if missing_keys:
-                reconciled_item["missing_detail_keys"] = missing_keys
-        reconciled[key] = reconciled_item
+        score = detail_sum if detail_sum is not None else raw_score
+        # 기본 배점 스케일에서 캡(자료 미확보로 제외된 세부지표만큼 만점 축소).
+        default_available = default_max - sum(
+            LEGAL_DETAIL_MAX.get(detail_key, 0) for detail_key in excluded_detail_keys
+        )
+        score = max(0, min(default_available, score or 0))
+        # 설정 배점으로 비례 변환(기본 배점이면 항등). max_score는 설정 만점으로 보고한다.
+        if configured_max != default_max and default_max > 0:
+            score = round(score * configured_max / default_max)
+        configured_available = (
+            round(default_available * configured_max / default_max) if default_max > 0 else 0
+        )
+        cap = configured_available if excluded_detail_keys else configured_max
+        score = max(0, min(cap, score))
+        reconciled[key] = {**item, "score": score, "max_score": configured_max, "details": details}
         total += score
-        total_max += effective_max_score
-    total = normalize_score_to_100(total, total_max)
+    total = normalize_score_to_100(total, sum(subscore_max_map.values()))
     reconciled_result = {
         **result,
         "subscores": {**subscores, **reconciled},
@@ -200,41 +143,32 @@ def sanitize_foreign_legal_information_gaps(
     return sanitized
 
 
-def sum_detail_scores(
-    details: dict[str, Any],
-    *,
-    expected_keys: list[str],
-    excluded_detail_keys: set[str] | None = None,
-) -> tuple[int | None, list[str]]:
-    excluded = excluded_detail_keys or set()
+def sum_detail_scores(details: dict[str, Any], excluded_detail_keys: set[str] | None = None) -> int | None:
     values: list[int] = []
-    missing_keys: list[str] = []
-    for key in expected_keys:
-        if key in excluded:
+    for key, detail in details.items():
+        if excluded_detail_keys and key in excluded_detail_keys:
             continue
-        detail = details.get(key)
-        value = coerce_int(detail.get("score")) if isinstance(detail, dict) else None
-        if value is None:
-            missing_keys.append(key)
-        else:
-            values.append(value)
-    detail_sum = sum(values) if values else None
-    return detail_sum, missing_keys
+        if isinstance(detail, dict) and "score" in detail:
+            value = coerce_int(detail.get("score"))
+            if value is not None:
+                values.append(value)
+    return sum(values) if values else None
 
 
-def legal_subscore_max_without_details(
-    *,
-    max_score: int,
+def mark_legal_details_unknown(
     details: dict[str, Any],
     excluded_detail_keys: set[str],
-    detail_max_map: dict[str, int] | None = None,
-) -> int:
-    detail_max = detail_max_map if detail_max_map is not None else LEGAL_DETAIL_MAX
-    excluded_total = 0
+) -> dict[str, Any]:
+    marked = dict(details)
     for key in excluded_detail_keys:
-        if key in details:
-            excluded_total += detail_max.get(key, 0)
-    return max(0, max_score - excluded_total)
+        detail = marked.get(key)
+        if isinstance(detail, dict):
+            marked[key] = {
+                **detail,
+                "score": None,
+                "assessment_status": "unknown",
+            }
+    return marked
 
 
 def normalize_score_to_100(score: int, max_score: int) -> int:
@@ -268,9 +202,10 @@ def coerce_int(value: Any) -> int | None:
 
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
     del state
+    # AG-01(EVID-02 복원): KIPRIS 경쟁특허 근거를 권리성 축에 포함 — 경쟁 출원 지형/권리 중복 맥락.
     return select_by_source_types(
         items,
-        source_types={"portfolio_context", "patent_api", "prior_art", "citation"},
+        source_types={"portfolio_context", "patent_api", "prior_art", "citation", "competitor_patent"},
     )
 
 
@@ -287,6 +222,8 @@ def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, 
         payload["patent"]["claim_stats"] = preprocessed_claim_stats
         payload["patent"]["claim_availability"]["claim_stats_provided"] = True
     payload["legal_context"] = build_legal_context(payload=payload, state=state, labels={})
+    # 권리성은 선행문헌만 비교문헌으로 사용한다(CPC유사 제외).
+    payload["element_structure"] = build_element_structure_payload(state, prior_art_only=True)
     return payload
 
 
@@ -476,6 +413,7 @@ def valuation_citation_evidence(state: PatentWorkflowState, *, claim_text_limit:
             if isinstance(item, dict)
         ],
         "citing_signal": _valuation_citing_signal(state),
+        "citing_documents": list((state.kipris_api_data or {}).get("citing_document_records") or []),
         "foreign_citation_documents": [
             _valuation_reference_document_payload(item, claim_text_limit=claim_text_limit, max_claims=5)
             for item in (evidence.get("foreign_citation_documents") or [])

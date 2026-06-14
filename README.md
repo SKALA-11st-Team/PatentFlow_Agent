@@ -20,6 +20,22 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### 시스템 의존성 (OCR — 해외특허 이미지 PDF용)
+해외특허(CN/JP/TW)가 **이미지 전용 PDF**로만 제공될 때, 텍스트를 뽑기 위해 Tesseract OCR로 폴백합니다. 이들은 pip 패키지가 아니라 **OS 시스템 바이너리**라 `requirements.txt`로 설치되지 않으며, 별도로 설치해야 합니다.
+
+- **`tesseract`** + 언어팩(`chi_sim`/`chi_tra`/`jpn`): OCR 엔진
+- **`poppler`**(`pdftoppm`): PDF 페이지를 이미지로 변환
+
+```bash
+# macOS
+brew install tesseract tesseract-lang poppler
+
+# Debian/Ubuntu
+sudo apt-get install -y tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra tesseract-ocr-jpn poppler-utils
+```
+
+미설치 시 OCR 단계는 에러 없이 건너뛰고(`ocr_warning="tesseract_not_installed"`), 해외특허 본문은 KIPRIS/Google Patents 폴백에만 의존합니다. 설치 여부는 `python scripts/check_patent_pdf_metadata.py`로 점검할 수 있습니다.
+
 ### DB 실행
 pgvector/RAG 기능을 테스트할 때만 DB가 필요합니다. `/health`, `/docs`, 기본 평가 API 확인만 할 때는 DB 없이도 서버 기동을 확인할 수 있습니다.
 

@@ -64,20 +64,62 @@ def build_summary_input_payload(*, state: PatentWorkflowState, summary_result: d
             "metadata": patent.get("metadata") or {},
             "sections": patent.get("sections") or {},
             "claim_stats": patent.get("claim_stats") or {},
+            # 요약이 청구항을 빠짐없이 반영하도록 전체 청구항을 전문으로 전달한다.
             "claims": [
                 {
                     "claim_no": claim.get("claim_no"),
-                    "text": str(claim.get("text") or "")[:1200],
+                    "text": str(claim.get("text") or ""),
                     "is_independent": claim.get("is_independent"),
                 }
-                for claim in (patent.get("claims") or [])[:5]
+                for claim in (patent.get("claims") or [])
             ],
         },
+        "patent_structures": build_summary_structure_payload(state),
         "draft_summary": {
             key: value
             for key, value in summary_result.items()
             if key != "summary_markdown"
         },
+    }
+
+
+def build_summary_structure_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    return {
+        "target": compact_summary_structure(state.target_structure),
+        "usage_policy": {
+            "target": "대상 특허의 핵심 구성과 처리 흐름 설명에 사용",
+            "rule": "구성요소 ID를 노출하지 않고 사업부 담당자가 이해할 수 있는 쉬운 문장으로 설명",
+        },
+    }
+
+
+def compact_summary_structure(structure: Any) -> dict[str, Any]:
+    if not isinstance(structure, dict):
+        return {}
+    return {
+        "doc_id": structure.get("doc_id"),
+        "comparison_source": structure.get("comparison_source"),
+        "key_elements": [
+            {
+                "key_element_id": element.get("key_element_id"),
+                "key_element_name": element.get("key_element_name"),
+                "why_essential": element.get("why_essential"),
+                "core_role": element.get("core_role"),
+                "in_independent_claim": element.get("in_independent_claim"),
+            }
+            for element in (structure.get("key_elements") or [])
+            if isinstance(element, dict)
+        ],
+        "key_flow": [
+            {
+                "key_element_id": flow.get("key_element_id"),
+                "next_key_element_id": flow.get("next_key_element_id"),
+                "relation_summary": flow.get("relation_summary"),
+                "coupling_strength": flow.get("coupling_strength"),
+            }
+            for flow in (structure.get("key_flow") or [])
+            if isinstance(flow, dict)
+        ],
     }
 
 

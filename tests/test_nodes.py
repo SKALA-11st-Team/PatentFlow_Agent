@@ -1,3 +1,5 @@
+import pytest
+
 from workflow.nodes import (
     common_preprocess_node,
     evidence_compression_node,
@@ -164,6 +166,9 @@ def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
             "citation_evidence": {},
             "citation_stats": {"total_count": 0},
             "citing_stats": {"total_count": 0},
+            "citing_document_records": [
+                {"display_number": "JP 6816175 B2", "source": "google_patents_html_forward_references"}
+            ],
         }
 
     monkeypatch.setattr("workflow.nodes.fetch_foreign_patent_rights_data", fake_foreign_fetch)
@@ -175,6 +180,7 @@ def test_patent_fetch_uses_foreign_rights_data_for_non_kr_patent(monkeypatch):
     assert result.kipris_api_data["source_type"] == "kipris_foreign_patent"
     assert result.kipris_api_data["metadata"]["country"] == "US"
     assert result.patent_structured["kipris_api"]["metadata"]["country"] == "US"
+    assert result.patent_structured["kipris_api"]["citing_documents"][0]["display_number"] == "JP 6816175 B2"
     assert captured_kwargs["collect_pdf"] is True
 
 
@@ -341,7 +347,7 @@ def test_query_rewriting_node_stores_industry_rag_queries(monkeypatch):
     monkeypatch.setattr(
         "workflow.nodes.rewrite_search_queries",
         lambda **kwargs: {
-            "ko": ["AI 투자 서비스"],
+            "domestic": ["AI 투자 서비스"],
             "en": ["ai investing"],
             "industry_rag": ["웰스테크 AI 에이전트 디지털 자문"],
             "skax_site": ["site:skax.co.kr 로보어드바이저 금융"],
@@ -838,6 +844,61 @@ def test_report_validation_flags_missing_sections_and_score_mismatch():
     assert any("missing required sections" in i for i in result["issues"])
     assert any("total score" in i for i in result["issues"])
 
+def _capture_collect_external_evidence(monkeypatch):
+    configure_evidence_search_mocks(monkeypatch, external_items=[], news_kept=[])
+    captured = {}
+
+    def capturing(**kwargs):
+        captured.update(kwargs)
+        return {"items": [], "queries": ["q"], "gnews_queries": [], "warnings": []}
+
+    monkeypatch.setattr("workflow.nodes.collect_external_evidence", capturing)
+    return captured
+
+
+def test_evidence_search_node_enables_kipris_by_default(monkeypatch):
+    # EVID-02: KIPRIS 경쟁근거 기본 ON.
+    captured = _capture_collect_external_evidence(monkeypatch)
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"application_number": "10-2024-0000001"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={},
+    )
+
+    evidence_search_node(state)
+
+    assert captured["include_kipris"] is True
+
+
+def test_evidence_search_node_kipris_can_be_disabled(monkeypatch):
+    captured = _capture_collect_external_evidence(monkeypatch)
+    state = PatentWorkflowState(
+        user_input={"no_save": True, "include_kipris_competitor": False},
+        patent_structured={"application_number": "10-2024-0000001"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={},
+    )
+
+    evidence_search_node(state)
+
+    assert captured["include_kipris"] is False
+
+
+def test_evidence_search_node_uses_llm_rewrite_when_query_plan_lists_are_empty(monkeypatch):
+    captured = _capture_collect_external_evidence(monkeypatch)
+    state = PatentWorkflowState(
+        user_input={"no_save": True},
+        patent_structured={"application_number": "10-2024-0000001"},
+        preprocessed_patent={"metadata": {}, "sections": {}},
+        query_plan={"domestic_queries": [], "en_queries": []},
+    )
+
+    evidence_search_node(state)
+
+    assert captured["domestic_queries_override"] is None
+    assert captured["en_queries_override"] is None
+
 
 def _capture_collect_external_evidence(monkeypatch):
     configure_evidence_search_mocks(monkeypatch, external_items=[], news_kept=[])
@@ -885,12 +946,31 @@ def test_report_validation_flags_recommendation_mismatch():
 
     md = (
         "\n".join(f"## {i}. 섹션" for i in range(1, 7))
-        + "\n| 종합 검토 의견 | 조건부 유지 |\n종합 점수 223/400점"
+        + "\n| 종합 검토 의견 | 유지 권고 |\n종합 점수 223/400점"
     )
     state = _report_state(md)
-    state.valuation_result["recommendation"] = "추가 정보 필요"
+    # 보고서 본문("유지 권고")과 다른 값으로 두어 recommendation 불일치를 검증한다.
+    state.valuation_result["recommendation"] = "포기 검토"
 
     result = report_validation_node(state).report_validation_result
 
     assert result["passed"] is False
     assert any("recommendation" in issue for issue in result["issues"])
+
+
+@pytest.mark.parametrize("country", ["CN", "JP", "TW", "AE"])
+def test_report_validation_rejects_domestic_wording_and_drawing_block_for_foreign_patent(country):
+    from workflow.nodes import report_validation_node
+
+    md = (
+        "\n".join(f"## {i}. 섹션" for i in range(1, 7))
+        + "\n종합 점수 223/300점\n등록된 국내권\n**권리범위 참고도 및 이해**"
+    )
+    state = _report_state(md)
+    state.patent_structured = {"country": country}
+
+    result = report_validation_node(state).report_validation_result
+
+    assert result["passed"] is False
+    assert any("domestic-patent wording" in issue for issue in result["issues"])
+    assert any("representative-drawing" in issue for issue in result["issues"])

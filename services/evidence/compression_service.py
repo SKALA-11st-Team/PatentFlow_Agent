@@ -26,7 +26,7 @@ def compress_evidence_items(
     rag_score_threshold: float = DEFAULT_RAG_SCORE_THRESHOLD,
     llm: Callable[[str], str] = call_llm,
 ) -> dict[str, Any]:
-    candidates, skipped = select_compression_candidates(items, rag_score_threshold=rag_score_threshold)
+    candidates, skipped, passthrough = select_compression_candidates(items, rag_score_threshold=rag_score_threshold)
     compressed: list[dict[str, Any]] = []
     warnings: list[str] = []
     rejected_by_llm = 0
@@ -48,6 +48,10 @@ def compress_evidence_items(
             continue
         compressed.append(compressed_item)
 
+    # AG-01: 경쟁특허 근거는 LLM 압축 없이 번들에 합류시킨다. 축 프롬프트 페이로드
+    # (valuation_evidence_payload)는 content를 렌더링하지 않으므로 초록을 compressed_summary로 옮긴다.
+    compressed.extend(passthrough_evidence_item(item) for item in passthrough)
+
     return {
         "items": compressed,
         "warnings": warnings,
@@ -57,11 +61,19 @@ def compress_evidence_items(
             "compressed_count": len(compressed),
             "rejected_by_llm_count": rejected_by_llm,
             "compression_failed_count": compression_failed,
+            "passthrough_count": len(passthrough),
             "skipped_non_target_count": skipped["non_target"],
             "skipped_low_rag_score_count": skipped["low_rag_score"],
             "rag_score_threshold": rag_score_threshold,
         },
     }
+
+
+def passthrough_evidence_item(item: dict[str, Any]) -> dict[str, Any]:
+    result = dict(item)
+    if not result.get("compressed_summary"):
+        result["compressed_summary"] = sanitize_external_text(str(item.get("content") or ""))[:600]
+    return result
 
 
 def compress_candidates_concurrently(
@@ -100,9 +112,10 @@ def select_compression_candidates(
     items: list[dict[str, Any]],
     *,
     rag_score_threshold: float = DEFAULT_RAG_SCORE_THRESHOLD,
-) -> tuple[list[dict[str, Any]], dict[str, int]]:
+) -> tuple[list[dict[str, Any]], dict[str, int], list[dict[str, Any]]]:
     candidates: list[dict[str, Any]] = []
     skipped = {"non_target": 0, "low_rag_score": 0}
+    passthrough: list[dict[str, Any]] = []
 
     for item in items:
         source_type = item.get("source_type")
@@ -121,9 +134,15 @@ def select_compression_candidates(
             else:
                 skipped["low_rag_score"] += 1
             continue
+        if source_type == "competitor_patent":
+            # AG-01(EVID-02 복원): KIPRIS 경쟁특허 근거는 이미 짧은 서지·초록이라
+            # 뉴스 압축 프롬프트를 거치지 않고 무변형으로 통과시킨다.
+            # 여기서 non_target으로 버리면 권리성·기술성 축이 받을 수 없다.
+            passthrough.append(item)
+            continue
         skipped["non_target"] += 1
 
-    return candidates, skipped
+    return candidates, skipped, passthrough
 
 
 def compress_single_evidence(

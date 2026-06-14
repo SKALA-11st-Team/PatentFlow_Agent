@@ -1,6 +1,11 @@
+from pathlib import Path
+
+import pytest
+
 from open_api.kipris_client import KiprisClient
 from services.patent.kipris_patent_service import (
     apply_foreign_pdf_ocr_fallback,
+    decode_google_patents_html_response,
     download_and_parse_foreign_patent_pdf,
     fetch_foreign_patent_rights_data,
     fetch_kipris_bibliography,
@@ -14,14 +19,22 @@ from services.patent.kipris_patent_service import (
     normalize_kipris_citations,
     normalize_kipris_citing_documents,
     normalize_foreign_reference_documents,
+    parse_single_patent_pdf,
     foreign_reference_candidate_from_text,
     resolve_foreign_prior_art_evidence,
     resolve_citation_evidence,
     _fetch_foreign_claims,
+    has_meaningful_pdf_text,
+    parse_single_patent_pdf,
+    should_exclude_pdf_page_text,
+    should_run_ocr_fallback,
+    trim_foreign_front_matter,
+    find_cached_foreign_patent_pdf,
     _fetch_foreign_claims_from_kipris,
     _foreign_literature_number_candidates,
     _google_patents_figure_urls,
     _google_patents_backward_references,
+    _google_patents_forward_references,
     _select_fulltext_pdf,
     fulltext_application_number_candidates,
 )
@@ -76,6 +89,32 @@ class Session:
 class ForeignClient:
     def __init__(self):
         self.claim_calls = []
+        self.bibliography_calls = []
+        self.session = Session()
+        self.timeout = 30.0
+
+    def overseas_bibliographic_info(self, literature_number, country_code):
+        self.bibliography_calls.append((literature_number, country_code))
+        if literature_number == "000012417849B2":
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "applicationNumber": "18/020,829",
+                            "registerNumber": "12,417,849",
+                            "inventionTitle": "Method for Identifying Association between Disease-related Factors",
+                            "applicationDate": "20210401",
+                            "registerDate": "20250610",
+                            "claimCount": "1",
+                            "astrtCont": "An association identification method using document data.",
+                            "ipcNumber": ["G16H 50/20", "G06F 16/2457"],
+                            "applicantName": "SK HOLDINGS CO., LTD.",
+                            "inventorName": "Hong Gil Dong",
+                        }
+                    }
+                }
+            }
+        return {"response": {"body": {"items": {}}}}
 
     def overseas_demand_paragraph(self, literature_number, country_code):
         self.claim_calls.append((literature_number, country_code))
@@ -164,6 +203,20 @@ def test_overseas_demand_paragraph_uses_foreign_bibliographic_access_key():
     assert call["params"]["countryCode"] == "JP"
 
 
+def test_overseas_bibliographic_info_uses_foreign_bibliographic_access_key():
+    client = KiprisClient(service_key="test-key")
+    client.session = Session()
+
+    client.overseas_bibliographic_info("000004002589B2", "JP")
+
+    call = client.session.calls[0]
+    assert call["url"].endswith("/openapi/rest/ForeignPatentBibliographicService/bibliographicInfo")
+    assert call["params"]["accessKey"] == "test-key"
+    assert "ServiceKey" not in call["params"]
+    assert call["params"]["literatureNumber"] == "000004002589B2"
+    assert call["params"]["countryCode"] == "JP"
+
+
 def test_overseas_open_fulltext_uses_foreign_image_fulltext_access_key():
     client = KiprisClient(service_key="test-key")
     client.session = Session()
@@ -205,6 +258,28 @@ def test_foreign_target_literature_candidates_defaults_us_registration_to_b2():
     assert candidates[0]["country_code"] == "US"
     assert candidates[0]["document_number"] == "12417849"
     assert candidates[0]["kind_code"] == "B2"
+
+
+def test_foreign_target_literature_candidates_cn_uses_application_number_without_check_digit():
+    # CN 해외 문헌번호는 출원번호 12자리(검증숫자 제외)+A0/B0 형식이어야 한다(ex: 201780067437A0).
+    candidates = foreign_target_literature_candidates(
+        {
+            "country": "CN",
+            "registration_number": "109891454",
+            "application_number": "201780067437.9",
+            "application_date": "2017-04-26",
+        }
+    )
+
+    # 출원번호 기반(검증숫자 제외 12자리)이 맨 앞에서 시도된다.
+    assert candidates[0]["country_code"] == "CN"
+    assert candidates[0]["document_number"] == "201780067437"
+    assert candidates[0]["source_field"] == "application_number"
+    # 검증숫자 포함 13자리는 본체가 아니다.
+    assert all(c["document_number"] != "2017800674379" or c["source_field"] != "application_number"
+               for c in candidates[:1])
+    docnums = {c["document_number"] for c in candidates}
+    assert "201780067437" in docnums
 
 
 def test_foreign_reference_candidate_from_pdf_prior_art():
@@ -272,6 +347,26 @@ def test_fetch_foreign_claims_falls_back_to_google_patents_pdf(monkeypatch, tmp_
     assert documents[0]["lookup_source"] == "google_patents_pdf"
     assert documents[0]["comparison_status"] == "claim_comparison_ready"
     assert documents[0]["representative_claims"][0]["text"].startswith("A method")
+
+
+def test_parse_single_patent_pdf_requires_java_runtime(monkeypatch, tmp_path):
+    monkeypatch.setattr("services.patent.kipris_patent_service.shutil.which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match="java_runtime_missing"):
+        parse_single_patent_pdf(tmp_path / "sample.pdf", output_dir=tmp_path / "out")
+
+
+def test_parse_single_patent_pdf_rejects_broken_java_stub(monkeypatch, tmp_path):
+    class Result:
+        returncode = 1
+        stdout = ""
+        stderr = "Unable to locate a Java Runtime."
+
+    monkeypatch.setattr("services.patent.kipris_patent_service.shutil.which", lambda name: "/usr/bin/java")
+    monkeypatch.setattr("services.patent.kipris_patent_service.subprocess.run", lambda *args, **kwargs: Result())
+
+    with pytest.raises(RuntimeError, match="java_runtime_unavailable"):
+        parse_single_patent_pdf(tmp_path / "sample.pdf", output_dir=tmp_path / "out")
 
 
 def test_fetch_foreign_claims_uses_google_patents_html_when_pdf_has_no_claims(monkeypatch):
@@ -406,8 +501,12 @@ def test_fetch_foreign_patent_rights_data_uses_overseas_claims_for_us(monkeypatc
     )
 
     assert result["metadata"]["country"] == "US"
+    assert result["metadata"]["ipc"] == ["G16H 50/20", "G06F 16/2457"]
+    assert result["sections"]["abstract"] == "An association identification method using document data."
     assert result["claims"][0]["source"] == "kipris_foreign_bibliographic_claims"
     assert result["foreign_claim_literature_number"] == "000012417849B2"
+    assert result["foreign_bibliography_literature_number"] == "000012417849B2"
+    assert ("000012417849B2", "US") in client.bibliography_calls
     assert ("000012417849B2", "US") in client.claim_calls
 
 
@@ -425,7 +524,7 @@ def test_fetch_foreign_patent_rights_data_marks_unsupported_claim_api_without_kr
         collect_pdf=False,
     )
 
-    assert result["source_type"] == "kipris_foreign_patent"
+    assert result["source_type"] == "kipris_foreign_bibliographic_info"
     assert result["metadata"]["country"] == "TW"
     assert result["claims"] == []
     assert result["warnings"] == ["kipris_foreign_claims_not_supported:TW", "kipris_foreign_claims_not_found"]
@@ -456,6 +555,148 @@ def test_fetch_foreign_patent_rights_data_requires_manual_upload_when_all_pdf_so
         "missing_reason": "kipris_and_google_patents_pdf_not_found",
     }
     assert result["warnings"][-1].startswith("foreign_pdf_manual_upload_required:")
+
+
+def test_should_run_ocr_fallback_for_image_only_markdown():
+    markdown = "![image 1](<page1.png>)\n\n![image 2](<page2.png>)"
+
+    assert should_run_ocr_fallback(markdown) is True
+    assert has_meaningful_pdf_text(markdown) is False
+
+
+def test_parse_single_patent_pdf_uses_ocr_when_markdown_has_no_text(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    output_dir = tmp_path / "out"
+
+    class FakeOpenDataLoaderPdf:
+        @staticmethod
+        def convert(*, input_path, output_dir, format):
+            md_path = Path(output_dir) / "sample.md"
+            md_path.write_text("![image 1](<page1.png>)\n", encoding="utf-8")
+
+    monkeypatch.setitem(__import__("sys").modules, "opendataloader_pdf", FakeOpenDataLoaderPdf)
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_left_then_right",
+        lambda path: "",
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_with_ocr",
+        lambda path: "Abstract\nClaims\n1. A system comprising a processor.",
+    )
+
+    result = parse_single_patent_pdf(pdf_path, output_dir=output_dir, country="US")
+
+    assert result["markdown_paths"]
+    assert "Abstract" in result["markdown_text"]
+    assert "1. A system comprising a processor." in result["markdown_text"]
+
+
+def test_parse_single_patent_pdf_raises_when_ocr_fails_to_extract_text(monkeypatch, tmp_path):
+    pdf_path = tmp_path / "sample.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4 test")
+    output_dir = tmp_path / "out"
+
+    class FakeOpenDataLoaderPdf:
+        @staticmethod
+        def convert(*, input_path, output_dir, format):
+            md_path = Path(output_dir) / "sample.md"
+            md_path.write_text("![image 1](<page1.png>)\n", encoding="utf-8")
+
+    monkeypatch.setitem(__import__("sys").modules, "opendataloader_pdf", FakeOpenDataLoaderPdf)
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_left_then_right",
+        lambda path: "",
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.extract_pdf_text_with_ocr",
+        lambda path: "",
+    )
+
+    with pytest.raises(RuntimeError, match="foreign_pdf_text_extraction_failed_after_ocr"):
+        parse_single_patent_pdf(pdf_path, output_dir=output_dir, country="US")
+
+
+def test_find_cached_foreign_patent_pdf_uses_publication_id(tmp_path):
+    cached = tmp_path / "US12032469B2.pdf"
+    cached.write_bytes(b"%PDF-1.4 cached")
+
+    result = find_cached_foreign_patent_pdf(
+        {"country": "US", "registration_number": "12,032,469", "application_number": "17/420,237"},
+        pdf_dir=tmp_path,
+    )
+
+    assert result == cached
+
+
+def test_extract_foreign_claims_from_text_ignores_description_and_keeps_real_claims():
+    text = """
+Explainable AI Modeling and Simulation Method
+Embodiments of the present disclosure provide a system and a method.
+
+AI Workflow Model Designing
+FIG. 2 is a view provided to explain a process of designing an AI workflow model.
+
+What is claimed is:
+1. An explainable artificial intelligence (AI) modeling and simulation method comprising the steps of: designing an AI workflow model.
+2. The method of claim 1, wherein the AI workflow model is provided by visualizing a workflow.
+9. An explainable artificial intelligence (AI) modeling and simulation system, comprising: a storage unit and a processor.
+
+Description
+This description explains embodiments in detail.
+"""
+
+    claims = extract_foreign_claims_from_text(text)
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2, 9]
+    assert claims[0]["text"].startswith("An explainable artificial intelligence")
+    assert claims[-1]["text"].startswith("An explainable artificial intelligence")
+    assert all("FIG. 2" not in claim["text"] for claim in claims)
+
+
+def test_should_exclude_pdf_page_text_for_drawing_sheet_noise():
+    text = """
+U.S. Patent Jul. 9, 2024 Sheet 8 of 16 US 12,032,469 B2
+
+Workflow Modeling
+Simulation
+Registration/performance
+FIG. 8
+Real-time classification result
+Real-time distribution/performance
+"""
+
+    assert should_exclude_pdf_page_text(text) is True
+
+
+def test_should_exclude_pdf_page_text_keeps_body_text():
+    text = """
+The present disclosure relates to explainable artificial intelligence technology.
+Embodiments of the present disclosure provide a system and method for modelling workflows.
+The system conducts a simulation and compares performance across candidate models.
+"""
+
+    assert should_exclude_pdf_page_text(text) is False
+
+
+def test_trim_foreign_front_matter_starts_at_body_heading():
+    text = """
+United States Patent
+(57) ABSTRACT
+Provided is a system and method.
+
+TECHNICAL FIELD
+The present disclosure relates to explainable artificial intelligence technology.
+
+BACKGROUND ART
+Conventional approaches have limitations.
+"""
+
+    trimmed = trim_foreign_front_matter(text)
+
+    assert trimmed.startswith("TECHNICAL FIELD")
+    assert "United States Patent" not in trimmed
+    assert "ABSTRACT" not in trimmed
 
 
 def test_google_patents_publication_id_normalizes_cn_registration_number():
@@ -491,7 +732,10 @@ def test_extract_foreign_claims_accepts_chinese_ocr_numbering():
         ## 페이지 3
         ![페이지 3](<images/page3.png>)
         ### OCR 텍스트
-        3、如权利要求 1 所述的导航装置，其中，控制单元切换背景图像。
+        ```text
+        200710112054. 7                    权 AR OR TB 第273丰
+        3、如权利要求 | 所述的导航装置，其中，控制单元切换背景图像。
+        ```
         ## 페이지 4
         说明书
         本发明涉及导航装置。
@@ -501,7 +745,27 @@ def test_extract_foreign_claims_accepts_chinese_ocr_numbering():
     assert [claim["claim_no"] for claim in claims] == [1, 2, 3]
     assert claims[0]["is_independent"] is True
     assert claims[1]["dependency"] == 1
+    assert claims[2]["dependency"] == 1
+    assert claims[2]["is_independent"] is False
+    assert "페이지" not in claims[1]["text"]
+    assert "OCR 텍스트" not in claims[1]["text"]
+    assert "image" not in claims[1]["text"]
+    assert "第273丰" not in claims[2]["text"]
     assert "说明书" not in claims[2]["text"]
+
+
+def test_extract_foreign_claims_accepts_taiwan_bracketed_claim_numbers():
+    claims = extract_foreign_claims_from_text(
+        """
+        【發明申請專利範圍】
+        【第1項】 一種用於提供虛擬產品的方法，包括取得製造數據。
+        【第2項】 如申請專利範圍第1項所述之方法，其中即時提供虛擬產品。
+        """
+    )
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2]
+    assert claims[0]["is_independent"] is True
+    assert claims[1]["dependency"] == 1
 
 
 def test_foreign_pdf_ocr_fallback_keeps_usable_text(monkeypatch, tmp_path):
@@ -620,6 +884,47 @@ def test_foreign_pdf_ocr_fallback_uses_japanese_language_pack(monkeypatch, tmp_p
     assert commands[0][-4:] == ["-l", "jpn+eng", "--psm", "6"]
 
 
+def test_foreign_pdf_ocr_fallback_uses_traditional_chinese_for_tw(monkeypatch, tmp_path):
+    image_dir = tmp_path / "TWI123_images"
+    image_dir.mkdir()
+    (image_dir / "imageFile1.png").write_bytes(b"fake-png")
+    markdown_path = tmp_path / "TWI123.md"
+    markdown_path.write_text(
+        "![image 1](<TWI123_images/imageFile1.png>)",
+        encoding="utf-8",
+    )
+    commands = []
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.shutil.which",
+        lambda name: "/opt/homebrew/bin/tesseract",
+    )
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+
+        class Result:
+            stdout = "申請專利範圍\n1. 一種用於提供虛擬產品的方法，包括取得製造數據。" * 20
+
+        return Result()
+
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.subprocess.run",
+        fake_run,
+    )
+
+    result = apply_foreign_pdf_ocr_fallback(
+        {
+            "markdown_paths": [str(markdown_path)],
+            "markdown_text": markdown_path.read_text(encoding="utf-8"),
+        },
+        country="TW",
+    )
+
+    assert result["ocr_applied"] is True
+    assert result["ocr_language"] == "chi_tra+eng"
+    assert commands[0][-4:] == ["-l", "chi_tra+eng", "--psm", "6"]
+
+
 def test_foreign_pdf_parse_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
     class Client:
         session = object()
@@ -649,7 +954,7 @@ def test_foreign_pdf_parse_falls_back_to_google_patents_pdf(monkeypatch, tmp_pat
         lambda url, **kwargs: tmp_path / kwargs["filename"],
     )
 
-    def fake_parse(pdf_path, *, output_dir):
+    def fake_parse(pdf_path, *, output_dir, country=None):
         parse_calls.append(str(pdf_path))
         if len(parse_calls) == 1:
             return {
@@ -709,6 +1014,122 @@ def test_google_patents_html_to_markdown_extracts_fulltext_sections():
     assert "equipment reliability index" in markdown
 
 
+def test_google_patents_html_preserves_claim_numbers_and_taiwan_dependencies():
+    markdown = google_patents_html_to_markdown(
+        """
+        <div num="1" class="claim">
+          <div class="claim-text">一種用於提供虛擬半導體產品的方法，包括取得製造數據。</div>
+        </div>
+        <div num="2" class="claim">
+          <div class="claim-text">如申請專利範圍第1項所述之方法，其中即時提供虛擬產品。</div>
+        </div>
+        """
+    )
+
+    claims = extract_foreign_claims_from_text(markdown)
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2]
+    assert claims[0]["is_independent"] is True
+    assert claims[1]["dependency"] == 1
+
+
+def test_google_patents_html_fallback_keeps_downloaded_pdf_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.select_foreign_fulltext_pdf_with_fallback",
+        lambda *args, **kwargs: {
+            "literature_number": "TWI123456",
+            "selected_type": "GOOGLE_PATENTS_FULLTEXT",
+            "doc_name": "TWI123456.pdf",
+            "path": "https://example.com/TWI123456.pdf",
+        },
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._download_and_parse_foreign_selection",
+        lambda *args, **kwargs: {
+            "pdf_path": "/tmp/TWI123456.pdf",
+            "source_path": "https://example.com/TWI123456.pdf",
+            "markdown_text": "![page](<page.png>)",
+        },
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.download_google_patents_html_fulltext",
+        lambda *args, **kwargs: {
+            "selected_type": "GOOGLE_PATENTS_HTML_FULLTEXT",
+            "source_path": "https://patents.google.com/patent/TWI123456/zh",
+            "markdown_text": "## CLAIMS\n\n1. A method comprising enough usable claim text for parsing.",
+        },
+    )
+
+    result = download_and_parse_foreign_patent_pdf(
+        object(),
+        {"country": "TW", "registration_number": "I123456"},
+        candidates=[],
+        output_dir=tmp_path,
+    )
+
+    assert result["selected_type"] == "GOOGLE_PATENTS_HTML_FULLTEXT"
+    assert result["pdf_path"] == "/tmp/TWI123456.pdf"
+    assert result["pdf_source_path"] == "https://example.com/TWI123456.pdf"
+
+
+def test_google_patents_html_fulltext_prefers_language_with_parseable_claims(tmp_path):
+    from services.patent.kipris_patent_service import download_google_patents_html_fulltext
+
+    class Response:
+        def __init__(self, text):
+            self.text = text
+            self.content = text.encode("utf-8")
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, url, **kwargs):
+            del kwargs
+            if url.endswith("/en"):
+                return Response(
+                    '<meta name="DC.title" content="English title">'
+                    '<section itemprop="description"><div>' + ("Long description. " * 30) + "</div></section>"
+                )
+            return Response(
+                '<meta name="DC.title" content="中文標題">'
+                '<div class="claim" num="1"><div class="claim-text">'
+                "一種用於提供虛擬產品的方法，包括取得製造數據。"
+                "</div></div>"
+            )
+
+    class Client:
+        session = Session()
+        timeout = 1
+
+    result = download_google_patents_html_fulltext(
+        Client(),
+        {"country": "TW", "registration_number": "I123456"},
+        output_dir=tmp_path,
+    )
+
+    assert result["source_path"].endswith("/zh")
+    assert len(extract_foreign_claims_from_text(result["markdown_text"])) == 1
+
+
+def test_google_patents_html_response_decodes_utf8_content_instead_of_mojibake_text():
+    chinese_html = (
+        '<meta name="DC.title" content="具有相框功能的导航装置及其操作方法">'
+        '<section itemprop="description"><div>本发明涉及导航装置。</div></section>'
+    )
+
+    class Response:
+        content = chinese_html.encode("utf-8")
+        text = content.decode("latin-1")
+
+    decoded = decode_google_patents_html_response(Response())
+    markdown = google_patents_html_to_markdown(decoded)
+
+    assert "具有相框功能的导航装置及其操作方法" in markdown
+    assert "本发明涉及导航装置" in markdown
+    assert "å" not in markdown
+
+
 def test_google_patents_html_to_markdown_keeps_full_description_section():
     markdown = google_patents_html_to_markdown(
         """
@@ -757,6 +1178,79 @@ def test_google_patents_backward_references_extracts_supported_patent_numbers():
     assert references == ["US 20090306803 A1", "JP 2010118562 A"]
 
 
+def test_google_patents_forward_references_extracts_citing_documents():
+    references = _google_patents_forward_references(
+        """
+        <tr itemprop="forwardReferencesFamily" itemscope repeat>
+          <td>
+            <span itemprop="publicationNumber">JP6816175B2</span>
+            <span itemprop="examinerCited">*</span>
+          </td>
+          <td itemprop="priorityDate">2019-01-10</td>
+          <td itemprop="publicationDate">2021-01-20</td>
+          <td><span itemprop="assigneeOriginal">本田技研工業株式会社</span></td>
+          <td itemprop="title">製品測定結果表示システム</td>
+        </tr>
+        <tr itemprop="forwardReferences">
+          <td><span itemprop="publicationNumber">US12217409B2</span></td>
+          <td itemprop="priorityDate">2019-04-23</td>
+          <td itemprop="publicationDate">2025-02-04</td>
+          <td><span itemprop="assigneeOriginal">Sony Group Corporation</span></td>
+          <td itemprop="title">Information processing device</td>
+        </tr>
+        """
+    )
+
+    assert [item["display_number"] for item in references] == [
+        "JP 6816175 B2",
+        "US 12217409 B2",
+    ]
+    assert references[0]["examiner_cited"] is True
+    assert references[0]["assignee"] == "本田技研工業株式会社"
+    assert references[1]["publication_date"] == "2025-02-04"
+
+
+def test_foreign_rights_data_uses_google_patents_forward_references(monkeypatch):
+    class Response:
+        content = b"""
+        <tr itemprop="forwardReferencesFamily">
+          <td><span itemprop="publicationNumber">JP6816175B2</span></td>
+          <td itemprop="priorityDate">2019-01-10</td>
+          <td itemprop="publicationDate">2021-01-20</td>
+          <td><span itemprop="assigneeOriginal">Honda</span></td>
+          <td itemprop="title">Measurement system</td>
+        </tr>
+        """
+
+        def raise_for_status(self):
+            return None
+
+    class Session:
+        def get(self, *args, **kwargs):
+            return Response()
+
+    client = ForeignClient()
+    client.session = Session()
+    monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: client)
+
+    result = fetch_foreign_patent_rights_data(
+        {
+            "country": "TW",
+            "application_number": "106132082",
+            "registration_number": "I669767",
+            "status": "등록",
+        },
+        collect_pdf=False,
+    )
+
+    assert result["citing_stats"]["available"] is True
+    assert result["citing_stats"]["total_count"] == 1
+    assert result["citing_documents"][0]["display_number"] == "JP 6816175 B2"
+    assert result["foreign_api_collection"]["target_citing_references"]["source"] == (
+        "google_patents_html_forward_references"
+    )
+
+
 def test_google_patents_pdf_url_reads_citation_pdf_meta():
     session = GooglePatentsSession(
         '<html><meta name="citation_pdf_url" content="https://patentimages.storage.googleapis.com/x/CN110770661B.pdf"></html>'
@@ -796,6 +1290,28 @@ Claim 4: 請求項１ないし３のいずれか１項に記載の方法であ�
 
     assert claims[0]["is_independent"] is True
     assert [claim["dependency"] for claim in claims[1:]] == [1, 1, 1]
+
+
+def test_extract_foreign_claims_removes_ocr_markdown_wrappers_for_japanese_patent():
+    claims = extract_foreign_claims_from_text(
+        """
+CLAIMS
+Claim 1: 基準データを用いて計測値の変動を検知する装置。
+## 페이지 2
+![페이지 2](<images/page2.png>)
+### OCR 텍스트
+```text
+特許第1234567号 請求の範囲 第2頁
+Claim 2: 請求項１に記載の装置であって、警告を出力する装置。
+```
+"""
+    )
+
+    assert [claim["claim_no"] for claim in claims] == [1, 2]
+    assert claims[1]["dependency"] == 1
+    assert all("페이지" not in claim["text"] for claim in claims)
+    assert all("OCR 텍스트" not in claim["text"] for claim in claims)
+    assert all("![" not in claim["text"] for claim in claims)
 
 
 def test_extract_foreign_claims_from_text_ignores_numbered_description_before_claims():
@@ -1482,10 +1998,10 @@ def test_foreign_literature_number_candidates_try_twelve_digit_kind_first():
         "display_number": "JP7401073 B2",
     }
 
-    assert _foreign_literature_number_candidates(candidate)[:2] == [
-        "000007401073B2",
-        "7401073B2",
-    ]
+    # 12자리 패딩 형식만 시도한다(패딩 안 한 7401073B2는 KIPRIS 매칭 안 돼 제거됨).
+    candidates = _foreign_literature_number_candidates(candidate)
+    assert candidates[0] == "000007401073B2"
+    assert "7401073B2" not in candidates
 
 
 def test_foreign_literature_number_candidates_adds_a0_for_open_publications():
@@ -1499,12 +2015,12 @@ def test_foreign_literature_number_candidates_adds_a0_for_open_publications():
 
     candidates = _foreign_literature_number_candidates(candidate)
 
+    # 공개문헌(A)은 12자리 패딩 + A0/A만 시도(패딩 안 한 형식은 제거).
     assert candidates[:2] == [
         "000113039310A0",
-        "113039310A0",
+        "000113039310A",
     ]
-    assert "000113039310A" in candidates
-    assert "113039310A" in candidates
+    assert "113039310A0" not in candidates
 
 
 def test_foreign_literature_number_candidates_converts_jp_era_open_number():
@@ -1519,11 +2035,13 @@ def test_foreign_literature_number_candidates_converts_jp_era_open_number():
 
     candidates = _foreign_literature_number_candidates(candidate)
 
+    # 일본 연호 변환된 공개번호(2017047511)를 12자리 패딩 + A0/A로 먼저 시도한다.
     assert candidates[:2] == [
         "002017047511A0",
-        "2017047511A0",
+        "002017047511A",
     ]
     assert "000029047511A0" in candidates
+    assert "2017047511A0" not in candidates
 
 
 import pytest
@@ -1579,3 +2097,33 @@ def test_extract_claim_dependency_requires_citation_terminator(text, expected):
 )
 def test_strip_register_suffix_handles_compact_and_hyphenated_numbers(value, expected):
     assert _strip_register_suffix(value) == expected
+
+
+def test_google_patents_backward_reference_documents_parses_cited_prior_art():
+    from services.patent.kipris_patent_service import _google_patents_backward_reference_documents
+
+    html = """
+    <tr itemprop="backwardReferences" itemscope>
+      <td><span itemprop="publicationNumber">CN1894652A</span></td>
+      <td><span itemprop="title">Automatic monitoring</span></td>
+      <span itemprop="examinerCited">*</span>
+    </tr>
+    <tr itemprop="backwardReferencesFamily" itemscope>
+      <td><span itemprop="publicationNumber">JP2011060012A</span></td>
+      <td><span itemprop="title">Plant monitoring</span></td>
+    </tr>
+    <tr itemprop="forwardReferences" itemscope>
+      <td><span itemprop="publicationNumber">US9999999B2</span></td>
+    </tr>
+    """
+    docs = _google_patents_backward_reference_documents(html)
+    numbers = [d["display_number"] for d in docs]
+    # backward(인용)만 잡고 forward(피인용)는 제외한다.
+    assert "CN 1894652 A" in numbers
+    assert "JP 2011060012 A" in numbers
+    assert all("9999999" not in n for n in numbers)
+    cn = next(d for d in docs if d["display_number"] == "CN 1894652 A")
+    assert cn["direction"] == "cited_by_target"
+    assert cn["country_code"] == "CN"
+    assert cn["document_number"] == "1894652"
+    assert cn["source"] == "google_patents_html_backward_references"

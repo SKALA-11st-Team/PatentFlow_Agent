@@ -31,6 +31,7 @@ PAT_UTI_REST_SERVICE_PATH = "/openapi/rest/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
 OVERSEAS_PATENT_SERVICE_PATH = "/openapi/rest/ForeignPatentBibliographicService"
 OVERSEAS_IMAGE_FULLTEXT_SERVICE_PATH = "/openapi/rest/ForeignPatentImageAndFullTextService"
+OVERSEAS_ADVANCED_SEARCH_SERVICE_PATH = "/openapi/rest/ForeignPatentAdvencedSearchService"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
 CITATION_SERVICE_PATH = "/openapi/rest/CitationService"
 CITING_SERVICE_PATH = "/openapi/rest/CitingService"
@@ -279,9 +280,14 @@ class KiprisClient:
         return self.request("getAdvancedSearch", params)
 
     def search_by_application_number(self, application_number: str, **params: Any) -> dict[str, Any]:
-        """출원번호 검색 - applicationNumberSearchInfo"""
+        """출원번호 검색 - getAdvancedSearch(applicationNumber).
+
+        `applicationNumberSearchInfo` operation은 이 서비스 경로/키에서 INVALID_REQUEST_PARAMETER로
+        실패한다(존재하지 않는 operation). 전체검색 getAdvancedSearch에 applicationNumber를 넘기면
+        정상 동작하며(resultCode 00), 응답 shape도 extract_kipris_items가 이미 처리한다.
+        """
         params.update({"applicationNumber": application_number})
-        return self.request("applicationNumberSearchInfo", params)
+        return self.request("getAdvancedSearch", params)
 
     def bibliography_detail(self, application_number: str) -> dict[str, Any]:
         """서지상세정보 - getBibliographyDetailInfoSearch"""
@@ -352,9 +358,47 @@ class KiprisClient:
         ]
 
     def search_by_ipc(self, ipc_number: str, **params: Any) -> dict[str, Any]:
-        """IPC 검색 - ipcSearchInfo"""
+        """IPC 검색 - ipcSearchInfo.
+
+        search_by_cpc와 동일하게 /openapi/rest/ 경로 + accessKey 인증을 써야 한다. 기본 경로
+        (/kipo-api/kipi/ + ServiceKey)로는 INVALID_REQUEST_PARAMETER로 실패한다.
+        """
         params.update({"ipcNumber": ipc_number})
-        return self.request("ipcSearchInfo", params)
+        return self.request(
+            "ipcSearchInfo",
+            params,
+            service_path=PAT_UTI_REST_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
+    def count_foreign_patents_by_ipc_opendate(
+        self,
+        ipc_number: str,
+        country_code: str,
+        open_date_start: str,
+        open_date_end: str,
+    ) -> int:
+        """해외특허 IPC + 공개일자(OPD) 범위로 해당 국가 공개 특허 건수를 센다.
+
+        ForeignPatentAdvencedSearchService/advancedSearch는 `free` 쿼리에
+        `IPC=[코드] AND OPD=[YYYYMMDD~YYYYMMDD]` 문법으로 IPC와 공개일자 범위를 동시에 걸 수
+        있고, totalSearchCount로 구간 건수를 바로 돌려준다(ipcSearch는 날짜 필터가 없어 불가).
+        IPC는 공백을 제거해야 한다(`G16H 50/70` → `G16H50/70`).
+        """
+        ipc = re.sub(r"\s+", "", str(ipc_number or ""))
+        free_query = f"IPC=[{ipc}] AND OPD=[{open_date_start}~{open_date_end}]"
+        raw = self.request(
+            "advancedSearch",
+            {"free": free_query, "collectionValues": country_code, "currentPage": 1},
+            service_path=OVERSEAS_ADVANCED_SEARCH_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+        items = ((raw.get("response") or {}).get("body") or {}).get("items") or {}
+        total = items.get("totalSearchCount") if isinstance(items, dict) else None
+        try:
+            return int(str(total).strip())
+        except (TypeError, ValueError):
+            return 0
 
     def search_by_cpc(self, cpc_number: str, **params: Any) -> dict[str, Any]:
         """CPC 검색 - cpcSearchInfo"""
@@ -428,6 +472,22 @@ class KiprisClient:
         """해외특허 / 서지정보 / 청구항 - demandParagraphInfo"""
         return self.request(
             "demandParagraphInfo",
+            {
+                "literatureNumber": literature_number,
+                "countryCode": country_code,
+            },
+            service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
+    def overseas_bibliographic_info(
+        self,
+        literature_number: str,
+        country_code: str,
+    ) -> dict[str, Any]:
+        """해외특허 / 서지정보 / 서지상세 - bibliographicInfo"""
+        return self.request(
+            "bibliographicInfo",
             {
                 "literatureNumber": literature_number,
                 "countryCode": country_code,

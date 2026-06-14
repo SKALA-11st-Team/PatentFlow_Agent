@@ -33,7 +33,6 @@ def test_build_search_queries_prioritizes_related_product_and_site_condition():
     assert all(query.startswith("site:skax.co.kr") for query in queries)
     assert queries[0] == "site:skax.co.kr 로보어드바이저"
     assert any("SK AX" in query and "로보어드바이저" in query for query in queries)
-    assert any("news room" in query and "로보어드바이저" in query for query in queries)
     assert any("데이터분석" in query and "Data" in query for query in queries)
     assert any("금융" in query or "투자" in query for query in queries)
     assert any("AI" in query and "예측" in query for query in queries)
@@ -49,10 +48,10 @@ def test_build_query_generation_plan_uses_rewritten_skax_queries_when_provided()
     )
 
     assert plan["query_source"] == "rule_based_with_query_rewriting"
-    assert plan["generated_queries"][:3] == [
-        "site:skax.co.kr 로보어드바이저",
-        "site:skax.co.kr SK AX 로보어드바이저",
-        "site:skax.co.kr 로보어드바이저 news room",
+    # query rewriting(override) 검색어가 rule-based보다 우선 배치된다.
+    assert plan["generated_queries"][:2] == [
+        "site:skax.co.kr 로보어드바이저 금융 자산관리",
+        "site:skax.co.kr 디지털 금융 서비스 AI 예측",
     ]
 
 
@@ -69,11 +68,8 @@ def test_collect_skax_site_evidence_uses_rewritten_query_override():
         queries_override=["디지털 금융 서비스 AI 예측"],
     )
 
-    assert seen_queries[:3] == [
-        "site:skax.co.kr 로보어드바이저",
-        "site:skax.co.kr SK AX 로보어드바이저",
-        "site:skax.co.kr 로보어드바이저 news room",
-    ]
+    # override 검색어가 1순위로 실제 검색에 나간다(rule-based보다 먼저).
+    assert seen_queries[0] == "site:skax.co.kr 디지털 금융 서비스 AI 예측"
     assert result["query_generation_diagnostics"]["query_source"] == "rule_based_with_query_rewriting"
 
 
@@ -112,9 +108,10 @@ def test_collect_skax_site_evidence_searches_queries_concurrently():
     )
 
     assert max_active > 1
+    # override 검색어가 우선 배치되어 max_queries=2 슬롯을 채운다.
     assert result["queries"][:2] == [
-        "site:skax.co.kr 로보어드바이저",
-        "site:skax.co.kr SK AX 로보어드바이저",
+        "site:skax.co.kr 로보어드바이저 one",
+        "site:skax.co.kr 로보어드바이저 two",
     ]
     assert [diagnostic["query"] for diagnostic in result["search_diagnostics"][:2]] == result["queries"][:2]
 
@@ -282,7 +279,8 @@ def test_collect_sk_related_media_requires_sk_ax_or_cnc_body_marker():
     fetched_urls = []
 
     def searcher(query):
-        if "skcareersjournal.com" not in query:
+        # 관련매체 변형 쿼리('SK AX ...')에만 결과를 준다(도메인 제한은 include_domains가 처리).
+        if not query.startswith("SK AX"):
             return []
         return [
             {

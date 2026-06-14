@@ -14,11 +14,7 @@ from agents.valuation import (
 )
 from agents.valuation_axes.business_fit import reconcile_business_fit_scores
 from agents.valuation_axes.common import grade_for_score
-from agents.valuation_axes.legal import (
-    legal_detail_max_map,
-    legal_subscore_max_map,
-    reconcile_legal_scores,
-)
+from agents.valuation_axes.legal import reconcile_legal_scores
 from schemas.valuation import (
     DEFAULT_AXIS_WEIGHTS,
     DEFAULT_GRADE_CUTOFFS,
@@ -83,7 +79,7 @@ def test_resolve_valuation_config_rejects_invalid_values():
     assert "unknown_axis" not in resolved["axisWeights"]
     assert resolved["gradeCutoffs"] == DEFAULT_GRADE_CUTOFFS
     assert resolved["maintainThreshold"] == 100.0
-    assert resolved["subscoreWeights"]["legal"]["right_stability"] == 35
+    assert resolved["subscoreWeights"]["legal"]["right_stability"] == 40
 
 
 def test_grade_for_score_uses_custom_cutoffs():
@@ -94,9 +90,13 @@ def test_grade_for_score_uses_custom_cutoffs():
     assert grade_for_score(49, cutoffs) == "D"
 
 
-def test_score_to_final_recommendation_uses_threshold():
-    assert score_to_final_recommendation(55, threshold=50) == "유지 권고"
-    assert score_to_final_recommendation(55) == "포기 검토"
+def test_score_to_final_recommendation_three_tier_cutoffs():
+    # ≥70 유지 권고, 50~69 조건부 유지, <50 포기 검토.
+    assert score_to_final_recommendation(70) == "유지 권고"
+    assert score_to_final_recommendation(60) == "조건부 유지"
+    assert score_to_final_recommendation(49) == "포기 검토"
+    # 컷오프는 파라미터로 조정 가능하다.
+    assert score_to_final_recommendation(55, maintain_cutoff=50) == "유지 권고"
 
 
 def test_build_final_valuation_result_defaults_match_legacy_equal_average():
@@ -135,14 +135,15 @@ def test_build_final_valuation_result_applies_weighted_average_and_cutoffs():
     assert result["axes"]["legal"]["grade"] == "A"
 
 
-def test_build_final_valuation_result_threshold_flips_recommendation():
+def test_recommendation_uses_fixed_cutoffs_not_config_threshold():
+    # recommendation은 고정 컷오프(70/50)를 적용하며 maintainThreshold 설정에 영향받지 않는다.
     config = resolve_valuation_config({"maintainThreshold": 75})
 
-    # business_fit < 60(오버라이드 없음)에서 임계만으로 권고가 뒤집히는지 본다.
+    # business_fit < 60(오버라이드 없음), 평균 70 → 설정과 무관하게 유지 권고(70 ≥ 70).
     result = build_final_valuation_result(four_axes(70, 70, 70, 50), config=config)
 
     assert result["average_score"] == 70.0
-    assert result["recommendation"] == "포기 검토"
+    assert result["recommendation"] == "유지 권고"
 
 
 def test_build_final_valuation_result_business_fit_override_wins_over_threshold():
@@ -156,43 +157,18 @@ def test_build_final_valuation_result_business_fit_override_wins_over_threshold(
     assert result["recommendation"] == "유지 권고"
 
 
-def test_legal_subscore_max_map_reads_state_config():
-    state = PatentWorkflowState(
-        user_input={
-            "valuation_config": resolve_valuation_config(
-                {"subscoreWeights": {"legal": {"right_stability": 50, "claim_protection": 30, "portfolio_defensive_value": 20}}}
-            )
-        }
-    )
+def test_recommendation_ignores_maintain_threshold_config():
+    # recommendation은 점수 기반 고정 컷오프(70/50)를 쓰므로 maintainThreshold 설정에 좌우되지 않는다.
+    config = resolve_valuation_config({"maintainThreshold": 0})
 
-    assert legal_subscore_max_map(state) == {
-        "right_stability": 50,
-        "claim_protection": 30,
-        "portfolio_defensive_value": 20,
-    }
-    assert legal_subscore_max_map(PatentWorkflowState(user_input={})) == DEFAULT_SUBSCORE_WEIGHTS["legal"]
+    result = build_final_valuation_result(four_axes(10, 10, 10, 10), config=config)
+
+    assert result["recommendation"] == "포기 검토"
 
 
-def test_legal_detail_max_scales_with_right_stability_weight():
-    scaled = legal_detail_max_map({"right_stability": 50})
+def test_reconcile_legal_scores_uses_configured_subscore_max():
+    from agents.valuation_axes.legal import reconcile_legal_scores
 
-    # 25/35 비율 유지 + right_stability 하위 두 지표의 합계가 정확히 만점.
-    # follow_on_right_signal은 portfolio_defensive_value 하위라 스케일하지 않는다.
-    assert scaled["prior_art_overlap"] == 36
-    assert scaled["claim_structure_stability"] == 14
-    assert scaled["prior_art_overlap"] + scaled["claim_structure_stability"] == 50
-    assert scaled["follow_on_right_signal"] == 4
-    assert legal_detail_max_map({"right_stability": 35}) == {
-        "prior_art_overlap": 25,
-        "claim_structure_stability": 10,
-        "follow_on_right_signal": 4,
-    }
-
-
-def test_reconcile_legal_scores_rescales_detail_sums_to_configured_max():
-    """세부지표(details)는 프롬프트 본문(기본 배점 35/40/25) 기준으로 보고되므로,
-    설정 배점이 다르면 detail 부분합을 비례 변환해야 한다(리뷰 HIGH 회귀 테스트).
-    만점 특허 + 50/30/20 설정 → 변환 없으면 (35+40+25)/100=100이 아니라 85가 됐다."""
     state = PatentWorkflowState(
         user_input={
             "valuation_config": resolve_valuation_config(
@@ -201,30 +177,31 @@ def test_reconcile_legal_scores_rescales_detail_sums_to_configured_max():
         },
         patent_structured={"country": "KR"},
     )
+    # 세부지표(details)는 프롬프트 본문 기본 배점(40/40/20) 스케일로 보고된다.
     perfect = {
         "subscores": {
             "right_stability": {
-                "score": 35,
+                "score": 40,
                 "details": {
-                    "prior_art_overlap": {"score": 25},
-                    "claim_structure_stability": {"score": 10},
+                    "prior_art_overlap": {"score": 20},
+                    "independent_claim_clarity": {"score": 20},
                 },
             },
             "claim_protection": {
                 "score": 40,
                 "details": {
-                    "core_solution_coverage": {"score": 12},
-                    "independent_claim_scope": {"score": 12},
-                    "dependent_claim_support": {"score": 10},
-                    "claim_type_diversity": {"score": 6},
+                    "core_solution_coverage": {"score": 15},
+                    "independent_claim_scope": {"score": 15},
+                    "dependent_claim_support": {"score": 7},
+                    "infringement_detectability": {"score": 3},
                 },
             },
             "portfolio_defensive_value": {
-                "score": 25,
+                "score": 20,
                 "details": {
-                    "portfolio_connection_coverage": {"score": 15},
-                    "overseas_right_coverage": {"score": 6},
+                    "portfolio_connection_coverage": {"score": 12},
                     "follow_on_right_signal": {"score": 4},
+                    "overseas_right_coverage": {"score": 4},
                 },
             },
         }
@@ -232,52 +209,19 @@ def test_reconcile_legal_scores_rescales_detail_sums_to_configured_max():
 
     reconciled = reconcile_legal_scores(perfect, state=state)
 
-    # 만점은 설정 배점으로 변환되어 50+30+20=100점이어야 한다.
+    # 만점 특허는 설정 배점으로 비례 변환되어 50+30+20=100점이어야 한다.
     assert reconciled["subscores"]["right_stability"]["score"] == 50
+    assert reconciled["subscores"]["right_stability"]["max_score"] == 50
     assert reconciled["subscores"]["claim_protection"]["score"] == 30
     assert reconciled["subscores"]["portfolio_defensive_value"]["score"] == 20
     assert reconciled["score"] == 100
 
-    # 기본 배점에서는 변환이 일어나지 않는다(기존 동작 보존).
-    default_state = PatentWorkflowState(user_input={}, patent_structured={"country": "KR"})
-    legacy = reconcile_legal_scores(perfect, state=default_state)
-    assert legacy["score"] == 100
-    assert legacy["subscores"]["right_stability"]["score"] == 35
-
-
-def test_build_final_valuation_result_honors_zero_maintain_threshold():
-    """maintainThreshold=0(항상 유지 권고)이 `or 60`으로 무시되던 버그 회귀 테스트."""
-    config = resolve_valuation_config({"maintainThreshold": 0})
-
-    result = build_final_valuation_result(four_axes(10, 10, 10, 10), config=config)
-
-    assert result["recommendation"] == "유지 권고"
-
-
-def test_reconcile_legal_scores_uses_configured_subscore_max():
-    state = PatentWorkflowState(
-        user_input={
-            "valuation_config": resolve_valuation_config(
-                {"subscoreWeights": {"legal": {"right_stability": 20, "claim_protection": 60, "portfolio_defensive_value": 20}}}
-            )
-        },
-        patent_structured={"country": "KR"},
+    # 기본 배점(40/40/20)에서는 변환이 일어나지 않는다.
+    default_reconciled = reconcile_legal_scores(
+        perfect, state=PatentWorkflowState(patent_structured={"country": "KR"})
     )
-    result = {
-        "subscores": {
-            "right_stability": {"score": 35},  # 만점 20으로 캡
-            "claim_protection": {"score": 60},
-            "portfolio_defensive_value": {"score": 10},
-        }
-    }
-
-    reconciled = reconcile_legal_scores(result, state=state)
-
-    assert reconciled["subscores"]["right_stability"]["score"] == 20
-    assert reconciled["subscores"]["right_stability"]["max_score"] == 20
-    assert reconciled["subscores"]["claim_protection"]["max_score"] == 60
-    # (20+60+10)/100 = 90
-    assert reconciled["score"] == 90
+    assert default_reconciled["subscores"]["right_stability"]["score"] == 40
+    assert default_reconciled["score"] == 100
 
 
 def test_reconcile_business_fit_scores_uses_configured_subscore_max():
@@ -344,7 +288,7 @@ def test_build_axis_prompt_appends_override_block_only_when_config_differs(tmp_p
 
     assert "배점 재정의" not in default_prompt
     assert "배점 재정의" in configured_prompt
-    assert "권리안정성(right_stability): 35점 → 50점" in configured_prompt
+    assert "권리안정성(right_stability): 40점 → 50점" in configured_prompt
     assert "subscore 만점 합계: 100점" in configured_prompt
 
 

@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+import re
 from typing import Any
 
 from agents.valuation_axes.common import grade_for_score, select_by_source_types
 from agents.valuation_axes.payload_common import build_base_input_payload
 from services.evidence.api_normalizers import extract_kipris_items
 from workflow.state import PatentWorkflowState
+
+try:
+    from open_api.secret_scrub import scrub_secrets
+except ImportError:
+    def scrub_secrets(text: Any) -> str:
+        return str(text or "")
 
 
 AXIS = "market"
@@ -48,39 +55,95 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
 
 
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
-    return build_base_input_payload(state=state, evidence=evidence)
+    payload = build_base_input_payload(state=state, evidence=evidence)
+    payload["invention_market_linkage_context"] = build_invention_market_linkage_context(state)
+    return payload
 
 
-def _parse_reference_date(value: str | None) -> date | None:
-    if not value:
-        return None
-    try:
-        return date.fromisoformat(str(value))
-    except ValueError:
-        return None
+def build_invention_market_linkage_context(state: PatentWorkflowState) -> dict[str, Any]:
+    patent = state.patent_structured or {}
+    target_structure = state.target_structure or {}
+    preprocessed = state.preprocessed_patent or {}
+    summary = state.summary_result or {}
+    key_elements = target_structure.get("key_elements") if isinstance(target_structure.get("key_elements"), list) else []
+    expected_effects = patent.get("expected_effects")
+    if not isinstance(expected_effects, list):
+        expected_effects = [expected_effects] if expected_effects else []
+    expected_effects = unique_nonempty_texts(
+        [
+            *expected_effects,
+            *extract_effect_texts_from_key_elements(key_elements),
+            *(summary.get("key_points") if isinstance(summary.get("key_points"), list) else []),
+        ]
+    )
+    core_application_functions = unique_nonempty_texts(
+        [
+            *(patent.get("core_application_functions") if isinstance(patent.get("core_application_functions"), list) else [patent.get("core_application_functions")]),
+            *extract_core_functions_from_key_elements(key_elements),
+        ]
+    )
+    problem_to_solve = normalize_text(
+        patent.get("problem_to_solve")
+        or patent.get("problem")
+        or preprocessed.get("problem_to_solve")
+        or extract_problem_to_solve_from_key_elements(key_elements)
+    )
+    technology_field = normalize_text(
+        patent.get("technology_field")
+        or patent.get("field")
+        or patent.get("field_label")
+        or preprocessed.get("technology_field")
+        or patent.get("technology_area")
+        or patent.get("related_product")
+        or patent.get("title_final")
+    )
+    background_art = normalize_text(
+        patent.get("background_art")
+        or patent.get("background")
+        or preprocessed.get("background_art")
+        or summary.get("plain_summary")
+    )
+    application_keywords = unique_nonempty_texts(
+        [
+            patent.get("related_product"),
+            patent.get("business_area"),
+            patent.get("technology_area"),
+            patent.get("field_label"),
+            patent.get("application_domain"),
+            patent.get("market_keyword"),
+            patent.get("problem_domain"),
+        ]
+    )
+    return {
+        "technology_field": technology_field,
+        "background_art": background_art,
+        "problem_to_solve": problem_to_solve,
+        "core_application_functions": core_application_functions,
+        "key_elements": key_elements,
+        "expected_effects": unique_nonempty_texts(expected_effects),
+        "application_domain_keywords": application_keywords,
+        "direct_connection_hints": build_direct_connection_hints(
+            key_elements,
+            core_application_functions=core_application_functions,
+            expected_effects=expected_effects,
+        ),
+    }
 
 
-def build_marketability_metrics(
-    state: PatentWorkflowState, *, evidence: list[dict[str, Any]] | None = None, reference_date: date | None = None
-) -> dict[str, Any]:
+def build_marketability_metrics(state: PatentWorkflowState, *, evidence: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     foreign_patent = is_foreign_patent(state)
     representative_cpc = extract_representative_cpc(state)
     representative_ipc = extract_representative_ipc(state)
-    # VAL-02: 기준 시점을 인자 → state.evaluation_reference_date 순으로 고정(미설정 시 종전대로 현재시각 폴백).
-    reference = reference_date or _parse_reference_date(getattr(state, "evaluation_reference_date", None))
     growth = build_market_growth_metrics(
         representative_code=representative_ipc if foreign_patent else representative_cpc,
         use_ipc=foreign_patent,
         country_code=extract_patent_country(state) if foreign_patent else None,
-        reference_date=reference,
     )
-    global_business = build_global_business_metrics(state.kipris_family_patents, patent_country=extract_patent_country(state))
     return {
         "representative_cpc": representative_cpc,
         "representative_ipc": representative_ipc,
         "market_growth_code_type": "ipc" if foreign_patent else "cpc",
         **growth,
-        **global_business,
     }
 
 
@@ -88,7 +151,8 @@ def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, li
     groups = {
         "industry_report_evidence_ids": [],
         "naver_news_evidence_ids": [],
-        "gnews_evidence_ids": [],
+        "global_news_evidence_ids": [],
+        "competition_evidence_ids": [],
     }
     for item in evidence:
         evidence_id = normalize_text(item.get("evidence_id"))
@@ -98,10 +162,13 @@ def build_market_evidence_groups(evidence: list[dict[str, Any]]) -> dict[str, li
         source_type = normalize_text(item.get("source_type")).lower()
         if source_type == "industry_report":
             groups["industry_report_evidence_ids"].append(evidence_id)
-        elif source == "naver_news":
+        elif source in ("naver_news", "domestic_news"):
+            # 국내(naver_news)·해외특허 본국 현지 뉴스(domestic_news)는 동일한 domestic 채널이다.
             groups["naver_news_evidence_ids"].append(evidence_id)
+            groups["competition_evidence_ids"].append(evidence_id)
         elif source == "global_news":
-            groups["gnews_evidence_ids"].append(evidence_id)
+            groups["global_news_evidence_ids"].append(evidence_id)
+            groups["competition_evidence_ids"].append(evidence_id)
     return groups
 
 
@@ -159,21 +226,34 @@ def build_market_growth_metrics(
     *,
     use_ipc: bool = False,
     country_code: str | None = None,
-    reference_date: date | None = None,
 ) -> dict[str, Any]:
     if not representative_code:
         return missing_market_growth("representative_ipc_not_found" if use_ipc else "representative_cpc_not_found", [])
 
-    windows = market_growth_windows(reference_date)
+    windows = market_growth_windows()
     try:
-        counts = collect_classification_window_application_counts(
-            representative_code,
-            windows=windows,
-            use_ipc=use_ipc,
-            country_code=country_code,
-        )
+        if use_ipc and country_code:
+            # 해외특허: ForeignPatentAdvencedSearchService/advancedSearch로 IPC+공개일자 범위별
+            # 해당 국가 공개 건수를 구간당 1회 호출로 직접 받는다(국내 ipc/cpcSearchInfo는 해당
+            # 국가 특허를 못 세므로 사용하지 않는다).
+            counts = collect_foreign_ipc_window_counts(
+                representative_code,
+                country_code=country_code,
+                windows=windows,
+            )
+        else:
+            counts = collect_classification_window_application_counts(
+                representative_code,
+                windows=windows,
+                use_ipc=use_ipc,
+                country_code=country_code,
+            )
     except Exception as exc:
-        return missing_market_growth(f"kipris_search_failed:{exc.__class__.__name__}", windows)
+        detail = scrub_secrets(normalize_text(exc))
+        reason = f"kipris_search_failed:{exc.__class__.__name__}"
+        if detail:
+            reason = f"{reason}:{detail}"
+        return missing_market_growth(reason, windows)
 
     if len(counts) < 3 or any(item.get("count") is None for item in counts):
         return missing_market_growth("window_counts_incomplete", windows)
@@ -246,6 +326,44 @@ def missing_market_growth(reason: str, windows: list[dict[str, Any]]) -> dict[st
         "market_growth_score": None,
         "missing_reason": reason,
     }
+
+
+def collect_foreign_ipc_window_counts(
+    representative_ipc: str,
+    *,
+    country_code: str,
+    windows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """해외특허: 대표 IPC + 공개일자(OPD) 범위로 해당 국가 공개 특허 건수를 구간별로 센다.
+
+    KIPRIS ForeignPatentAdvencedSearchService/advancedSearch가 IPC+공개일자 범위를 동시에
+    받아 totalSearchCount를 돌려주므로, 3개 1년 구간을 각각 1회 호출해 건수를 받는다.
+    """
+    from open_api.kipris_client import KiprisClient
+
+    target_windows = windows or market_growth_windows()
+    if not target_windows:
+        return []
+    client = KiprisClient()
+    counts: list[dict[str, Any]] = []
+    for window in target_windows:
+        start_date = window["start_date"]
+        end_date = window["end_date"]
+        count = client.count_foreign_patents_by_ipc_opendate(
+            representative_ipc,
+            country_code,
+            start_date.strftime("%Y%m%d"),
+            end_date.strftime("%Y%m%d"),
+        )
+        counts.append(
+            {
+                "label": window["label"],
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "count": count,
+            }
+        )
+    return counts
 
 
 def collect_classification_window_application_counts(
@@ -369,13 +487,13 @@ def market_growth_window_for_date(opening_date: date, windows: list[dict[str, An
 
 def score_cagr(cagr: float) -> int:
     if cagr >= 0.15:
-        return 25
-    if cagr >= 0.08:
-        return 20
-    if cagr >= 0.03:
-        return 15
-    if cagr >= 0:
         return 10
+    if cagr >= 0.08:
+        return 8
+    if cagr >= 0.03:
+        return 6
+    if cagr >= 0:
+        return 4
     return 0
 
 
@@ -383,11 +501,11 @@ def score_recent_trend(counts: list[int]) -> tuple[str, int]:
     if len(counts) < 3:
         return "insufficient_data", 0
     if counts[0] < counts[1] < counts[2]:
-        return "continuous_increase", 15
+        return "continuous_increase", 10
     if counts[0] > counts[1] > counts[2]:
         return "continuous_decrease", 0
     if counts[0] < counts[1] or counts[1] < counts[2]:
-        return "partial_increase", 8
+        return "partial_increase", 5
     return "flat_or_mixed", 0
 
 
@@ -400,42 +518,17 @@ FOREIGN_COUNTRY_HINTS = {
 }
 
 
-def build_global_business_metrics(
-    family_patents: list[dict[str, Any]], *, patent_country: str | None = None
-) -> dict[str, Any]:
-    # VAL-03/10: 글로벌 사업성(20점)을 docs/marketability.md §3 공표 기준(Patent Family Size, 출원 국가 수)으로 산정한다.
-    # 미/중/일 포함 다국가 출원=20, 해외 출원 존재=10, 국내 단독=0. 패밀리 정보 미가용은 0이 아니라 표면화한다.
-    countries = {
-        normalize_text(patent.get("country_code")).upper()
-        for patent in (family_patents or [])
-        if normalize_text(patent.get("country_code"))
-    }
-    home_country = normalize_text(patent_country).upper() or "KR"
-    foreign_countries = countries - {home_country}
-    if not countries:
-        # 패밀리 데이터 미가용(조회 실패/무데이터)을 0점으로 조용히 처리하지 않고 None으로 표면화한다.
-        return {
-            "family_size": 0,
-            "family_country_codes": [],
-            "foreign_country_codes": [],
-            "global_business_status": "family_info_unavailable",
-            "global_business_score": None,
-            "global_business_excluded_country": home_country,
-            "global_business_missing": "Patent Family 정보를 확인할 수 없어 글로벌 사업성을 산정하지 못했습니다.",
-        }
-    if foreign_countries & {"US", "CN", "JP"}:
-        score, status = 20, "multi_country_with_major_market"
-    elif foreign_countries:
-        score, status = 10, "foreign_application_exists"
+def build_global_business_metrics(evidence: list[dict[str, Any]], *, patent_country: str | None = None) -> dict[str, Any]:
+    gnews_items = [item for item in evidence if normalize_text(item.get("source")).lower() == "global_news"]
+    if patent_country and patent_country != "KR":
+        quality_items = [item for item in gnews_items if has_foreign_global_business_signal(item, patent_country=patent_country)]
     else:
-        score, status = 0, "domestic_only"
+        quality_items = [item for item in gnews_items if has_global_market_signal_content(item)]
     return {
-        "family_size": len(countries),
-        "family_country_codes": sorted(countries),
-        "foreign_country_codes": sorted(foreign_countries),
-        "global_business_status": status,
-        "global_business_score": score,
-        "global_business_excluded_country": home_country,
+        "gnews_evidence_count": len(gnews_items),
+        "gnews_quality_evidence_count": len(quality_items),
+        "gnews_evidence_ids": [item.get("evidence_id") for item in quality_items if item.get("evidence_id")],
+        "global_business_excluded_country": patent_country if patent_country and patent_country != "KR" else None,
     }
 
 
@@ -541,23 +634,21 @@ def has_other_country_or_global_signal(item: dict[str, Any], patent_country: str
 
 
 def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) -> dict[str, Any]:
-    industry_breakdown = normalize_industry_marketability_breakdown(
-        result.get("industry_marketability_breakdown")
-        or (((result.get("subscores") or {}).get("industry_marketability") or {}).get("details"))
+    subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
+    industry = subscores.get("industry_marketability") if isinstance(subscores.get("industry_marketability"), dict) else {}
+    global_business = subscores.get("global_business") if isinstance(subscores.get("global_business"), dict) else {}
+    competitiveness = subscores.get("competitiveness") if isinstance(subscores.get("competitiveness"), dict) else {}
+    invention_market_linkage = (
+        subscores.get("invention_market_linkage")
+        if isinstance(subscores.get("invention_market_linkage"), dict)
+        else {}
     )
-    if industry_breakdown:
-        industry_score = sum(industry_breakdown.values())
-    else:
-        industry_score = normalize_industry_score(
-            result.get("industry_marketability_score")
-            or ((result.get("subscores") or {}).get("industry_marketability") or {}).get("score")
-        )
+    industry_score = clamp_market_subscore(industry.get("score"), max_value=20)
     market_growth_score = metrics.get("market_growth_score")
-    raw_global_business_score = metrics.get("global_business_score")
-    global_business_score = int(raw_global_business_score) if raw_global_business_score is not None else None
-    score = industry_score
-    if global_business_score is not None:
-        score += global_business_score
+    global_business_score = clamp_market_subscore(global_business.get("score"), max_value=20)
+    competitiveness_score = clamp_market_subscore(competitiveness.get("score"), max_value=20)
+    invention_market_linkage_score = clamp_market_subscore(invention_market_linkage.get("score"), max_value=20)
+    score = industry_score + global_business_score + competitiveness_score + invention_market_linkage_score
     if market_growth_score is not None:
         score += int(market_growth_score)
     metrics = dict(metrics)
@@ -565,12 +656,8 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
     missing_message = market_growth_missing_message(metrics)
     if market_growth_score is None and missing_message not in missing_information:
         missing_information.append(missing_message)
-    if global_business_score is None:
-        gb_missing = normalize_text(metrics.get("global_business_missing")) or "Patent Family 정보를 확인할 수 없습니다."
-        if gb_missing not in missing_information:
-            missing_information.append(gb_missing)
     confidence = float(result.get("confidence") or 0)
-    if market_growth_score is None or global_business_score is None:
+    if market_growth_score is None:
         confidence = min(confidence, 0.49)
     sanitized_result = {
         key: value
@@ -591,6 +678,8 @@ def apply_marketability_scores(result: dict[str, Any], metrics: dict[str, Any]) 
             industry_score=industry_score,
             market_growth_score=market_growth_score,
             global_business_score=global_business_score,
+            competitiveness_score=competitiveness_score,
+            invention_market_linkage_score=invention_market_linkage_score,
         ),
         "marketability_metrics": metrics,
         "missing_information": missing_information,
@@ -604,24 +693,31 @@ def build_market_subscores(
     metrics: dict[str, Any],
     industry_score: int,
     market_growth_score: int | None,
-    global_business_score: int | None,
+    global_business_score: int,
+    competitiveness_score: int,
+    invention_market_linkage_score: int,
 ) -> dict[str, dict[str, Any]]:
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     industry = subscores.get("industry_marketability") if isinstance(subscores.get("industry_marketability"), dict) else {}
     market_growth = subscores.get("market_growth") if isinstance(subscores.get("market_growth"), dict) else {}
     global_business = subscores.get("global_business") if isinstance(subscores.get("global_business"), dict) else {}
+    competitiveness = subscores.get("competitiveness") if isinstance(subscores.get("competitiveness"), dict) else {}
+    invention_market_linkage = (
+        subscores.get("invention_market_linkage")
+        if isinstance(subscores.get("invention_market_linkage"), dict)
+        else {}
+    )
     return {
         "industry_marketability": {
             "label": "산업 시장성",
             "score": industry_score,
-            "max_score": 40,
-            **({"details": normalize_industry_marketability_breakdown(industry.get("details"))} if isinstance(industry.get("details"), dict) else {}),
+            "max_score": 20,
             "rationale": normalize_text(industry.get("rationale")),
         },
         "market_growth": {
             "label": "시장 성장성",
             "score": market_growth_score,
-            "max_score": 40,
+            "max_score": 20,
             "details": {
                 "cagr_score": nullable_int(metrics.get("cagr_score")),
                 "trend_score": nullable_int(metrics.get("trend_score")),
@@ -633,13 +729,19 @@ def build_market_subscores(
             "label": "글로벌 사업성",
             "score": global_business_score,
             "max_score": 20,
-            "details": {
-                "family_size": clamp_int(metrics.get("family_size"), default=0, max_value=9999),
-                "foreign_country_codes": metrics.get("foreign_country_codes") or [],
-                "global_business_status": normalize_text(metrics.get("global_business_status")),
-            },
-            "rationale": normalize_text(global_business.get("rationale"))
-            or "Patent Family(출원 국가 수) 기준으로 산정된 코드 계산값입니다.",
+            "rationale": normalize_text(global_business.get("rationale")),
+        },
+        "competitiveness": {
+            "label": "경쟁성",
+            "score": competitiveness_score,
+            "max_score": 20,
+            "rationale": normalize_text(competitiveness.get("rationale")),
+        },
+        "invention_market_linkage": {
+            "label": "발명-시장 연결성",
+            "score": invention_market_linkage_score,
+            "max_score": 20,
+            "rationale": normalize_text(invention_market_linkage.get("rationale")),
         },
     }
 
@@ -651,39 +753,8 @@ def nullable_int(value: Any) -> int | None:
         return None
 
 
-def normalize_industry_marketability_breakdown(value: Any) -> dict[str, int]:
-    if not isinstance(value, dict):
-        return {}
-    return {
-        "industry_growth_evidence": nearest_score(
-            first_present(value, "industry_growth_evidence_score", "industry_growth_evidence"),
-            (0, 15),
-        ),
-        "corporate_investment_entry": nearest_score(
-            first_present(value, "corporate_investment_entry_score", "corporate_investment_entry"),
-            (0, 10),
-        ),
-        "news_market_diffusion": nearest_score(
-            first_present(value, "news_market_diffusion_score", "news_market_diffusion"),
-            (0, 10),
-        ),
-        "source_reliability": nearest_score(
-            first_present(value, "source_reliability_score", "source_reliability"),
-            (0, 5),
-        ),
-    }
-
-
-def normalize_industry_score(value: Any) -> int:
-    return clamp_int(value, default=0, max_value=40)
-
-
-def nearest_score(value: Any, candidates: tuple[int, ...]) -> int:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return 0
-    return min(candidates, key=lambda candidate: (abs(candidate - score), -candidate))
+def clamp_market_subscore(value: Any, *, max_value: int) -> int:
+    return clamp_int(value, default=0, max_value=max_value)
 
 
 def clamp_int(value: Any, default: int, max_value: int, min_value: int = 0) -> int:
@@ -777,3 +848,180 @@ def first_present(item: dict[str, Any], *keys: str) -> Any:
         if value not in (None, ""):
             return value
     return None
+
+
+def unique_nonempty_texts(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        text = normalize_text(value)
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+def extract_core_functions_from_key_elements(key_elements: list[dict[str, Any]]) -> list[str]:
+    functions: list[str] = []
+    prioritized = prioritized_key_elements(key_elements)
+    for item in prioritized[:5]:
+        if not isinstance(item, dict):
+            continue
+        concise = concise_market_linkage_phrase(item)
+        functions.extend(
+            unique_nonempty_texts(
+                [
+                    concise,
+                    *extract_spec_support_texts(item, sections={"과제해결수단"}),
+                ]
+            )
+        )
+    return functions[:6]
+
+
+def extract_problem_to_solve_from_key_elements(key_elements: list[dict[str, Any]]) -> str:
+    for item in prioritized_key_elements(key_elements):
+        if not isinstance(item, dict):
+            continue
+        text = concise_market_linkage_phrase(item) or normalize_text(item.get("why_essential"))
+        if text:
+            return text
+    return ""
+
+
+def extract_effect_texts_from_key_elements(key_elements: list[dict[str, Any]]) -> list[str]:
+    effects: list[str] = []
+    for item in key_elements:
+        if not isinstance(item, dict):
+            continue
+        effects.extend(extract_spec_support_texts(item, sections={"효과", "발명의효과"}))
+    return unique_nonempty_texts(effects)[:6]
+
+
+def extract_spec_support_texts(item: dict[str, Any], *, sections: set[str]) -> list[str]:
+    texts: list[str] = []
+    supports = item.get("spec_support")
+    if not isinstance(supports, list):
+        return texts
+    for support in supports:
+        if not isinstance(support, dict):
+            continue
+        section = normalize_text(support.get("section")).replace(" ", "")
+        if section in sections:
+            texts.append(normalize_text(support.get("mapped_spec_content")))
+    return unique_nonempty_texts(texts)
+
+
+def build_direct_connection_hints(
+    key_elements: list[dict[str, Any]],
+    *,
+    core_application_functions: list[str],
+    expected_effects: list[str],
+) -> list[str]:
+    hints: list[str] = []
+    for item in prioritized_key_elements(key_elements)[:4]:
+        if not isinstance(item, dict):
+            continue
+        name = normalize_text(item.get("key_element_name"))
+        essential = concise_market_linkage_phrase(item) or normalize_text(item.get("why_essential"))
+        if name and essential:
+            hints.append(f"{name}: {essential}")
+    for text in core_application_functions[:3]:
+        if text:
+            hints.append(f"핵심 기능: {text}")
+    for text in expected_effects[:3]:
+        if text:
+            hints.append(f"기대 효과: {text}")
+    return unique_nonempty_texts(hints)[:8]
+
+
+def prioritized_key_elements(key_elements: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    generic_names = {
+        "통신부",
+        "프로세서",
+        "저장부",
+        "저장부 (스토리지)",
+        "메모리 영역",
+        "메모리 영역 (memory pool)",
+        "시스템",
+        "장치",
+        "서버",
+    }
+    action_keywords = (
+        "스킵",
+        "판단",
+        "비교",
+        "조정",
+        "결합",
+        "예측",
+        "최적화",
+        "반영",
+        "산출",
+        "검증",
+        "리밸런싱",
+        "배분",
+        "동일",
+        "해시",
+        "복원",
+    )
+
+    def score(item: dict[str, Any]) -> tuple[int, int]:
+        name = normalize_text(item.get("key_element_name"))
+        text = " ".join(
+            [
+                name,
+                normalize_text(item.get("why_essential")),
+                *extract_spec_support_texts(item, sections={"과제해결수단", "효과", "발명의효과"}),
+            ]
+        )
+        keyword_score = sum(1 for keyword in action_keywords if keyword in text)
+        generic_penalty = 1 if name in generic_names else 0
+        return (keyword_score, -generic_penalty)
+
+    return sorted(
+        [item for item in key_elements if isinstance(item, dict)],
+        key=score,
+        reverse=True,
+    )
+
+
+def concise_market_linkage_phrase(item: dict[str, Any]) -> str:
+    texts = [
+        normalize_text(item.get("why_essential")),
+        *extract_spec_support_texts(item, sections={"과제해결수단", "효과", "발명의효과"}),
+    ]
+    for text in texts:
+        if has_market_linkage_action(text):
+            return shorten_market_linkage_text(text)
+    return ""
+
+
+def has_market_linkage_action(text: str) -> bool:
+    keywords = (
+        "스킵",
+        "판단",
+        "비교",
+        "조정",
+        "결합",
+        "예측",
+        "최적화",
+        "반영",
+        "산출",
+        "검증",
+        "리밸런싱",
+        "배분",
+        "동일",
+        "해시",
+        "복원",
+    )
+    return any(keyword in text for keyword in keywords)
+
+
+def shorten_market_linkage_text(text: str) -> str:
+    compact = re.sub(r"\s+", " ", normalize_text(text))
+    compact = re.sub(r"^.*?(", r"\1", compact, count=1) if False else compact
+    if len(compact) <= 140:
+        return compact
+    for separator in ("그러므로", "따라서", "으로써", "함으로써", ". "):
+        if separator in compact:
+            compact = compact.split(separator, 1)[0]
+            break
+    return compact[:140].rstrip(" ,.;") + ("..." if len(compact) > 140 else "")
