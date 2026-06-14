@@ -11,10 +11,10 @@ log = logging.getLogger(__name__)
 
 def get_patent_identifiers(patent_id: str) -> dict[str, Any] | None:
     try:
-        import psycopg2
-        import psycopg2.extras
+        import psycopg
+        from psycopg.rows import dict_row
     except ImportError:
-        log.warning("psycopg2가 설치되어 있지 않아 공유 DB 조회를 건너뜁니다.")
+        log.warning("psycopg가 설치되어 있지 않아 공유 DB 조회를 건너뜁니다.")
         return None
 
     db_url = settings.pgvector_database_url
@@ -23,8 +23,8 @@ def get_patent_identifiers(patent_id: str) -> dict[str, Any] | None:
         return None
 
     try:
-        with psycopg2.connect(db_url) as conn:
-            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        with psycopg.connect(db_url, row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
                 cur.execute(
                     """
                     SELECT

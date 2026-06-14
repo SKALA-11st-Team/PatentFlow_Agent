@@ -13,7 +13,7 @@ from services.evidence.store_service import now_iso, safe_filename
 DEFAULT_FILTERED_NEWS_DIR = settings.output_dir / "filtered_evidence" / "news"
 DEFAULT_PREVIEW_CHARS = 100
 DEFAULT_MAX_CONTENT_CHARS = 5000
-DEFAULT_MAX_AGE_DAYS = 365 * 5
+DEFAULT_MAX_AGE_DAYS = settings.news_max_age_days
 
 KOREAN_STOPWORDS = {
     "그리고",
@@ -67,6 +67,7 @@ def filter_news_evidence(
                 "matched_keywords": decision["matched_keywords"],
                 "content_truncated": decision["content_truncated"],
                 "original_content_char_count": decision["content_char_count"],
+                "published_at_missing": decision["published_at_missing"],
             }
             filtered_item["metadata"] = metadata
             if decision["content_truncated"]:
@@ -119,14 +120,20 @@ def evaluate_news_item(
     seen.add(dedupe_key)
 
     published_at = parse_datetime(item.get("published_at"))
-    if published_at is None:
-        return reject("missing_published_at", preview, content_char_count)
-    if now - published_at > timedelta(days=max_age_days):
+    # EVID-06: 발행일 미상(누락·파싱 실패)이라도 관련 뉴스는 폐기하지 않고 통과시키되, 노후 컷오프만 건너뛴다.
+    if published_at is not None and now - published_at > timedelta(days=max_age_days):
         return reject("older_than_3_years", preview, content_char_count)
 
-    content_truncated = content_char_count > max_content_chars
-
     matched_keywords = sorted(extract_keywords(f"{title}\n{preview}") & patent_keywords)
+    # EVID-07: 특허 키워드와 한 건도 매칭되지 않는 무관 뉴스는 거른다.
+    # 단 특허 키워드 자체가 비어 있으면(빈 메타데이터) 전체 전멸을 막기 위해 필터를 적용하지 않는다.
+    # 해외특허 현지어 뉴스(domestic_news)는 Tavily country+현지어 쿼리로 이미 관련성이 확보됐고,
+    # 한국어 patent_keywords와는 언어가 달라 교집합이 비어 대량 오거부되므로 키워드 매칭 거부를 면제한다.
+    is_localized_foreign_news = str(item.get("source") or "") == "domestic_news"
+    if patent_keywords and not matched_keywords and not is_localized_foreign_news:
+        return reject("no_patent_keyword_match", preview, content_char_count)
+
+    content_truncated = content_char_count > max_content_chars
 
     return {
         "keep": True,
@@ -135,6 +142,7 @@ def evaluate_news_item(
         "content_char_count": content_char_count,
         "content_truncated": content_truncated,
         "matched_keywords": matched_keywords,
+        "published_at_missing": published_at is None,
     }
 
 
@@ -146,6 +154,7 @@ def reject(reason: str, preview: str, content_char_count: int) -> dict[str, Any]
         "content_char_count": content_char_count,
         "content_truncated": False,
         "matched_keywords": [],
+        "published_at_missing": False,
     }
 
 

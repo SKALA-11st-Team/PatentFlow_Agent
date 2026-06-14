@@ -314,19 +314,67 @@ def test_axis_supervisor_checks_are_stored_and_route_retry_or_research(monkeypat
 
 
 def test_run_axis_supervisor_checks_defaults_to_passed_without_llm():
+    def technology_detail(score):
+        return {
+            "score": score,
+            "assessment_status": "evaluated",
+            "target_basis": ["대상 근거"],
+            "comparison_basis": ["비교 근거"],
+            "score_reason": "대상과 비교문헌의 구체적 차이가 점수 구간과 일치합니다.",
+            "missing_information": [],
+        }
+
+    technology_subscores = {
+        "technical_differentiation": {
+            "score": 34,
+            "details": {
+                "configuration_operation_differentiation": technology_detail(17),
+                "effect_differentiation": technology_detail(10),
+                "imitation_avoidance_difficulty": technology_detail(7),
+            }
+        },
+        "implementation_specificity": {
+            "score": 35,
+            "details": {
+                "component_specificity": technology_detail(14),
+                "procedure_specificity": technology_detail(14),
+                "implementation_utilization_specificity": technology_detail(7),
+            }
+        },
+    }
+    business_fit_subscores = {
+        "official_business_evidence": {"score": 24},
+        "product_function_direct_match": {"score": 24},
+        "business_context_fit": {"score": 18},
+    }
     state = PatentWorkflowState(
         user_input={"use_llm_supervisor": False},
-        evidence_bundle=[{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}],
+        evidence_bundle=[
+            {
+                "evidence_id": "known",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "url": "https://www.skax.co.kr/manufacturing/example",
+                "content": "SK AX 제조 솔루션",
+            }
+        ],
         valuation_result={
             "axes": {
                 axis: {
-                    "score": 70,
+                    "score": 66 if axis == "business_fit" else 69 if axis == "technology" else 70,
                     "grade": "B",
                     "rationale": "known 근거 기반 평가",
                     "evidence_ids": ["known"],
                     "risk_factors": [],
                     "missing_information": [],
                     "confidence": 0.7,
+                    **(
+                        {"subscores": business_fit_subscores}
+                        if axis == "business_fit"
+                        else {"subscores": technology_subscores}
+                        if axis == "technology"
+                        else {}
+                    ),
                 }
                 for axis in ["legal", "technology", "market", "business_fit"]
             }
@@ -338,6 +386,258 @@ def test_run_axis_supervisor_checks_defaults_to_passed_without_llm():
     assert set(checks) == {"legal", "technology", "market", "business_fit"}
     assert all(item["status"] == "passed" for item in checks.values())
     assert state.valuation_result["axis_supervisor_checks"] == checks
+
+
+def test_rule_technology_supervisor_retries_when_detail_evidence_is_missing():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    state = PatentWorkflowState(
+        valuation_result={
+            "axes": {
+                "technology": {
+                    "score": 70,
+                    "grade": "B",
+                    "rationale": "기술성 평가",
+                    "confidence": 0.8,
+                    "evidence_ids": [],
+                    "subscores": {
+                        "technical_differentiation": {
+                            "details": {
+                                "configuration_operation_differentiation": 17,
+                                "effect_differentiation": 10,
+                                "imitation_avoidance_difficulty": 7,
+                            }
+                        },
+                        "implementation_specificity": {
+                            "details": {
+                                "component_specificity": 14,
+                                "procedure_specificity": 14,
+                                "implementation_utilization_specificity": 7,
+                            }
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    check = build_rule_axis_supervisor_check(state, "technology")
+
+    assert check["status"] == "valuation_retry"
+    assert any("세부 근거 객체가 없습니다" in issue for issue in check["issues"])
+
+
+def test_rule_technology_supervisor_accepts_complete_detail_evidence():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    def detail(score):
+        return {
+            "score": score,
+            "assessment_status": "evaluated",
+            "target_basis": ["대상 근거"],
+            "comparison_basis": ["비교 근거"],
+            "score_reason": "대상과 비교문헌의 구체적 차이가 점수 구간과 일치합니다.",
+            "missing_information": [],
+        }
+
+    state = PatentWorkflowState(
+        valuation_result={
+            "axes": {
+                "technology": {
+                    "score": 33,
+                    "grade": "C",
+                    "rationale": "기술성 평가",
+                    "confidence": 0.8,
+                    "evidence_ids": [],
+                    "subscores": {
+                        "technical_differentiation": {
+                            "score": 16,
+                            "details": {
+                                "configuration_operation_differentiation": detail(8),
+                                "effect_differentiation": detail(5),
+                                "imitation_avoidance_difficulty": detail(3),
+                            }
+                        },
+                        "implementation_specificity": {
+                            "score": 17,
+                            "details": {
+                                "component_specificity": detail(7),
+                                "procedure_specificity": detail(7),
+                                "implementation_utilization_specificity": detail(3),
+                            }
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    check = build_rule_axis_supervisor_check(state, "technology")
+
+    assert check["status"] == "passed"
+
+
+def test_rule_technology_supervisor_retries_for_vague_or_ungrounded_reason():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    detail = {
+        "score": 7,
+        "assessment_status": "evaluated",
+        "target_basis": [],
+        "comparison_basis": [],
+        "score_reason": "의미 있는 차이가 있습니다.",
+        "missing_information": [],
+    }
+    state = PatentWorkflowState(
+        valuation_result={
+            "axes": {
+                "technology": {
+                    "score": 42,
+                    "grade": "C",
+                    "rationale": "기술성 평가",
+                    "confidence": 0.8,
+                    "evidence_ids": [],
+                    "subscores": {
+                        key: {"details": {detail_key: detail for detail_key in detail_keys}}
+                        for key, detail_keys in {
+                            "technical_differentiation": (
+                                "configuration_operation_differentiation",
+                                "effect_differentiation",
+                                "imitation_avoidance_difficulty",
+                            ),
+                            "implementation_specificity": (
+                                "component_specificity",
+                                "procedure_specificity",
+                                "implementation_utilization_specificity",
+                            ),
+                        }.items()
+                    },
+                }
+            }
+        }
+    )
+
+    check = build_rule_axis_supervisor_check(state, "technology")
+
+    assert check["status"] == "valuation_retry"
+    assert any("지나치게 추상적" in issue for issue in check["issues"])
+    assert any("대상 특허 근거가 없습니다" in issue for issue in check["issues"])
+    assert any("비교문헌 근거가 없습니다" in issue for issue in check["issues"])
+
+
+def test_rule_technology_supervisor_retries_for_max_score_with_acknowledged_gap():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    def detail(score, **overrides):
+        return {
+            "score": score,
+            "assessment_status": "evaluated",
+            "target_basis": ["대상 특허의 구체적 구성과 처리 단계"],
+            "comparison_basis": ["비교문헌의 대응 구성과 처리 단계"],
+            "difference_points": [],
+            "score_reason": "확인된 구성과 처리 단계가 선택한 점수 구간에 해당합니다.",
+            "missing_information": [],
+            **overrides,
+        }
+
+    state = PatentWorkflowState(
+        valuation_result={
+            "axes": {
+                "technology": {
+                    "score": 94,
+                    "grade": "A",
+                    "rationale": "기술성 평가",
+                    "confidence": 0.88,
+                    "evidence_ids": [],
+                    "subscores": {
+                        "technical_differentiation": {
+                            "score": 47,
+                            "details": {
+                                "configuration_operation_differentiation": detail(25),
+                                "effect_differentiation": detail(15),
+                                "imitation_avoidance_difficulty": detail(7),
+                            },
+                        },
+                        "implementation_specificity": {
+                            "score": 47,
+                            "details": {
+                                "component_specificity": detail(
+                                    20,
+                                    difference_points=[
+                                        "일부 인터페이스가 추상적이어서 추가 설계가 필요합니다."
+                                    ],
+                                ),
+                                "procedure_specificity": detail(
+                                    20,
+                                    difference_points=[
+                                        "반복 최적화의 종료조건과 탐색 범위가 명시되지 않았습니다."
+                                    ],
+                                ),
+                                "implementation_utilization_specificity": detail(7),
+                            },
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    check = build_rule_axis_supervisor_check(state, "technology")
+
+    assert check["status"] == "valuation_retry"
+    assert any("component_specificity" in issue for issue in check["issues"])
+    assert any("procedure_specificity" in issue for issue in check["issues"])
+
+
+def test_rule_technology_supervisor_retries_for_invalid_score_and_sum():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    detail = {
+        "score": 6,
+        "assessment_status": "evaluated",
+        "target_basis": ["대상 근거"],
+        "comparison_basis": ["비교 근거"],
+        "score_reason": "대상과 비교문헌의 구체적 차이가 점수 구간과 일치합니다.",
+        "missing_information": [],
+    }
+    state = PatentWorkflowState(
+        valuation_result={
+            "axes": {
+                "technology": {
+                    "score": 70,
+                    "grade": "B",
+                    "rationale": "기술성 평가",
+                    "confidence": 0.8,
+                    "evidence_ids": [],
+                    "subscores": {
+                        key: {
+                            "score": 35,
+                            "details": {detail_key: detail for detail_key in detail_keys},
+                        }
+                        for key, detail_keys in {
+                            "technical_differentiation": (
+                                "configuration_operation_differentiation",
+                                "effect_differentiation",
+                                "imitation_avoidance_difficulty",
+                            ),
+                            "implementation_specificity": (
+                                "component_specificity",
+                                "procedure_specificity",
+                                "implementation_utilization_specificity",
+                            ),
+                        }.items()
+                    },
+                }
+            }
+        }
+    )
+
+    check = build_rule_axis_supervisor_check(state, "technology")
+
+    assert check["status"] == "valuation_retry"
+    assert any("허용되지 않은 세부점수" in issue for issue in check["issues"])
+    assert any("하위점수 합계가 일치하지 않습니다" in issue for issue in check["issues"])
+    assert any("총점 합계가 일치하지 않습니다" in issue for issue in check["issues"])
 
 
 
@@ -800,6 +1100,171 @@ def test_non_legal_axis_payload_has_no_prior_art_context():
     assert "prior_art_context" not in payload
 
 
+def test_business_fit_axis_payload_includes_official_evidence_context():
+    from workflow.supervisor import axis_supervisor_payload
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "official",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "title": "SK AX 제조 솔루션",
+                "url": "https://www.skax.co.kr/manufacturing/example",
+                "content": "SK AX 제조 공정 관리 솔루션",
+            }
+        ],
+        valuation_result={
+            "axes": {
+                "business_fit": {
+                    "score": 54,
+                    "grade": "C",
+                    "rationale": "공식 사업 문맥과 연결",
+                    "evidence_ids": ["official"],
+                    "risk_factors": ["핵심 기능 직접 매칭 제한"],
+                    "missing_information": [],
+                    "confidence": 0.6,
+                    "subscores": {
+                        "official_business_evidence": {"score": 16},
+                        "product_function_direct_match": {"score": 20},
+                        "business_context_fit": {"score": 18},
+                    },
+                }
+            }
+        },
+    )
+
+    payload = axis_supervisor_payload(state, axis="business_fit")
+
+    context = payload["business_fit_context"]
+    assert context["skax_official_evidence"][0]["evidence_id"] == "official"
+    assert context["cited_evidence"][0]["is_sk_ax_official"] is True
+
+
+def test_business_fit_rule_rejects_general_news_as_direct_evidence():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "official",
+                "source": "sk_ax_official",
+                "source_type": "company_disclosure",
+                "url": "https://www.skax.co.kr/manufacturing/example",
+                "content": "SK AX 제조 솔루션",
+            },
+            {
+                "evidence_id": "external_news",
+                "source": "naver_news",
+                "source_type": "news",
+                "url": "https://example.com/news",
+                "content": "외부 제조 기사",
+            },
+        ],
+        valuation_result={
+            "axes": {
+                "business_fit": {
+                    "score": 54,
+                    "grade": "C",
+                    "rationale": "외부 기사를 직접 사업 근거로 사용",
+                    "evidence_ids": ["external_news"],
+                    "risk_factors": ["직접 매칭 제한"],
+                    "missing_information": [],
+                    "confidence": 0.6,
+                    "subscores": {
+                        "official_business_evidence": {"score": 24},
+                        "product_function_direct_match": {"score": 12},
+                        "business_context_fit": {"score": 18},
+                    },
+                }
+            }
+        },
+    )
+
+    result = build_rule_axis_supervisor_check(state, "business_fit")
+
+    assert result["status"] == "valuation_retry"
+    assert any("일반 뉴스/외부 자료" in issue for issue in result["issues"])
+
+
+def test_business_fit_rule_requests_search_when_sk_evidence_is_absent():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "external_news",
+                "source": "naver_news",
+                "source_type": "news",
+                "content": "외부 제조 기사",
+            }
+        ],
+        valuation_result={
+            "axes": {
+                "business_fit": {
+                    "score": 0,
+                    "grade": "D",
+                    "rationale": "공식 근거 미확인",
+                    "evidence_ids": [],
+                    "risk_factors": ["공식 근거 미확인"],
+                    "missing_information": ["SK AX 공식 페이지"],
+                    "confidence": 0.3,
+                    "subscores": {
+                        "official_business_evidence": {"score": 0},
+                        "product_function_direct_match": {"score": 0},
+                        "business_context_fit": {"score": 0},
+                    },
+                }
+            }
+        },
+    )
+
+    result = build_rule_axis_supervisor_check(state, "business_fit")
+
+    assert result["status"] == "query_rewriting"
+    assert any("SK AX 공식" in issue for issue in result["issues"])
+
+
+def test_business_fit_rule_accepts_owned_media_tier_without_text_marker():
+    from workflow.supervisor import build_rule_axis_supervisor_check
+
+    state = PatentWorkflowState(
+        evidence_bundle=[
+            {
+                "evidence_id": "owned_without_marker",
+                "source": "sk_group_owned_media",
+                "source_type": "news",
+                "source_domain": "skcareersjournal.com",
+                "source_tier": "sk_related_owned_media",
+                "content": "다른 SK 계열사의 일반 채용 소식",
+            }
+        ],
+        valuation_result={
+            "axes": {
+                "business_fit": {
+                    "score": 0,
+                    "grade": "D",
+                    "rationale": "SK AX 사업 근거 미확인",
+                    "evidence_ids": [],
+                    "risk_factors": ["공식 근거 미확인"],
+                    "missing_information": ["SK AX 공식 페이지"],
+                    "confidence": 0.3,
+                    "subscores": {
+                        "official_business_evidence": {"score": 0},
+                        "product_function_direct_match": {"score": 0},
+                        "business_context_fit": {"score": 0},
+                    },
+                }
+            }
+        },
+    )
+
+    result = build_rule_axis_supervisor_check(state, "business_fit")
+
+    assert result["status"] == "valuation_retry"
+    assert any("evidence_ids" in issue for issue in result["issues"])
+
+
 
 def test_axis_supervisor_checks_reuse_prior_for_non_retried_axes(monkeypatch):
     calls = []
@@ -858,7 +1323,9 @@ def test_markdown_headings_captures_all_report_sections():
         "## 1. 한눈에 보는 검토 결과", "## 2. 평가대상 및 범위", "## 3. 판단 근거",
         "## 4. 평가축별 상세 근거", "### 4.1 권리성", "### 4.2 기술성",
         "### 4.3 시장성", "### 4.4 사업 연계성",
-        "## 5. 사업부 확인 필요 사항", "## 6. 최종 검토 의견",
+        "## 5. 역할별 확인 사항", "### 5.1 사업부 확인 사항",
+        "### 5.2 법무팀 검토 사항",
+        "## 6. 최종 검토 의견",
     ])
     headings = markdown_headings(md)
 
@@ -876,3 +1343,4 @@ def test_final_check_prompt_checks_format_and_content():
     # Content: faithfulness to scores + no fabricated facts are now checked.
     assert "axis_scores의 점수·등급과 모순되지 않는가" in text
     assert "입력에 없는 사실을 단정하지 않았는가" in text
+    assert "특허 전문 검토를 사업부 확인 사항에 배치하면 passed=false" in text

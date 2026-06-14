@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agents.valuation_axes.market import build_invention_market_linkage_context
 from app.config import settings
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
@@ -36,15 +37,29 @@ def run_final_report_llm_required(
 ) -> str:
     if state.user_input.get("use_llm_final_report", True) is False:
         raise RuntimeError("LLM final report is required, but use_llm_final_report is disabled.")
+    rights_scope_context = build_rights_scope_context(state)
     markdown = sanitize_final_report_markdown(
-        call_llm(build_final_report_prompt(state=state, valuation_result=valuation_result)).strip()
+        call_llm(
+            build_final_report_prompt(state=state, valuation_result=valuation_result),
+            model=settings.openai_writing_model,
+            reasoning_effort=settings.openai_writing_reasoning_effort,
+            verbosity=settings.openai_writing_verbosity,
+            timeout=settings.openai_writing_timeout_seconds,
+        ).strip(),
+        include_rights_scope_reference=bool(
+            (rights_scope_context or {}).get("representative_drawing")
+        ),
     )
     if not markdown:
         raise RuntimeError("LLM final report response was empty.")
     return markdown
 
 
-def sanitize_final_report_markdown(markdown: str) -> str:
+def sanitize_final_report_markdown(
+    markdown: str,
+    *,
+    include_rights_scope_reference: bool = True,
+) -> str:
     lines = []
     for line in (markdown or "").splitlines():
         stripped = line.strip()
@@ -53,7 +68,15 @@ def sanitize_final_report_markdown(markdown: str) -> str:
         if stripped.startswith("[참고 근거]") or stripped.startswith("참고 근거"):
             continue
         lines.append(line)
-    return "\n".join(lines).strip()
+    sanitized = "\n".join(lines).strip()
+    if not include_rights_scope_reference:
+        sanitized = re.sub(
+            r"\n*\*\*권리범위 참고도 및 이해\*\*\s*.*?(?=^### 4\.1 권리성\s*$)",
+            "\n\n",
+            sanitized,
+            flags=re.DOTALL | re.MULTILINE,
+        )
+    return sanitized.strip()
 
 
 def build_final_report_prompt(*, state: PatentWorkflowState, valuation_result: dict[str, Any]) -> str:
@@ -67,6 +90,7 @@ def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_re
     patent = {
         "metadata": final_report_patent_metadata(state),
         "summary_result": state.summary_result,
+        "invention_market_linkage_context": build_invention_market_linkage_context(state),
     }
     rights_scope_context = build_rights_scope_context(state)
     if rights_scope_context:
@@ -80,6 +104,10 @@ def build_final_report_input_payload(*, state: PatentWorkflowState, valuation_re
 
 
 def build_rights_scope_context(state: PatentWorkflowState) -> dict[str, Any] | None:
+    country = normalize_text((state.patent_structured or {}).get("country")).upper()
+    if country != "KR":
+        return None
+
     drawing_context = (state.preprocessed_patent or {}).get("drawing_context")
     if not isinstance(drawing_context, dict):
         return None
@@ -291,6 +319,7 @@ def final_report_patent_metadata(state: PatentWorkflowState) -> dict[str, Any]:
         "related_product": patent.get("related_product"),
         "business_area": patent.get("business_area"),
         "technology_area": patent.get("technology_area"),
+        "country": patent.get("country") or kipris_metadata.get("country"),
         "status": patent.get("status") or kipris_metadata.get("register_status"),
         "application_date": patent.get("application_date") or kipris_metadata.get("filing_date"),
         "registration_date": patent.get("registration_date") or kipris_metadata.get("registration_date"),
@@ -302,14 +331,14 @@ def final_report_patent_metadata(state: PatentWorkflowState) -> dict[str, Any]:
 
 
 def build_evidence_references(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> list[dict[str, Any]]:
-    used_evidence_ids = collect_used_evidence_ids(valuation_result)
-    if not used_evidence_ids:
+    evidence_axis_usage = collect_evidence_axis_usage(valuation_result)
+    if not evidence_axis_usage:
         return []
 
     references = []
     for item in state.evidence_bundle or []:
         evidence_id = item.get("evidence_id")
-        if evidence_id not in used_evidence_ids:
+        if evidence_id not in evidence_axis_usage:
             continue
         if item.get("source_type") not in {"news", "industry_report", "company_disclosure", "portfolio_context"}:
             continue
@@ -318,29 +347,39 @@ def build_evidence_references(state: PatentWorkflowState, valuation_result: dict
                 "evidence_id": evidence_id,
                 "source_type": item.get("source_type"),
                 "source": item.get("source"),
+                "source_domain": item.get("source_domain")
+                or ((item.get("metadata") or {}).get("source_domain") if isinstance(item.get("metadata"), dict) else None),
+                "source_tier": item.get("source_tier")
+                or ((item.get("metadata") or {}).get("source_tier") if isinstance(item.get("metadata"), dict) else None),
                 "title": item.get("title") or item.get("source"),
                 "citation_title": item.get("title") or item.get("source"),
                 "url": item.get("url"),
                 "published_at": item.get("published_at"),
-                "related_axes": item.get("related_axes") or item.get("related_axis") or [],
+                "cited_by_axes": evidence_axis_usage[evidence_id],
             }
         )
     return references
 
 
-def collect_used_evidence_ids(valuation_result: dict[str, Any]) -> set[Any]:
-    used: set[Any] = set()
+def collect_evidence_axis_usage(valuation_result: dict[str, Any]) -> dict[Any, list[str]]:
+    usage: dict[Any, list[str]] = {}
     axes = valuation_result.get("axes") or {}
     if not isinstance(axes, dict):
-        return used
-    for axis_result in axes.values():
+        return usage
+    for axis, axis_result in axes.items():
         if not isinstance(axis_result, dict):
             continue
         evidence_ids = axis_result.get("evidence_ids")
         if not isinstance(evidence_ids, list):
             continue
-        used.update(evidence_id for evidence_id in evidence_ids if evidence_id)
-    return used
+        for evidence_id in evidence_ids:
+            if evidence_id and axis not in usage.setdefault(evidence_id, []):
+                usage[evidence_id].append(axis)
+    return usage
+
+
+def collect_used_evidence_ids(valuation_result: dict[str, Any]) -> set[Any]:
+    return set(collect_evidence_axis_usage(valuation_result))
 
 
 def save_final_report_input_payload(state: PatentWorkflowState, name: str, payload: dict[str, Any]) -> Path | None:

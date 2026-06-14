@@ -224,12 +224,12 @@ def technology_score_rows(subscores: dict[str, Any]) -> list[tuple[str, Any, int
                 (
                     str((subscores.get("technical_differentiation") or {}).get("label") or "기술 차별성"),
                     (subscores.get("technical_differentiation") or {}).get("score"),
-                    60,
+                    50,
                 ),
                 (
                     str((subscores.get("implementation_specificity") or {}).get("label") or "구현 구체성"),
                     (subscores.get("implementation_specificity") or {}).get("score"),
-                    40,
+                    50,
                 ),
             ]
         return [

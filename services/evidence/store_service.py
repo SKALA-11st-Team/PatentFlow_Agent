@@ -13,6 +13,7 @@ from schemas.evidence import Evidence
 
 DEFAULT_API_EVIDENCE_DIR = settings.output_dir / "api_evidence"
 DEFAULT_FILTERED_EVIDENCE_DIR = settings.output_dir / "filtered_evidence"
+DEFAULT_SKAX_SEARCH_DIR = settings.output_dir / "skax_site_search"
 
 
 def now_iso() -> str:
@@ -118,6 +119,40 @@ def save_filtered_evidence_bundle(
     return path
 
 
+def save_skax_site_search_result(
+    *,
+    patent_id: str | int | None,
+    skax_result: dict[str, Any],
+    output_dir: Path | str = DEFAULT_SKAX_SEARCH_DIR,
+) -> Path:
+    """SK AX 공식 사이트 검색의 raw 결과·진단을 통째로 artifact로 남긴다.
+
+    뉴스는 쿼리별 raw 파일을 저장하지만 SK AX 검색은 최종 채택 근거만 filtered_evidence에
+    실렸을 뿐, "어떤 쿼리가 무엇을 가져왔는지"(실제 전송 쿼리·후보 URL·필터 통계)는
+    어디에도 저장되지 않아 디버깅 시 LangSmith trace에 의존해야 했다. 이를 JSON으로 고정한다.
+    """
+    payload = {
+        "source_type": "skax_site_search",
+        "source": "skax_co_kr",
+        "patent_id": str(patent_id) if patent_id is not None else None,
+        "collected_at": now_iso(),
+        "queries": skax_result.get("queries", []),
+        "stats": skax_result.get("stats", {}),
+        "query_generation_diagnostics": skax_result.get("query_generation_diagnostics", {}),
+        "search_diagnostics": skax_result.get("search_diagnostics", []),
+        "failed_urls": skax_result.get("failed_urls", []),
+        "warning": skax_result.get("warning"),
+        "items": [to_evidence_dict(item) for item in skax_result.get("items", [])],
+    }
+    directory = Path(output_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    filename = f"{safe_filename(str(patent_id) if patent_id is not None else 'unknown')}_skax_site_search.json"
+    path = directory / filename
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+
 def to_evidence_dict(item: dict[str, Any] | Evidence) -> dict[str, Any]:
     if isinstance(item, Evidence):
         evidence = item.model_dump()
@@ -152,5 +187,11 @@ def dedupe_key(item: dict[str, Any]) -> str:
 
 
 def safe_filename(value: str) -> str:
-    safe = re.sub(r"[^0-9a-zA-Z가-힣._-]+", "_", value).strip("_")
-    return safe or "unknown"
+    # 특정 언어만 허용하던 allowlist는 중국어·일본어는 물론 아랍어·태국어·데바나가리(결합표시)
+    # 등을 `_`로 날려 파일명을 깨거나 충돌시켰다. allowlist 대신 파일시스템에 위험한 문자
+    # (경로 구분자·예약문자·제어문자·공백)만 `_`로 치환하는 denylist로 바꿔, 모든 언어의 글자를
+    # 그대로 보존한다.
+    safe = re.sub(r'[\s/\\:*?"<>|\x00-\x1f]+', "_", value).strip("_")
+    if safe in ("", ".", ".."):
+        return "unknown"
+    return safe

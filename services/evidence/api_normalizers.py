@@ -32,7 +32,6 @@ def normalize_naver_news_response(
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "content": description or title or "",
-                "related_axis": [],
                 "confidence": None,
                 "metadata": {
                     "query": query,
@@ -66,7 +65,6 @@ def normalize_gnews_response(
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "content": article.get("description") or article.get("content") or article.get("title") or "",
-                "related_axis": [],
                 "confidence": None,
                 "metadata": {
                     "query": query,
@@ -79,41 +77,48 @@ def normalize_gnews_response(
     return evidence
 
 
-def normalize_dart_disclosures(
+def normalize_tavily_news_response(
     raw: dict[str, Any] | list[dict[str, Any]],
     *,
-    query: str | None = None,
+    query: str,
     collected_at: str | None = None,
+    source: str = "global_news",
+    country: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Tavily(topic=news) 검색 결과를 공통 뉴스 evidence shape로 변환한다.
+
+    기본은 글로벌/해외 뉴스 근거(source="global_news", 시장성 글로벌 사업성)다.
+    해외특허 domestic 채널은 source="domestic_news" + country(대상국)로 호출해
+    대상 특허 본국 현지 뉴스로 태깅한다(시장성 산업 시장성·경쟁성).
+    """
     collected_at = collected_at or now_iso()
-    reports = raw if isinstance(raw, list) else raw.get("list", [])
+    results = raw if isinstance(raw, list) else raw.get("results", [])
     evidence = []
-    for rank, report in enumerate(reports, start=1):
-        published_at = parse_yyyymmdd(report.get("rcept_dt"))
-        corp_name = report.get("corp_name")
-        report_name = report.get("report_nm")
+    for rank, item in enumerate(results, start=1):
+        if not isinstance(item, dict):
+            continue
+        # Tavily news는 published_date를 RFC 2822(예: 'Mon, 11 Nov 2024 ...')로 준다.
+        published_at = parse_rfc2822_datetime(item.get("published_date")) or normalize_iso_datetime(
+            item.get("published_date")
+        )
+        content = item.get("raw_content") or item.get("content") or item.get("title") or ""
         evidence.append(
             {
                 "evidence_id": None,
-                "source_type": "company_disclosure",
-                "source": "dart",
-                "title": report_name,
-                "url": build_dart_url(report.get("rcept_no")),
+                "source_type": "news",
+                "source": source,
+                "title": item.get("title"),
+                "url": item.get("url"),
                 "published_at": published_at,
                 "collected_at": collected_at,
-                "content": " - ".join(part for part in (corp_name, report_name) if part),
-                "related_axis": ["market", "strategy"],
+                "content": content,
                 "confidence": None,
                 "metadata": {
                     "query": query,
                     "rank": rank,
-                    "corp_code": report.get("corp_code"),
-                    "corp_name": corp_name,
-                    "stock_code": report.get("stock_code"),
-                    "corp_cls": report.get("corp_cls"),
-                    "report_name": report_name,
-                    "receipt_no": report.get("rcept_no"),
-                    "raw_receipt_date": report.get("rcept_dt"),
+                    "score": item.get("score"),
+                    "provider": "tavily_news",
+                    "country": country,
                 },
             }
         )
@@ -149,7 +154,6 @@ def normalize_kipris_patent_results(
                 "published_at": published_at,
                 "collected_at": collected_at,
                 "content": first_present(item, "abstract", "astrtCont", "summary") or " - ".join(part for part in (title, applicant) if part),
-                "related_axis": ["legal", "technology"],
                 "confidence": None,
                 "metadata": {
                     "query": query,
@@ -214,12 +218,6 @@ def parse_dot_date(value: Any) -> str | None:
         return None
     year, month, day = match.groups()
     return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
-
-
-def build_dart_url(receipt_no: Any) -> str | None:
-    if not receipt_no:
-        return None
-    return f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={receipt_no}"
 
 
 def extract_kipris_items(raw: dict[str, Any]) -> list[dict[str, Any]]:

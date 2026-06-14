@@ -18,6 +18,8 @@ from typing import Any, Mapping
 import os
 import re
 import time
+
+from open_api.secret_scrub import scrub_secrets
 import xml.etree.ElementTree as ET
 
 import requests
@@ -29,6 +31,7 @@ PAT_UTI_REST_SERVICE_PATH = "/openapi/rest/patUtiModInfoSearchSevice"
 PAT_UTI_TRANSFER_HIST_PATH = "/kipo-api/kipi/patUtiModTransferHistInfoSearchSevice"
 OVERSEAS_PATENT_SERVICE_PATH = "/openapi/rest/ForeignPatentBibliographicService"
 OVERSEAS_IMAGE_FULLTEXT_SERVICE_PATH = "/openapi/rest/ForeignPatentImageAndFullTextService"
+OVERSEAS_ADVANCED_SEARCH_SERVICE_PATH = "/openapi/rest/ForeignPatentAdvencedSearchService"
 PAT_FAMILY_SERVICE_PATH = "/kipo-api/kipi/patFamInfoSearchService"
 CITATION_SERVICE_PATH = "/openapi/rest/CitationService"
 CITING_SERVICE_PATH = "/openapi/rest/CitingService"
@@ -36,6 +39,51 @@ CITING_SERVICE_PATH = "/openapi/rest/CitingService"
 
 class KiprisError(RuntimeError):
     """KIPRISPlus 호출 또는 응답 파싱 오류."""
+
+
+KIPRIS_BODY_ERROR_CODES = {
+    "01",
+    "02",
+    "03",
+    "04",
+    "05",
+    "10",
+    "11",
+    "12",
+    "20",
+    "22",
+    "30",
+    "31",
+    "32",
+    "99",
+}
+
+
+def _resolve_service_keys(explicit: str | None = None) -> list[str]:
+    """KIPRIS 키 목록을 구성한다. 한도(쿼터) 분산을 위해 다중 키를 지원한다.
+
+    우선순위: 명시 인자 > KIPRIS_SERVICE_KEYS(콤마/공백 구분 다중) > KIPRIS_SERVICE_KEY
+    > KIPRIS_API_KEY > SERVICE_KEY. 중복은 순서를 유지하며 제거한다.
+    """
+    raw = (
+        explicit
+        or os.getenv("KIPRIS_SERVICE_KEYS")
+        or os.getenv("KIPRIS_SERVICE_KEY")
+        or os.getenv("KIPRIS_API_KEY")
+        or os.getenv("SERVICE_KEY")
+        or ""
+    )
+    keys: list[str] = []
+    for part in re.split(r"[,\s]+", raw):
+        part = part.strip()
+        if part and part not in keys:
+            keys.append(part)
+    return keys
+
+
+# 인스턴스가 호출마다 새로 생성될 수 있어(_kipris_client), 키 라운드로빈 시작점을
+# 모듈 전역 커서로 유지해 호출 간에도 부하가 고르게 분산되도록 한다.
+_key_cursor = 0
 
 
 @dataclass(frozen=True)
@@ -83,6 +131,42 @@ def parse_xml_response(xml_text: str) -> dict[str, Any]:
     return {_strip_namespace(root.tag): _element_to_obj(root)}
 
 
+def raise_for_kipris_body_error(data: Mapping[str, Any]) -> None:
+    """KIPRISPlus가 HTTP 200 본문에 담아 돌려주는 오류를 표면화합니다."""
+    result_code = first_nested_value(data, ("resultCode", "returnCode", "errorCode"))
+    result_msg = first_nested_value(data, ("resultMsg", "returnMsg", "errorMsg", "message"))
+    if result_code is None:
+        return
+
+    code = str(result_code).strip()
+    message = str(result_msg or "").strip()
+    if code in {"", "00", "0", "000", "SUCCESS", "success"}:
+        return
+    if code in KIPRIS_BODY_ERROR_CODES or message:
+        detail = f"KIPRIS 응답 오류(resultCode={code})"
+        if message:
+            detail = f"{detail}: {message}"
+        raise KiprisError(detail)
+
+
+def first_nested_value(value: Any, keys: tuple[str, ...]) -> Any:
+    if isinstance(value, Mapping):
+        for key in keys:
+            found = value.get(key)
+            if found not in (None, ""):
+                return found
+        for nested in value.values():
+            found = first_nested_value(nested, keys)
+            if found not in (None, ""):
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = first_nested_value(item, keys)
+            if found not in (None, ""):
+                return found
+    return None
+
+
 def _get_nested(data: Mapping[str, Any], *keys: str) -> Any:
     cur: Any = data
     for key in keys:
@@ -119,14 +203,11 @@ class KiprisClient:
         timeout: float = 30.0,
         sleep_seconds: float = 0.0,
     ) -> None:
-        self.service_key = (
-            service_key
-            or os.getenv("KIPRIS_SERVICE_KEY")
-            or os.getenv("KIPRIS_API_KEY")
-            or os.getenv("SERVICE_KEY")
-        )
-        if not self.service_key:
-            raise ValueError("service_key 또는 환경변수 KIPRIS_SERVICE_KEY가 필요합니다.")
+        self.service_keys = _resolve_service_keys(service_key)
+        if not self.service_keys:
+            raise ValueError("service_key 또는 환경변수 KIPRIS_SERVICE_KEY(S)가 필요합니다.")
+        # 단일 키 참조 하위호환
+        self.service_key = self.service_keys[0]
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.sleep_seconds = sleep_seconds
@@ -148,7 +229,7 @@ class KiprisClient:
         if self.sleep_seconds:
             time.sleep(self.sleep_seconds)
 
-        query = {auth_param: self.service_key}
+        query: dict[str, Any] = {}
         if params:
             for k, v in params.items():
                 if v is None:
@@ -159,13 +240,37 @@ class KiprisClient:
                     query[k] = v
 
         url = self._url(service_path, operation_name)
-        response = self.session.get(url, params=query, timeout=self.timeout)
-        response.raise_for_status()
 
-        text = response.text.strip()
-        if not parse_xml:
-            return text
-        return parse_xml_response(text)
+        # 한도(쿼터) 회피: 키 목록을 라운드로빈으로 시작점만 바꿔 부하를 분산하고,
+        # 호출 실패(429/5xx/네트워크 오류) 시 남은 키로 순차 재시도한다.
+        global _key_cursor
+        count = len(self.service_keys)
+        start = _key_cursor % count
+        _key_cursor += 1
+        ordered = [self.service_keys[(start + i) % count] for i in range(count)]
+
+        last_exc: Exception | None = None
+        for key in ordered:
+            attempt = dict(query)
+            attempt[auth_param] = key
+            try:
+                response = self.session.get(url, params=attempt, timeout=self.timeout)
+                response.raise_for_status()
+            except requests.RequestException as exc:
+                last_exc = exc
+                continue
+            text = response.text.strip()
+            if not parse_xml:
+                return text
+            parsed = parse_xml_response(text)
+            raise_for_kipris_body_error(parsed)
+            return parsed
+
+        # EXT-10: last_exc(requests 예외)의 str()에는 ServiceKey=... 평문 URL이 포함되므로 마스킹한다.
+        # 이 메시지는 워크플로 warnings→API 응답·아티팩트로 전파될 수 있다.
+        raise KiprisError(
+            f"KIPRIS 호출 실패(키 {count}개 모두 실패): {scrub_secrets(str(last_exc))}"
+        ) from last_exc
 
     # -------------------------
     # 특허·실용 공개·등록공보
@@ -175,9 +280,14 @@ class KiprisClient:
         return self.request("getAdvancedSearch", params)
 
     def search_by_application_number(self, application_number: str, **params: Any) -> dict[str, Any]:
-        """출원번호 검색 - applicationNumberSearchInfo"""
+        """출원번호 검색 - getAdvancedSearch(applicationNumber).
+
+        `applicationNumberSearchInfo` operation은 이 서비스 경로/키에서 INVALID_REQUEST_PARAMETER로
+        실패한다(존재하지 않는 operation). 전체검색 getAdvancedSearch에 applicationNumber를 넘기면
+        정상 동작하며(resultCode 00), 응답 shape도 extract_kipris_items가 이미 처리한다.
+        """
         params.update({"applicationNumber": application_number})
-        return self.request("applicationNumberSearchInfo", params)
+        return self.request("getAdvancedSearch", params)
 
     def bibliography_detail(self, application_number: str) -> dict[str, Any]:
         """서지상세정보 - getBibliographyDetailInfoSearch"""
@@ -248,9 +358,47 @@ class KiprisClient:
         ]
 
     def search_by_ipc(self, ipc_number: str, **params: Any) -> dict[str, Any]:
-        """IPC 검색 - ipcSearchInfo"""
+        """IPC 검색 - ipcSearchInfo.
+
+        search_by_cpc와 동일하게 /openapi/rest/ 경로 + accessKey 인증을 써야 한다. 기본 경로
+        (/kipo-api/kipi/ + ServiceKey)로는 INVALID_REQUEST_PARAMETER로 실패한다.
+        """
         params.update({"ipcNumber": ipc_number})
-        return self.request("ipcSearchInfo", params)
+        return self.request(
+            "ipcSearchInfo",
+            params,
+            service_path=PAT_UTI_REST_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
+    def count_foreign_patents_by_ipc_opendate(
+        self,
+        ipc_number: str,
+        country_code: str,
+        open_date_start: str,
+        open_date_end: str,
+    ) -> int:
+        """해외특허 IPC + 공개일자(OPD) 범위로 해당 국가 공개 특허 건수를 센다.
+
+        ForeignPatentAdvencedSearchService/advancedSearch는 `free` 쿼리에
+        `IPC=[코드] AND OPD=[YYYYMMDD~YYYYMMDD]` 문법으로 IPC와 공개일자 범위를 동시에 걸 수
+        있고, totalSearchCount로 구간 건수를 바로 돌려준다(ipcSearch는 날짜 필터가 없어 불가).
+        IPC는 공백을 제거해야 한다(`G16H 50/70` → `G16H50/70`).
+        """
+        ipc = re.sub(r"\s+", "", str(ipc_number or ""))
+        free_query = f"IPC=[{ipc}] AND OPD=[{open_date_start}~{open_date_end}]"
+        raw = self.request(
+            "advancedSearch",
+            {"free": free_query, "collectionValues": country_code, "currentPage": 1},
+            service_path=OVERSEAS_ADVANCED_SEARCH_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+        items = ((raw.get("response") or {}).get("body") or {}).get("items") or {}
+        total = items.get("totalSearchCount") if isinstance(items, dict) else None
+        try:
+            return int(str(total).strip())
+        except (TypeError, ValueError):
+            return 0
 
     def search_by_cpc(self, cpc_number: str, **params: Any) -> dict[str, Any]:
         """CPC 검색 - cpcSearchInfo"""
@@ -324,6 +472,22 @@ class KiprisClient:
         """해외특허 / 서지정보 / 청구항 - demandParagraphInfo"""
         return self.request(
             "demandParagraphInfo",
+            {
+                "literatureNumber": literature_number,
+                "countryCode": country_code,
+            },
+            service_path=OVERSEAS_PATENT_SERVICE_PATH,
+            auth_param="accessKey",
+        )
+
+    def overseas_bibliographic_info(
+        self,
+        literature_number: str,
+        country_code: str,
+    ) -> dict[str, Any]:
+        """해외특허 / 서지정보 / 서지상세 - bibliographicInfo"""
+        return self.request(
+            "bibliographicInfo",
             {
                 "literatureNumber": literature_number,
                 "countryCode": country_code,

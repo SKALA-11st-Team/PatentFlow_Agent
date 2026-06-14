@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from typing import Any, Callable
 from html import unescape as html_unescape
 from urllib.parse import parse_qs, quote_plus, unquote, urldefrag, urlparse
 import json
+import logging
 import os
 import re
 
 import requests
+
+from app.config import settings
+
+_logger = logging.getLogger("patentflow.skax_search")
 
 from services.evidence.store_service import ensure_evidence_ids, now_iso
 
@@ -30,7 +36,8 @@ DEFAULT_MAX_RESULTS_PER_QUERY = 5
 DEFAULT_MAX_FETCH_PAGES = 5
 DEFAULT_MAX_EVIDENCE_ITEMS = 3
 DEFAULT_MAX_CONTENT_CHARS = 5000
-DEFAULT_SEARCH_TIMEOUT_SECONDS = 5
+DEFAULT_SEARCH_WORKERS = 4
+DEFAULT_SEARCH_TIMEOUT_SECONDS = settings.skax_search_timeout_seconds
 DEFAULT_SEARCH_HTML_PREVIEW_CHARS = 800
 DEFAULT_API_ERROR_BODY_PREVIEW_CHARS = 1000
 GOOGLE_SEARCH_URL = "https://www.google.com/search"
@@ -210,12 +217,21 @@ class TavilySearchClient(SearchClient):
             diagnostics["search_failure_reason"] = "missing_config"
             return {"results": [], "diagnostics": diagnostics}
 
+        # Tavily는 구글식 `site:` 연산자를 이해하지 못하고, 도메인 제한은 이미
+        # include_domains로 처리한다. 공유 쿼리에 붙은 `site:<domain>` 토큰은
+        # Tavily에서는 노이즈가 되어 시맨틱 매칭을 떨어뜨리므로 제거한다.
+        tavily_query = strip_site_operators(query)
+        diagnostics["tavily_effective_query"] = tavily_query
+        if not tavily_query:
+            diagnostics["search_failure_reason"] = "empty_query_after_site_strip"
+            return {"results": [], "diagnostics": diagnostics}
+
         try:
             response = requests.post(
                 TAVILY_SEARCH_URL,
                 json={
                     "api_key": self.api_key,
-                    "query": query,
+                    "query": tavily_query,
                     "search_depth": "basic",
                     "include_domains": list(SK_OWNED_DOMAINS),
                     "include_raw_content": self.include_raw_content,
@@ -370,7 +386,6 @@ def build_query_generation_plan(
         [
             compact_query([related_product]),
             compact_query(["SK AX", related_product]),
-            compact_query([related_product, "news room"]),
         ]
         if related_product
         else []
@@ -400,8 +415,10 @@ def build_query_generation_plan(
     dropped_duplicate_queries: list[str] = []
     base_candidates = [candidate for candidate in candidates if candidate]
     override_queries = normalize_skax_site_queries(queries_override or [], max_queries=max_queries)
-    raw_queries = [f"site:{SK_AX_DOMAIN} {candidate}" for candidate in base_candidates]
-    raw_queries.extend(override_queries)
+    # query rewriting(LLM)이 만든 검색어를 우선 배치하고, 남는 슬롯을 rule-based 후보로 채운다.
+    # (예전엔 rule-based를 먼저 넣어 max_queries를 다 채워, LLM 검색어가 한 건도 안 쓰이고 버려졌다.)
+    raw_queries = list(override_queries)
+    raw_queries.extend(f"site:{SK_AX_DOMAIN} {candidate}" for candidate in base_candidates)
     for query in raw_queries:
         query = " ".join(str(query or "").split())
         if not query:
@@ -514,7 +531,8 @@ def collect_skax_site_evidence(
         if include_related_media
         else []
     )
-    queries = [*base_queries, *related_media_queries]
+    # base와 관련매체 쿼리가 겹치면(예: 둘 다 'SK AX {제품}') 중복 검색을 막는다.
+    queries = unique_texts([*base_queries, *related_media_queries])
     searched_result_count = 0
     search_results: list[dict[str, Any]] = []
     search_diagnostics: list[dict[str, Any]] = []
@@ -523,38 +541,14 @@ def collect_skax_site_evidence(
     fetched_url_count = 0
     truncated_content_count = 0
 
-    for query in queries:
-        if search_client:
-            try:
-                search_response = search_client.search(query, max_results=max_results_per_query)
-                results = list(search_response.get("results", []))[: max(1, int(max_results_per_query))]
-                search_diagnostics.append(
-                    normalize_search_diagnostics(
-                        query,
-                        search_response.get("diagnostics"),
-                        results,
-                    )
-                )
-            except Exception as exc:
-                results = []
-                search_diagnostics.append(build_search_error_diagnostics(query, exc))
-        elif searcher:
-            try:
-                results = searcher(query)[: max(1, int(max_results_per_query))]
-                search_diagnostics.append(build_injected_search_diagnostics(query, results))
-            except Exception as exc:
-                results = []
-                search_diagnostics.append(build_search_error_diagnostics(query, exc))
-        else:
-            search_response = default_search_client().search(query, max_results=max_results_per_query)
-            results = list(search_response.get("results", []))[: max(1, int(max_results_per_query))]
-            search_diagnostics.append(
-                normalize_search_diagnostics(
-                    query,
-                    search_response.get("diagnostics"),
-                    results,
-                )
-            )
+    active_search_client = search_client or (None if searcher else default_search_client())
+    for query, results, diagnostics in search_queries_concurrently(
+        queries,
+        search_client=active_search_client,
+        searcher=searcher,
+        max_results_per_query=max_results_per_query,
+    ):
+        search_diagnostics.append(diagnostics)
         searched_result_count += len(results)
         for result in results:
             normalized = normalize_search_result(result, query)
@@ -618,21 +612,110 @@ def collect_skax_site_evidence(
     }
 
 
+def search_queries_concurrently(
+    queries: list[str],
+    *,
+    search_client: SearchClient | None,
+    searcher: Searcher | None,
+    max_results_per_query: int,
+) -> list[tuple[str, list[dict[str, Any]], dict[str, Any]]]:
+    if not queries:
+        return []
+
+    result_limit = max(1, int(max_results_per_query))
+
+    def search_query(query: str) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+        if search_client:
+            try:
+                search_response = search_client.search(query, max_results=result_limit)
+                results = list(search_response.get("results", []))[:result_limit]
+                diagnostics = normalize_search_diagnostics(
+                    query,
+                    search_response.get("diagnostics"),
+                    results,
+                )
+                return query, results, diagnostics
+            except Exception as exc:
+                return query, [], build_search_error_diagnostics(query, exc)
+        if searcher:
+            try:
+                results = searcher(query)[:result_limit]
+                return query, results, build_injected_search_diagnostics(query, results)
+            except Exception as exc:
+                return query, [], build_search_error_diagnostics(query, exc)
+        return query, [], build_empty_search_diagnostics(query)
+
+    max_workers = min(DEFAULT_SEARCH_WORKERS, len(queries))
+    if max_workers <= 1:
+        return [search_query(query) for query in queries]
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        return list(executor.map(search_query, queries))
+
+
 def default_search_client() -> SearchClient:
     if TavilySearchClient.has_config():
         return TavilySearchClient()
     if GoogleCustomSearchClient.has_config():
         return GoogleCustomSearchClient()
+    # EVID-12: Tavily·CSE 키가 모두 없으면 Google HTML 스크레이프 종단 폴백을 쓰지만 JS/CAPTCHA로 사실상 0건이다.
+    # 'SK AX 근거 없음'이 조용한 비기능이 아니라 키 미설정 때문임을 운영자가 인지하도록 경고를 남긴다.
+    _logger.warning(
+        "SK AX 사이트 검색 키(TAVILY/GOOGLE_CSE) 미설정 — Google HTML 폴백은 차단으로 근거 0건일 수 있습니다."
+    )
     return GoogleHtmlSearchClient()
 
 
+def search_with_default_fallback(
+    query: str,
+    *,
+    max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
+) -> dict[str, Any]:
+    clients: list[SearchClient] = []
+    if TavilySearchClient.has_config():
+        clients.append(TavilySearchClient())
+    if GoogleCustomSearchClient.has_config():
+        clients.append(GoogleCustomSearchClient())
+    clients.append(GoogleHtmlSearchClient())
+
+    attempts: list[dict[str, Any]] = []
+    last_response: dict[str, Any] = {"results": [], "diagnostics": build_empty_search_diagnostics(query)}
+    for client in clients:
+        try:
+            response = client.search(query, max_results=max_results)
+        except Exception as exc:
+            response = {
+                "results": [],
+                "diagnostics": build_search_error_diagnostics(query, exc),
+            }
+        results = list(response.get("results", []))
+        diagnostics = dict(response.get("diagnostics") or {})
+        attempts.append(
+            {
+                "search_provider": diagnostics.get("search_provider") or client.__class__.__name__,
+                "result_count": len(results),
+                "search_failure_reason": diagnostics.get("search_failure_reason"),
+            }
+        )
+        diagnostics["fallback_attempts"] = attempts
+        diagnostics["fallback_used"] = len(attempts) > 1
+        last_response = {"results": results, "diagnostics": diagnostics}
+        if results:
+            return last_response
+    return last_response
+
+
 def build_related_media_queries(base_queries: list[str], *, max_queries: int = DEFAULT_MAX_QUERIES) -> list[str]:
+    # 관련매체(skcareersjournal.com·openapi.sk.com)는 검색 단계의 include_domains(SK_OWNED_DOMAINS)가
+    # 이미 모두 커버한다. 예전엔 도메인마다 site:<domain>을 붙여 base당 도메인 수만큼(×2) 쿼리를 만들었지만,
+    # site: 토큰은 Tavily 전에 제거되어 동일 키워드 쿼리가 도메인 수만큼 중복 생성됐다(15개 중 10개 중복).
+    # base당 'SK AX {키워드}' 한 건만 만들어 SK AX 언급을 가산 검색한다.
     related_queries: list[str] = []
     for base_query in base_queries[: max(1, int(max_queries))]:
-        query_body = re.sub(r"^site\s*:\s*skax\.co\.kr\s*", "", base_query, flags=re.IGNORECASE).strip()
-        query_body = compact_query(["SK AX", query_body])
-        for domain in SK_RELATED_MEDIA_DOMAINS:
-            related_queries.append(f"site:{domain} {query_body}".strip())
+        body = re.sub(r"^site\s*:\s*skax\.co\.kr\s*", "", base_query, flags=re.IGNORECASE).strip()
+        if not re.match(r"(?i)^sk\s*ax\b", body):  # 이미 'SK AX'로 시작하면 접두 중복(SK AX SK AX) 방지
+            body = compact_query(["SK AX", body])
+        if body:
+            related_queries.append(body)
     return unique_texts(related_queries)
 
 
@@ -1084,9 +1167,11 @@ def filter_search_results(results: list[dict[str, Any]], patent_context: dict[st
         if not url or url in seen or not is_skax_url(url) or is_file_url(url):
             continue
         seen.add(url)
+        # 관련성 점수는 정렬(우선순위)용으로만 쓰고, 여기서 버리지 않는다.
+        # skax.co.kr 공식 도메인 페이지는 제품명 정확매칭이 없어도(예: 제품을
+        # AIOps Platform 같은 일반 표현으로 소개) 일단 근거 후보로 올린 뒤,
+        # 실제 관련성 판단·요약은 뒤의 압축 단계(LLM)에서 처리한다.
         score = score_search_result(result, patent_context)
-        if score["relevance_score"] <= 0 or not score["is_relevant"]:
-            continue
         filtered.append({**result, "url": url, **score})
     filtered.sort(key=lambda item: item["relevance_score"], reverse=True)
     return filtered
@@ -1218,7 +1303,6 @@ def normalize_page_evidence(
         "published_at": None,
         "collected_at": now_iso(),
         "content": content,
-        "related_axes": ["business_fit"],
         "search_query": result.get("search_query"),
         "matched_keywords": result.get("matched_keywords", []),
         "relevance_score": result.get("relevance_score"),
@@ -1244,6 +1328,17 @@ def patent_field(patent_context: dict[str, Any], field: str) -> str:
         if value:
             return value
     return ""
+
+
+def strip_site_operators(query: str) -> str:
+    """쿼리에서 `site:<domain>` 연산자 토큰을 제거한다.
+
+    `site:`는 Google HTML/Custom Search용 연산자다. Tavily는 이를 지원하지 않고
+    도메인 제한을 include_domains로 처리하므로, Tavily에 보낼 때는 노이즈가 되는
+    이 토큰을 벗겨내고 키워드만 남긴다.
+    """
+    tokens = [token for token in normalize_text(query).split() if not token.lower().startswith("site:")]
+    return " ".join(tokens).strip()
 
 
 def compact_query(parts: list[Any]) -> str:

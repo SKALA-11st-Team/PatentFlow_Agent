@@ -1,21 +1,28 @@
-"""KIPRIS, DART, NAVER, GNews를 한 서버에서 제공하는 통합 FastAPI.
+"""KIPRIS, NAVER, GNews를 한 서버에서 제공하는 통합 FastAPI.
 
 실행:
   python -m uvicorn open_api.api_server:app --reload
 """
 from __future__ import annotations
 
+import hmac
+import logging
 import os
+import time
+from collections import deque
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import requests
 import yaml
 from dotenv import load_dotenv
+
+from open_api.secret_scrub import scrub_secrets
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 try:
     from .kipris_client import KiprisClient, KiprisError, OVERSEAS_PATENT_SERVICE_PATH, PAT_UTI_SERVICE_PATH
@@ -27,24 +34,75 @@ load_dotenv()
 ROOT = Path(__file__).resolve().parent
 OPENAPI_FILES = (
     ROOT / "kipris_all_open_api.yaml",
-    ROOT / "dart_open_api.yaml",
     ROOT / "naver_open_api.yaml",
     ROOT / "gnews_open_api.yaml",
 )
 
 app = FastAPI(
-    title="Unified API Server (KIPRIS + DART + NAVER + GNews)",
+    title="Unified API Server (KIPRIS + NAVER + GNews)",
     version="1.0.0",
     description="4개 API를 하나의 api_server.py에서 실행하고 문서도 하나로 합칩니다.",
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[origin.strip() for origin in os.getenv("UNIFIED_API_CORS_ORIGINS", "http://localhost:5173").split(",") if origin.strip()],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+_gateway_logger = logging.getLogger("patentflow.gateway")
+if not os.getenv("UNIFIED_API_KEY"):
+    # SEC-01: 키 미설정 시 게이트웨이가 인증 없이 동작하는 fail-open을 운영자가 인지하도록 경고를 남긴다
+    # (개발/compose 편의는 유지하되, 운영 배포 시 UNIFIED_API_KEY 설정을 강제하는 신호).
+    _gateway_logger.warning(
+        "UNIFIED_API_KEY 미설정 — 게이트웨이가 인증 없이 동작합니다(개발 모드). 운영 배포에선 반드시 설정하세요."
+    )
+
+
+@app.middleware("http")
+async def require_api_key(request: Request, call_next: Any) -> Any:
+    expected = os.getenv("UNIFIED_API_KEY")
+    if not expected or request.method == "OPTIONS" or request.url.path in {"/", "/docs", "/redoc", "/openapi.json"}:
+        return await call_next(request)
+    provided = request.headers.get("X-API-Key")
+    # SEC-01: 타이밍 공격 방지를 위해 상수시간 비교(hmac.compare_digest). provided가 없으면 즉시 거부.
+    if not provided or not hmac.compare_digest(provided, expected):
+        return JSONResponse(status_code=401, content={"detail": "유효한 X-API-Key 헤더가 필요합니다."})
+    return await call_next(request)
+
+
+# SEC-01: 게이트웨이는 외부 유료키(KIPRIS/DART/NAVER)를 태우므로 IP 단위 인프로세스 슬라이딩 윈도우
+# 레이트리밋으로 남용을 막는다(게이트웨이는 단일 파드라 인메모리로 충분). per-minute<=0이면 비활성.
+_rate_limit_windows: dict[str, deque[float]] = {}
+_rate_limit_lock = Lock()
+_RATE_EXEMPT_PATHS = {"/", "/docs", "/redoc", "/openapi.json"}
+
+
+@app.middleware("http")
+async def rate_limit(request: Request, call_next: Any) -> Any:
+    try:
+        per_minute = int(os.getenv("UNIFIED_API_RATELIMIT_PER_MINUTE", "120"))
+    except ValueError:
+        per_minute = 120
+    if per_minute <= 0 or request.method == "OPTIONS" or request.url.path in _RATE_EXEMPT_PATHS:
+        return await call_next(request)
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    cutoff = now - 60.0
+    with _rate_limit_lock:
+        window = _rate_limit_windows.setdefault(client_ip, deque())
+        while window and window[0] < cutoff:
+            window.popleft()
+        if len(window) >= per_minute:
+            return JSONResponse(
+                status_code=429,
+                content={"detail": "요청이 너무 많습니다. 잠시 후 다시 시도해주세요."},
+            )
+        window.append(now)
+    return await call_next(request)
 
 
 def _client(service_key: str | None = None) -> KiprisClient:
@@ -58,9 +116,9 @@ def _kipris_http(fn: Any) -> Any:
     try:
         return fn()
     except KiprisError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=_sanitize_external_error(exc)) from exc
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise HTTPException(status_code=502, detail=_sanitize_external_error(exc)) from exc
 
 
 def _strip_service_key(q: dict[str, Any]) -> dict[str, Any]:
@@ -129,13 +187,11 @@ def _merge_schema_dict(target: dict[str, Any], src: dict[str, Any]) -> None:
         elif isinstance(target[key], dict) and isinstance(value, dict):
             _merge_schema_dict(target[key], value)
         elif target[key] != value:
-            # 이름 충돌 시 기존(main 우선) 유지
-            continue
+            # EXT-11: 이름 충돌 시 기존(main 우선) 유지하되, 조용히 폐기하지 않고 경고를 남겨 누락을 표면화한다.
+            _gateway_logger.warning("OpenAPI 스키마 병합 충돌 — 키 '%s'의 보조 정의를 폐기하고 main 우선 유지", key)
 
 
 def _infer_missing_tag(path_key: str) -> str:
-    if path_key.startswith("/dart/"):
-        return "DART"
     if path_key.startswith("/api/news/naver") or path_key.startswith("/api/news/search"):
         return "NAVER News"
     if path_key.startswith("/api/news/gnews") or path_key.startswith("/api/v4/"):
@@ -220,106 +276,8 @@ def root() -> dict[str, Any]:
         "status": "ok",
         "docs": "/docs",
         "openapi": "/openapi.json",
-        "services": ["kipris", "dart", "naver", "gnews"],
+        "services": ["kipris", "naver", "gnews"],
     }
-
-
-# -------------------------
-# DART
-# -------------------------
-def _get_dart_key() -> str:
-    dart_key = os.getenv("DART_KEY")
-    if not dart_key:
-        raise HTTPException(status_code=500, detail="DART_KEY 환경변수가 없습니다.")
-    return dart_key
-
-
-def _dart_get_json(url: str, params: dict[str, Any]) -> Any:
-    try:
-        res = requests.get(url, params=params, timeout=20)
-        res.raise_for_status()
-        data = res.json()
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"DART 요청 실패: {exc}") from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=502, detail="DART 응답 JSON 파싱 실패") from exc
-
-    # OpenDART는 HTTP 200이어도 status 코드로 오류를 반환할 수 있음
-    if data.get("status") not in (None, "000"):
-        raise HTTPException(
-            status_code=400,
-            detail={"dart_status": data.get("status"), "dart_message": data.get("message")},
-        )
-    return data
-
-
-@app.get("/dart/company", tags=["DART"])
-def dart_company(
-    corp_code: str = Query(..., min_length=8, max_length=8, description="DART 고유번호 8자리"),
-) -> Any:
-    return _dart_get_json(
-        "https://opendart.fss.or.kr/api/company.json",
-        {"corp_code": corp_code, "crtfc_key": _get_dart_key()},
-    )
-
-
-@app.get("/dart/financial-account", tags=["DART"])
-def dart_financial_account(
-    corp_code: str = Query(..., description="DART 고유번호 8자리"),
-    bsns_year: str = Query(..., description="사업연도 4자리"),
-    reprt_code: str = Query("11011", description="보고서 코드"),
-) -> Any:
-    return _dart_get_json(
-        "https://opendart.fss.or.kr/api/fnlttSinglAcnt.json",
-        {
-            "corp_code": corp_code,
-            "bsns_year": bsns_year,
-            "reprt_code": reprt_code,
-            "crtfc_key": _get_dart_key(),
-        },
-    )
-
-
-@app.get("/dart/disclosure", tags=["DART"])
-def dart_disclosure(
-    corp_code: str = Query(..., min_length=8, max_length=8, description="DART 고유번호 8자리"),
-    bgn_de: str = Query(..., min_length=8, max_length=8, description="시작일 YYYYMMDD"),
-    end_de: str = Query(..., min_length=8, max_length=8, description="종료일 YYYYMMDD"),
-) -> Any:
-    return _dart_get_json(
-        "https://opendart.fss.or.kr/api/list.json",
-        {
-            "corp_code": corp_code,
-            "bgn_de": bgn_de,
-            "end_de": end_de,
-            "pblntf_ty": "A",
-            "page_count": "100",
-            "crtfc_key": _get_dart_key(),
-        },
-    )
-
-
-@app.get("/dart/document", tags=["DART"])
-def dart_document(
-    rcept_no: str = Query(..., min_length=14, max_length=14, description="접수번호 14자리"),
-) -> Response:
-    try:
-        res = requests.get(
-            "https://opendart.fss.or.kr/api/document.xml",
-            params={"rcept_no": rcept_no, "crtfc_key": _get_dart_key()},
-            timeout=30,
-        )
-        res.raise_for_status()
-    except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"DART 원문 요청 실패: {exc}") from exc
-
-    content_type = res.headers.get("Content-Type", "application/zip")
-    content_disposition = res.headers.get("Content-Disposition", f'attachment; filename="{rcept_no}.zip"')
-    return Response(
-        content=res.content,
-        media_type=content_type,
-        headers={"Content-Disposition": content_disposition},
-    )
 
 
 # -------------------------
@@ -414,10 +372,8 @@ def gnews_search_alias(
 
 
 def _sanitize_external_error(exc: Exception) -> str:
-    text = str(exc)
-    text = text.replace(os.getenv("GNEWS_API_KEY") or "", "***")
-    text = text.replace(os.getenv("DART_KEY") or "", "***")
-    return text
+    # EXT-10: 시크릿 마스킹은 공용 모듈(secret_scrub)로 일원화한다(에이전트 KiprisError 경로와 동일 로직).
+    return scrub_secrets(str(exc))
 
 
 # -------------------------

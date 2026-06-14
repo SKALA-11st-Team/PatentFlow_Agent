@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: team11-patentflow-agent-deployment
+  namespace: patentflow
+  labels:
+    app: team11-patentflow-agent
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels:
+      app: team11-patentflow-agent
+  template:
+    metadata:
+      labels:
+        app: team11-patentflow-agent
+    spec:
+      # SEC-09: 컨테이너를 비특권(non-root)으로 실행한다(Dockerfile USER appuser=uid 10001과 일치).
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      imagePullSecrets:
+        - name: harbor-regcred
+      containers:
+        - name: team11-patentflow-agent
+          image: harbor.example.com/patentflow/team11-patentflow-agent:placeholder
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - containerPort: 8000
+              name: http
+          envFrom:
+            - configMapRef:
+                name: team11-patentflow-agent-config
+            - secretRef:
+                name: team11-patentflow-agent-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 40
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 500m
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 2Gi

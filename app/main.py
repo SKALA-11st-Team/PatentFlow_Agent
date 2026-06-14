@@ -80,18 +80,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Number of search queries to run for each news API.",
     )
     parser.add_argument(
-        "--dart-corp-code",
-        help="Optional DART corp_code (8 digits) to collect disclosure evidence.",
-    )
-    parser.add_argument(
-        "--dart-bgn-de",
-        help="Optional DART start date YYYYMMDD.",
-    )
-    parser.add_argument(
-        "--dart-end-de",
-        help="Optional DART end date YYYYMMDD.",
-    )
-    parser.add_argument(
         "--use-llm-valuation",
         action="store_true",
         help="Deprecated: LLM valuation is enabled by default.",
@@ -228,12 +216,12 @@ def print_query_rewriting_summary(state: PatentWorkflowState) -> None:
         if rewrite_meta.get("llm_error"):
             print(f"Query rewriting warning: {rewrite_meta.get('llm_error')}")
 
-    ko_queries = query_plan.get("ko_queries") or []
+    domestic_queries = query_plan.get("domestic_queries") or []
     en_queries = query_plan.get("en_queries") or []
-    selected_ko_queries = query_plan.get("selected_ko_queries") or query_plan.get("queries") or []
+    selected_domestic_queries = query_plan.get("selected_domestic_queries") or query_plan.get("queries") or []
     selected_en_queries = query_plan.get("selected_en_queries") or query_plan.get("gnews_queries") or []
 
-    print_queries("Generated Korean queries", ko_queries)
+    print_queries("Generated domestic queries", domestic_queries)
     print_queries("Generated English queries", en_queries)
 
     warnings = query_plan.get("search_warnings") or []
@@ -366,9 +354,6 @@ def main() -> None:
                 application_number=patent.get("application_number"),
                 api_base_url=args.api_base_url,
                 query_limit_per_axis=args.api_query_limit,
-                dart_corp_code=args.dart_corp_code,
-                dart_bgn_de=args.dart_bgn_de,
-                dart_end_de=args.dart_end_de,
                 output_dir=artifact_subdir(final_state, "api_evidence"),
                 save=not args.no_save,
             )
@@ -376,9 +361,9 @@ def main() -> None:
             final_state.evidence_bundle = evidence_result.get("items", [])
             final_state.query_plan = {
                 "source": "query_rewriting",
-                "ko_queries": evidence_result.get("ko_queries", []),
+                "domestic_queries": evidence_result.get("domestic_queries", []),
                 "en_queries": evidence_result.get("en_queries", []),
-                "selected_ko_queries": evidence_result.get("queries", []),
+                "selected_domestic_queries": evidence_result.get("queries", []),
                 "selected_en_queries": evidence_result.get("gnews_queries", []),
                 "rewrite_meta": evidence_result.get("rewrite_meta", {}),
                 "search_warnings": evidence_result.get("warnings", []),

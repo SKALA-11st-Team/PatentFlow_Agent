@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from typing import Any
+from urllib.parse import urlparse
+import ipaddress
 import re
+import socket
 
 import requests
+
+from app.config import settings
 
 try:
     import trafilatura
@@ -20,6 +26,8 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
+BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "metadata.google.internal"}
+BLOCKED_LINK_LOCAL_IP = ipaddress.ip_address("169.254.169.254")
 
 
 class ParagraphHTMLParser(HTMLParser):
@@ -139,7 +147,23 @@ def enrich_news_items_with_full_text(
             mark_content_source(item, "snippet")
         return items
 
-    for item in items:
+    # EVID-04: 항목별 기사 본문 fetch(최대 8s)를 직렬 → 병렬화. 항목마다 독립 URL이라 동시 fetch 후 결과만 적용.
+    indexed = [
+        (idx, str(item.get("url")))
+        for idx, item in enumerate(items)
+        if item.get("source_type") == "news" and item.get("url")
+    ]
+    results_by_index: dict[int, dict[str, str | None]] = {}
+    if indexed:
+        max_workers = max(1, min(len(indexed), settings.evidence_fetch_concurrency))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for idx, result in zip(
+                (i for i, _ in indexed),
+                executor.map(fetch_article_text, [url for _, url in indexed]),
+            ):
+                results_by_index[idx] = result
+
+    for idx, item in enumerate(items):
         if item.get("source_type") != "news":
             continue
         snippet = str(item.get("content") or "")
@@ -147,7 +171,11 @@ def enrich_news_items_with_full_text(
         if not url:
             mark_content_source(item, "snippet")
             continue
-        result = fetch_article_text(str(url))
+        result = results_by_index.get(idx)
+        if result is None:
+            item["content"] = snippet
+            mark_content_source(item, "snippet")
+            continue
         if result["title"]:
             metadata = item.setdefault("metadata", {})
             if result["title"] != item.get("title"):
@@ -166,15 +194,21 @@ def enrich_news_items_with_full_text(
 
 
 def fetch_article_text(url: str) -> dict[str, str | None]:
+    blocked_reason = validate_article_url(url)
+    if blocked_reason:
+        return {"text": None, "title": None, "error": blocked_reason, "source": None}
     try:
         response = requests.get(
             url,
             headers={"User-Agent": USER_AGENT},
             timeout=ARTICLE_TIMEOUT_SECONDS,
+            allow_redirects=False,
         )
         response.raise_for_status()
     except requests.RequestException as exc:
         return {"text": None, "title": None, "error": f"{exc.__class__.__name__}: {exc}", "source": None}
+    if 300 <= getattr(response, "status_code", 200) < 400:
+        return {"text": None, "title": None, "error": "article_redirect_blocked", "source": None}
 
     article_title = extract_article_title(response.text)
     trafilatura_text = extract_with_trafilatura(response.text, url=url)
@@ -192,6 +226,49 @@ def fetch_article_text(url: str) -> dict[str, str | None]:
     if not is_valid_article_text(text):
         return {"text": None, "title": article_title, "error": classify_article_failure(text), "source": None}
     return {"text": text[:ARTICLE_MAX_CHARS], "title": article_title, "error": None, "source": "full_text_fallback_parser"}
+
+
+def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return bool(
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or not ip.is_global
+        or ip == BLOCKED_LINK_LOCAL_IP
+    )
+
+
+def validate_article_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return "article_url_blocked:invalid_url"
+    if parsed.username or parsed.password:
+        return "article_url_blocked:userinfo_not_allowed"
+    host = parsed.hostname.strip().lower()
+    if host in BLOCKED_HOSTNAMES:
+        return "article_url_blocked:blocked_hostname"
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        ip = None
+    if ip is not None:
+        return "article_url_blocked:private_or_link_local_ip" if _is_blocked_ip(ip) else None
+    # EVID-05: 호스트가 도메인명이면 DNS로 해석한 모든 IP를 검사한다.
+    # (A레코드가 사설/링크로컬로 해석되는 도메인을 통한 SSRF — 예: 클라우드 메타데이터 169.254.169.254 — 차단)
+    try:
+        resolved = socket.getaddrinfo(host, None)
+    except socket.gaierror:
+        return "article_url_blocked:dns_resolution_failed"
+    for entry in resolved:
+        address = entry[4][0]
+        try:
+            resolved_ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if _is_blocked_ip(resolved_ip):
+            return "article_url_blocked:private_or_link_local_ip"
+    return None
 
 
 def extract_article_title(html_text: str) -> str | None:

@@ -60,6 +60,28 @@ class HashingEmbeddingModel:
         return [self.embed(text) for text in texts]
 
 
+class _QueryEmbeddingCache:
+    """프로세스 수명 동안 검색 쿼리 임베딩을 재사용하는 작은 LRU 캐시(EVID-08)."""
+
+    def __init__(self, max_size: int) -> None:
+        from collections import OrderedDict
+
+        self.max_size = max_size
+        self._store: "OrderedDict[str, list[float]]" = OrderedDict()
+
+    def get(self, key: str) -> list[float] | None:
+        if key not in self._store:
+            return None
+        self._store.move_to_end(key)
+        return self._store[key]
+
+    def set(self, key: str, value: list[float]) -> None:
+        self._store[key] = value
+        self._store.move_to_end(key)
+        while len(self._store) > self.max_size:
+            self._store.popitem(last=False)
+
+
 class OpenAIEmbeddingModel:
     def __init__(
         self,
@@ -67,7 +89,28 @@ class OpenAIEmbeddingModel:
         model: str | None = None,
         api_key: str | None = None,
         batch_size: int = 100,
+        client: Any | None = None,
+        timeout: float | None = None,
+        max_retries: int | None = None,
+        query_cache_size: int | None = None,
     ) -> None:
+        self.model_name = model or settings.openai_embedding_model
+        self.batch_size = batch_size
+        # EVID-08: 일시 장애로 전체 인덱싱/검색이 중단되지 않도록 타임아웃·재시도를 설정한다.
+        self.timeout = timeout if timeout is not None else settings.openai_embedding_timeout
+        self.max_retries = (
+            max_retries if max_retries is not None else settings.openai_embedding_max_retries
+        )
+        cache_size = (
+            query_cache_size
+            if query_cache_size is not None
+            else settings.embedding_query_cache_size
+        )
+        self._query_cache = _QueryEmbeddingCache(cache_size) if cache_size and cache_size > 0 else None
+
+        if client is not None:
+            self.client = client
+            return
         try:
             from openai import OpenAI
         except ImportError as exc:
@@ -75,13 +118,23 @@ class OpenAIEmbeddingModel:
                 "The openai package is required for OpenAI embeddings. "
                 "Install dependencies with `pip install -r requirements.txt`."
             ) from exc
-
-        self.model_name = model or settings.openai_embedding_model
-        self.batch_size = batch_size
-        self.client = OpenAI(api_key=api_key or settings.openai_api_key)
+        # OpenAI SDK는 max_retries 만큼 지수 백오프로 일시 오류(429/5xx/네트워크)를 재시도한다.
+        self.client = OpenAI(
+            api_key=api_key or settings.openai_api_key,
+            timeout=self.timeout,
+            max_retries=self.max_retries,
+        )
 
     def embed(self, text: str) -> list[float]:
-        return self.embed_many([text])[0]
+        # EVID-08: 동일 검색 쿼리 임베딩을 매번 재계산하지 않고 캐시에서 재사용한다.
+        if self._query_cache is not None:
+            cached = self._query_cache.get(text)
+            if cached is not None:
+                return cached
+        vector = self.embed_many([text])[0]
+        if self._query_cache is not None:
+            self._query_cache.set(text, vector)
+        return vector
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
         embeddings: list[list[float]] = []
@@ -104,6 +157,20 @@ class IndustryVectorStore:
         self.database_url = database_url or settings.pgvector_database_url
         self.table_name = table_name
         self.embedding_model = embedding_model or OpenAIEmbeddingModel()
+        # EVID-09: 배치(멀티쿼리) 동안 단일 연결을 열어 재사용한다(open/close). None이면 검색마다 1회성 연결.
+        self._connection: Any = None
+
+    def open(self) -> "IndustryVectorStore":
+        if self._connection is None:
+            self._connection = connect_pgvector(self.database_url)
+        return self
+
+    def close(self) -> None:
+        if self._connection is not None:
+            try:
+                self._connection.close()
+            finally:
+                self._connection = None
 
     def upsert_chunks(self, chunks: list[dict[str, Any]], *, reset: bool = False) -> int:
         prepared_chunks = prepare_chunks(chunks, self.embedding_model.model_name)
@@ -138,18 +205,32 @@ class IndustryVectorStore:
         *,
         top_k: int = 5,
         industry: str | None = None,
+        industries: list[str] | None = None,
         source_name: str | None = None,
     ) -> list[SearchResult]:
         query_embedding = self.embedding_model.embed(query)
         limit = max(1, int(top_k))
+        industries = list(industries) if industries else None
 
-        with connect_pgvector(self.database_url) as connection:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    build_search_sql(self.table_name, industry=industry is not None, source_name=source_name is not None),
-                    build_search_params(query_embedding, limit=limit, industry=industry, source_name=source_name),
-                )
-                rows = cursor.fetchall()
+        search_sql = build_search_sql(
+            self.table_name,
+            industry=industry is not None,
+            industries=industries is not None,
+            source_name=source_name is not None,
+        )
+        search_params = build_search_params(
+            query_embedding,
+            limit=limit,
+            industry=industry,
+            industries=industries,
+            source_name=source_name,
+        )
+        # EVID-09: 영속 연결(open())이 있으면 재사용, 없으면 호출 단위 1회성 연결.
+        if self._connection is not None:
+            rows = self._execute_query(self._connection, search_sql, search_params)
+        else:
+            with connect_pgvector(self.database_url) as connection:
+                rows = self._execute_query(connection, search_sql, search_params)
 
         results: list[SearchResult] = []
         for chunk_id, text, metadata, score in rows:
@@ -163,7 +244,15 @@ class IndustryVectorStore:
             )
         return results
 
+    @staticmethod
+    def _execute_query(connection: Any, statement: Any, params: Any) -> list[Any]:
+        with connection.cursor() as cursor:
+            cursor.execute(statement, params)
+            return cursor.fetchall()
+
     def count(self) -> int:
+        if self._connection is not None:
+            return int(self._execute_query(self._connection, count_sql(self.table_name), None)[0][0])
         with connect_pgvector(self.database_url) as connection:
             with connection.cursor() as cursor:
                 cursor.execute(count_sql(self.table_name))
@@ -245,10 +334,14 @@ def build_search_params(
     *,
     limit: int,
     industry: str | None = None,
+    industries: list[str] | None = None,
     source_name: str | None = None,
 ) -> list[Any]:
     params: list[Any] = [to_pgvector_literal(embedding)]
-    if industry is not None:
+    # EVID-03: 다중 산업 필터(industries)는 단일 industry보다 우선한다(= ANY(%s)).
+    if industries is not None:
+        params.append(list(industries))
+    elif industry is not None:
         params.append(industry)
     if source_name is not None:
         params.append(source_name)
@@ -260,10 +353,19 @@ def to_pgvector_literal(vector: list[float]) -> str:
     return "[" + ",".join(format(float(value), ".10g") for value in normalize_vector(vector)) + "]"
 
 
-def build_search_sql(table_name: str, *, industry: bool = False, source_name: bool = False) -> Any:
+def build_search_sql(
+    table_name: str,
+    *,
+    industry: bool = False,
+    industries: bool = False,
+    source_name: bool = False,
+) -> Any:
     sql, _ = import_psycopg()
     filters = []
-    if industry:
+    # EVID-03: 다중 산업 필터가 지정되면 ANY(%s)로, 아니면 단일 industry 등식으로 거른다.
+    if industries:
+        filters.append(sql.SQL("chunks.metadata->>'industry' = ANY(%s)"))
+    elif industry:
         filters.append(sql.SQL("chunks.metadata->>'industry' = %s"))
     if source_name:
         filters.append(sql.SQL("chunks.metadata->>'source_name' = %s"))

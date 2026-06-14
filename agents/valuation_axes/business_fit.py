@@ -4,6 +4,7 @@ from typing import Any
 
 from agents.valuation_axes.common import grade_for_score, normalize_text
 from agents.valuation_axes.payload_common import build_base_input_payload
+from schemas.valuation import DEFAULT_SUBSCORE_WEIGHTS
 from workflow.state import PatentWorkflowState
 
 
@@ -33,14 +34,49 @@ STOPWORDS = {
     "위한",
     "통한",
     "과정",
+    # 명세서·청구항에 흔한 연결어/지시어. 단독 핵심어로 잡히면 매칭 분모만 오염시킨다.
+    "따른",
+    "따라",
+    "대한",
+    "관한",
+    "의한",
+    "위해",
+    "통해",
+    "대해",
+    "관해",
+    "이용한",
+    "이용하여",
+    "수행",
+    "포함",
+    "포함하는",
 }
-BROAD_TERMS = {"ai", "data", "cloud", "제조", "솔루션", "서비스", "플랫폼", "데이터"}
-WEAK_TERMS = {"예측", "분석", "관리", "서비스", "플랫폼", "솔루션"}
-BUSINESS_FIT_SUBSCORE_MAX = {
-    "official_business_evidence": 30,
-    "product_function_direct_match": 45,
-    "business_context_fit": 25,
+# VAL-08: 영문/타산업 특허 핵심어 추출이 한국어 STOPWORDS에만 의존해 무력화되던 문제 보완.
+# 영문 특허 명칭의 일반어(system/method/apparatus 등)·연결어를 대소문자 무관하게 불용어로 거른다.
+ENGLISH_STOPWORDS = {
+    "system", "systems", "method", "methods", "apparatus", "device", "devices",
+    "process", "processes", "means", "unit", "units", "module", "modules",
+    "assembly", "component", "components", "structure", "arrangement",
+    "and", "for", "the", "with", "based", "using", "via", "said", "comprising",
+    "wherein", "having", "configured", "thereof", "from", "into", "between",
 }
+
+
+def is_stopword(text: str) -> bool:
+    """한국어·영문 불용어를 대소문자 무관하게 판정한다(VAL-08)."""
+    lowered = text.lower()
+    return lowered in STOPWORDS or lowered in ENGLISH_STOPWORDS
+BUSINESS_FIT_SUBSCORE_MAX = dict(DEFAULT_SUBSCORE_WEIGHTS["business_fit"])
+
+
+def business_fit_subscore_max_map(state: PatentWorkflowState | None) -> dict[str, int]:
+    """운영 설정(valuation_config.subscoreWeights.business_fit)이 있으면 그 배점을 쓴다."""
+    user_input = state.user_input if state is not None and isinstance(state.user_input, dict) else {}
+    config = user_input.get("valuation_config")
+    configured = ((config or {}).get("subscoreWeights") or {}).get("business_fit") or {}
+    return {
+        key: int(configured.get(key, default_value))
+        for key, default_value in BUSINESS_FIT_SUBSCORE_MAX.items()
+    }
 
 
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
@@ -54,19 +90,25 @@ def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
         axis=AXIS,
     )
     result = runtime.run_llm_required(axis=AXIS, prompt=prompt, evidence=evidence)
-    return reconcile_business_fit_scores(result)
+    return reconcile_business_fit_scores(result, state=state)
 
 
-def reconcile_business_fit_scores(result: dict[str, Any]) -> dict[str, Any]:
+def reconcile_business_fit_scores(
+    result: dict[str, Any], *, state: PatentWorkflowState | None = None
+) -> dict[str, Any]:
     subscores = result.get("subscores") if isinstance(result.get("subscores"), dict) else {}
     reconciled: dict[str, Any] = {}
     total = 0
-    for key, max_score in BUSINESS_FIT_SUBSCORE_MAX.items():
+    total_max = 0
+    for key, max_score in business_fit_subscore_max_map(state).items():
         item = subscores.get(key) if isinstance(subscores.get(key), dict) else {}
         score = coerce_int(item.get("score"))
         score = max(0, min(max_score, score or 0))
         reconciled[key] = {**item, "score": score, "max_score": max_score}
         total += score
+        total_max += max_score
+    # 배점 합이 100이 아니어도 축 점수는 0~100 스케일을 유지한다(설정 배점은 비율로 해석).
+    total = round(total * 100 / total_max) if total_max > 0 else 0
     total = max(0, min(100, total))
     return {
         **result,
@@ -83,22 +125,79 @@ def coerce_int(value: Any) -> int | None:
         return None
 
 
+def build_patent_structure_payload(state: PatentWorkflowState) -> dict[str, Any]:
+    """구조화 결과(target_structure)에서 제품·기능 매칭 판단에 필요한 부분만 경량화해 전달한다.
+
+    key_elements는 식별·역할 정보만, key_flow는 구성요소 간 관계만 남긴다(명세서 위치·도면 등 제외).
+    """
+    structure = state.target_structure if isinstance(state.target_structure, dict) else {}
+    key_elements = [
+        {
+            "key_element_id": element.get("key_element_id"),
+            "key_element_name": element.get("key_element_name"),
+            "why_essential": element.get("why_essential"),
+            "core_role": element.get("core_role"),
+        }
+        for element in (structure.get("key_elements") or [])
+        if isinstance(element, dict)
+    ]
+    key_flow = [
+        {
+            "key_element_id": flow.get("key_element_id"),
+            "next_key_element_id": flow.get("next_key_element_id"),
+            "relation_summary": flow.get("relation_summary"),
+            "coupling_strength": flow.get("coupling_strength"),
+        }
+        for flow in (structure.get("key_flow") or [])
+        if isinstance(flow, dict)
+    ]
+    return {"key_elements": key_elements, "key_flow": key_flow}
+
+
 def build_input_payload(*, state: PatentWorkflowState, evidence: list[dict[str, Any]]) -> dict[str, Any]:
     payload = build_base_input_payload(state=state, evidence=evidence)
     patent_description = build_business_fit_patent_description(state)
     skax_evidence = build_skax_official_evidence_summary(evidence, state=state)
     sk_owned_media_evidence = build_sk_owned_media_evidence_summary(evidence, state=state)
+    sk_ax_relevant_news_evidence = build_sk_ax_relevant_news_evidence_summary(evidence, state=state)
     payload["business_fit_context"] = {
         "patent_description": patent_description,
+        "patent_structure": build_patent_structure_payload(state),
+        "target_source_status": build_target_source_status(state),
         "skax_official_evidence": skax_evidence,
         "sk_owned_media_evidence": sk_owned_media_evidence,
+        "sk_ax_relevant_news_evidence": sk_ax_relevant_news_evidence,
         "quantitative_metrics": build_business_fit_quantitative_metrics(
             state=state,
             evidence=evidence,
-            patent_description=patent_description,
         ),
     }
     return payload
+
+
+def build_target_source_status(state: PatentWorkflowState) -> dict[str, Any]:
+    preprocessed = state.preprocessed_patent or {}
+    claims = preprocessed.get("claims") if isinstance(preprocessed.get("claims"), list) else []
+    sections = preprocessed.get("sections") if isinstance(preprocessed.get("sections"), dict) else {}
+    claim_stats = preprocessed.get("claim_stats") if isinstance(preprocessed.get("claim_stats"), dict) else {}
+    active_claim_count = coerce_int(claim_stats.get("active_claim_count"))
+    if active_claim_count is None:
+        active_claim_count = len([claim for claim in claims if normalize_text(claim.get("text"))])
+    description_fields = (
+        sections.get("technical_field"),
+        sections.get("background"),
+        sections.get("problem"),
+        sections.get("solution"),
+        sections.get("effect"),
+        sections.get("detailed_description"),
+    )
+    return {
+        "claims_available": active_claim_count > 0,
+        "active_claim_count": active_claim_count,
+        "abstract_available": bool(normalize_text(sections.get("abstract"))),
+        "description_available": any(normalize_text(value) for value in description_fields),
+        "authority": "preprocessed_patent",
+    }
 
 
 def build_business_fit_patent_description(state: PatentWorkflowState) -> dict[str, Any]:
@@ -208,7 +307,11 @@ def build_sk_owned_media_evidence_summary(
     max_content_chars: int = EVIDENCE_EXCERPT_LIMIT,
 ) -> list[dict[str, Any]]:
     del state
-    media_items = [item for item in evidence_items if is_sk_owned_media_evidence(item)]
+    media_items = [
+        item
+        for item in evidence_items
+        if is_sk_owned_media_evidence(item)
+    ]
     summaries = []
     for item in sort_official_evidence(media_items, [])[: max(1, int(max_items))]:
         metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
@@ -238,21 +341,52 @@ def build_sk_owned_media_evidence_summary(
     return summaries
 
 
+def build_sk_ax_relevant_news_evidence_summary(
+    evidence_items: list[dict[str, Any]],
+    state: PatentWorkflowState | None = None,
+    *,
+    max_items: int = 3,
+    max_content_chars: int = EVIDENCE_EXCERPT_LIMIT,
+) -> list[dict[str, Any]]:
+    # 압축 단계에서 sk_ax_relevant=True로 판단된 뉴스 등 보조 근거.
+    # 공식 사이트 근거보다 낮은 tier이며, 공식 근거 존재성(30점) 산정에는 쓰지 않는다.
+    del state
+    items = [item for item in evidence_items if is_sk_ax_relevant_supporting_evidence(item)]
+    summaries = []
+    for item in items[: max(1, int(max_items))]:
+        summaries.append(
+            {
+                "evidence_id": item.get("evidence_id"),
+                "title": item.get("title"),
+                "url": item.get("url"),
+                "source": item.get("source"),
+                "source_type": item.get("source_type"),
+                "published_at": item.get("published_at"),
+                "content_excerpt": limit_text(
+                    item.get("compressed_summary") or item.get("content"), max_content_chars
+                ),
+                "key_facts": item.get("key_facts") or [],
+            }
+        )
+    return summaries
+
+
 def build_business_fit_quantitative_metrics(
     *,
     state: PatentWorkflowState,
     evidence: list[dict[str, Any]],
-    patent_description: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    description = patent_description or build_business_fit_patent_description(state)
     official_site_items = [item for item in evidence if is_sk_ax_official_evidence(item)]
-    owned_media_items = [item for item in evidence if is_sk_owned_media_evidence(item)]
+    owned_media_items = [
+        item
+        for item in evidence
+        if is_sk_owned_media_evidence(item)
+    ]
     business_evidence_items = sort_official_evidence(
         [*official_site_items, *owned_media_items],
         business_fit_keywords(state),
     )
     official_score = score_official_evidence_presence(official_site_items, owned_media_items)
-    product_score = score_product_function_direct_match(description, business_evidence_items)
     return {
         "official_evidence_count": len(official_site_items),
         "official_site_evidence_count": len(official_site_items),
@@ -260,7 +394,6 @@ def build_business_fit_quantitative_metrics(
         "business_evidence_count": len(business_evidence_items),
         "best_relevance_score": max((evidence_relevance_score(item) for item in business_evidence_items), default=0.0),
         "official_business_evidence": official_score,
-        "product_function_direct_match": product_score,
     }
 
 
@@ -305,172 +438,19 @@ def score_official_evidence_presence(
     }
 
 
-def score_product_function_direct_match(description: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
-    summary = build_product_function_match_summary(description, items)
-    product_level = summary["product_match_level"]
-    strong_ratio = summary["strong_core_match_ratio"]
-    if product_level == "direct" and strong_ratio >= 0.6:
-        score = 45
-        reason = "product_direct_and_most_core_functions_matched"
-        rationale = product_function_rationale(summary, "관련제품과 특허 핵심 기능 대부분이 SK AX 공식 evidence에서 직접 확인된다.")
-    elif product_level == "direct" and strong_ratio > 0:
-        score = 36
-        reason = "product_direct_and_some_core_functions_matched"
-        rationale = product_function_rationale(summary, "관련제품은 SK AX 공식 evidence에서 직접 확인되며 특허 핵심 기능 일부도 확인된다.")
-    elif product_level in {"direct", "partial"}:
-        score = 24
-        reason = "product_context_matched_but_core_functions_weak"
-        rationale = product_function_rationale(summary, "관련제품 또는 유사 제품/서비스 맥락은 확인되지만 특허 핵심 기능 직접 매칭은 약하다.")
-    elif product_level == "broad" or summary["area_matched"]:
-        score = 12
-        reason = "broad_business_context_only"
-        rationale = product_function_rationale(summary, "같은 산업 또는 사업군 수준의 연결은 있으나 제품명과 핵심 기능의 직접 연결은 확인되지 않는다.")
-    else:
-        score = 0
-        reason = "no_product_or_function_match"
-        rationale = product_function_rationale(summary, "제품/서비스 및 핵심 기능 연결이 확인되지 않는다.")
-    return {
-        "score": score,
-        "max_score": 45,
-        "rationale": rationale,
-        "score_reasons": [reason],
-        **summary,
-    }
-
-
-def build_product_function_match_summary(description: dict[str, Any], items: list[dict[str, Any]]) -> dict[str, Any]:
-    text = " ".join(evidence_text(item) for item in items).lower()
-    related_product = normalize_text(description.get("related_product"))
-    product_match_level = product_match_level_for(related_product, text)
-    core = extract_business_fit_core_terms(description)
-    strong_terms = core["strong_core_terms"]
-    matched_strong = [term for term in strong_terms if term.lower() in text]
-    core_terms = core["core_terms"]
-    matched_core = [term for term in core_terms if term.lower() in text]
-    product_match_evidence = evidence_refs_for_terms(items, [related_product]) if product_match_level == "direct" else []
-    matched_core_evidence = evidence_refs_for_terms(items, matched_strong[:3])
-    area_matched = any(
-        normalize_text(description.get(key)).lower() in text
-        for key in ("business_area", "technology_area")
-        if normalize_text(description.get(key)) and normalize_text(description.get(key)).lower() not in BROAD_TERMS
-    )
-    return {
-        "related_product": related_product,
-        "related_product_matched": product_match_level == "direct",
-        "product_match_level": product_match_level,
-        "core_terms": core_terms,
-        "matched_core_terms": matched_core,
-        "missing_core_terms": [term for term in core_terms if term not in matched_core],
-        "core_match_ratio": ratio(len(matched_core), len(core_terms)),
-        "strong_core_terms": strong_terms,
-        "matched_strong_core_terms": matched_strong,
-        "strong_core_match_ratio": ratio(len(matched_strong), len(strong_terms)),
-        "product_match_evidence": product_match_evidence,
-        "matched_core_evidence": matched_core_evidence,
-        "area_matched": area_matched,
-    }
-
-
-def product_function_rationale(summary: dict[str, Any], base: str) -> str:
-    parts = [base]
-    product = summary.get("related_product")
-    product_refs = summary.get("product_match_evidence") or []
-    if product and product_refs:
-        refs = ", ".join(ref["title"] for ref in product_refs[:2] if ref.get("title"))
-        parts.append(f"관련제품 '{product}'은 공식 evidence({refs})에서 확인된다.")
-    elif product:
-        parts.append(f"관련제품 '{product}'의 직접 언급은 공식 evidence에서 확인되지 않는다.")
-    matched = [term for term in summary.get("matched_strong_core_terms", []) if len(term) <= 40]
-    missing = [term for term in summary.get("missing_core_terms", []) if term not in {product} and len(term) <= 30]
-    if matched:
-        parts.append(f"확인된 핵심 기능/용어는 {', '.join(matched[:4])}이다.")
-    if missing:
-        parts.append(f"직접 확인되지 않은 핵심 기능/용어는 {', '.join(missing[:4])}이다.")
-    return " ".join(parts)
-
-
-def evidence_refs_for_terms(items: list[dict[str, Any]], terms: list[str]) -> list[dict[str, str]]:
-    refs: list[dict[str, str]] = []
-    for term in terms:
-        if not term:
-            continue
-        lowered = term.lower()
-        for item in items:
-            if lowered not in evidence_text(item).lower():
-                continue
-            ref = {
-                "evidence_id": normalize_text(item.get("evidence_id")),
-                "title": normalize_text(item.get("title")) or normalize_text(item.get("url")),
-                "url": normalize_text(item.get("url")),
-                "matched_term": term,
-            }
-            if ref not in refs:
-                refs.append(ref)
-            break
-    return refs[:5]
-
-
-def extract_business_fit_core_terms(description: dict[str, Any]) -> dict[str, Any]:
-    related_product = normalize_text(description.get("related_product"))
-    raw_terms = [
-        related_product,
-        *(description.get("key_points") or []),
-        *(description.get("key_terms") or []),
-        *title_keyword_terms(first_text(description.get("title_final"), description.get("title"), description.get("title_draft")), limit=8),
-        *title_keyword_terms(description.get("solution_or_core_technology"), limit=4),
-        *title_keyword_terms(description.get("use_case_or_application"), limit=4),
-    ]
-    core_terms = []
-    weak_terms = []
-    for value in raw_terms:
-        text = normalize_core_term(value)
-        if not text or text in core_terms or text in STOPWORDS:
-            continue
-        if text.lower() in BROAD_TERMS or text in WEAK_TERMS:
-            weak_terms.append(text)
-            continue
-        core_terms.append(text)
-        if len(core_terms) >= 8:
-            break
-    return {
-        "core_terms": core_terms[:8],
-        "strong_core_terms": [term for term in core_terms if term != related_product][:6],
-        "weak_terms": unique_texts(weak_terms)[:6],
-    }
-
-
-def product_match_level_for(related_product: str, evidence_text_value: str) -> str:
-    if not related_product:
-        return "none"
-    product = related_product.lower()
-    if product in evidence_text_value:
-        return "direct"
-    tokens = [token.lower() for token in title_keyword_terms(related_product, limit=4) if token not in STOPWORDS]
-    matched = [token for token in tokens if token in evidence_text_value and token.lower() not in BROAD_TERMS]
-    if matched:
-        return "partial"
-    return "none"
-
-
 def is_broad_or_weak_official_evidence(item: dict[str, Any]) -> bool:
     return is_insight_or_trend_page(item) or not is_concrete_business_page(item)
 
 
-def ratio(numerator: int, denominator: int) -> float:
-    return round(numerator / denominator, 3) if denominator else 0.0
-
-
-def normalize_core_term(value: Any) -> str:
-    text = strip_korean_particle(normalize_text(value).strip("()[]{}.,;:·"))
-    return "" if text in STOPWORDS else text
-
-
 def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> list[dict[str, Any]]:
+    # 사업연계성 근거 tier:
+    #  1) SK AX 공식 사이트 콘텐츠, 2) SK 계열 매체, 3) 압축 단계에서 SK AX 사업/
+    #     제품과 직접 관련 있다고 판단된(sk_ax_relevant=True) 뉴스 등 보조 근거.
+    # sk_ax_relevant 뉴스는 시장성 축에도 그대로 쓰이며, 여기서는 보조 tier로만 더한다.
     keywords = business_fit_keywords(state)
     official_matches = []
     owned_media_matches = []
-    sk_mentioned_matches = []
-    secondary_matches = []
+    sk_ax_relevant_matches = []
     for item in items:
         if is_sk_ax_official_evidence(item):
             official_matches.append(item)
@@ -478,18 +458,21 @@ def select_evidence(items: list[dict[str, Any]], state: PatentWorkflowState) -> 
         if is_sk_owned_media_evidence(item):
             owned_media_matches.append(item)
             continue
-        source_type = item.get("source_type")
-        if source_type in {"company_disclosure", "news"} and has_sk_ax_or_cnc_mention(item):
-            sk_mentioned_matches.append(item)
-            continue
-        if source_type in {"company_disclosure", "portfolio_context"}:
-            secondary_matches.append(item)
+        if item.get("sk_ax_relevant") is True:
+            sk_ax_relevant_matches.append(item)
     return [
         *sort_official_evidence(official_matches, keywords),
         *sort_official_evidence(owned_media_matches, keywords),
-        *sort_official_evidence(sk_mentioned_matches, keywords),
-        *sort_official_evidence(secondary_matches, keywords),
+        *sort_official_evidence(sk_ax_relevant_matches, keywords),
     ][:5]
+
+
+def is_sk_ax_relevant_supporting_evidence(item: dict[str, Any]) -> bool:
+    return (
+        item.get("sk_ax_relevant") is True
+        and not is_sk_ax_official_evidence(item)
+        and not is_sk_owned_media_evidence(item)
+    )
 
 
 def business_fit_keywords(state: PatentWorkflowState) -> list[str]:
@@ -548,23 +531,6 @@ def is_sk_owned_media_evidence(item: dict[str, Any]) -> bool:
     return any(normalize_text(value) == "sk_group_owned_media" for value in values) or any(
         normalize_text(value) in {"skcareersjournal.com", "openapi.sk.com", "sk_related_owned_media"}
         for value in values
-    )
-
-
-def has_sk_ax_or_cnc_mention(item: dict[str, Any]) -> bool:
-    text = evidence_text(item).lower()
-    return any(
-        marker in text
-        for marker in (
-            "sk ax",
-            "sk c&c",
-            "sk㈜ ax",
-            "sk㈜ c&c",
-            "sk(주) ax",
-            "sk(주) c&c",
-            "sk주식회사 ax",
-            "sk주식회사 c&c",
-        )
     )
 
 
@@ -669,13 +635,10 @@ def title_keyword_terms(title: Any, *, limit: int = 4) -> list[str]:
         if len(terms) >= limit:
             return terms
 
-    stopwords = {
-        *STOPWORDS,
-        "상품",
-    }
+    extra_stopwords = {"상품"}
     for token in normalized_title.replace("/", " ").replace("-", " ").split():
         text = strip_korean_particle(token.strip("()[]{}.,;:·"))
-        if text in stopwords:
+        if is_stopword(text) or text in extra_stopwords:
             continue
         if len(text) >= 2 and text not in terms:
             terms.append(text)

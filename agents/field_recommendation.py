@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from typing import Any
 
 from app.config import settings
@@ -10,7 +11,24 @@ from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 
 
+# VAL-12: load_taxonomy가 호출마다 patents 풀스캔하던 것을 짧은 TTL 캐시로 줄인다
+# (taxonomy는 관리자 관리라 변경 빈도가 낮아 수 분 캐시가 안전).
+_TAXONOMY_CACHE_TTL_SECONDS = 300.0
+_taxonomy_cache: dict[str, Any] = {"value": None, "expires_at": 0.0}
+
+
 def load_taxonomy() -> dict[str, list[str]]:
+    now = time.monotonic()
+    cached = _taxonomy_cache["value"]
+    if cached is not None and now < _taxonomy_cache["expires_at"]:
+        return cached
+    result = _load_taxonomy_uncached()
+    _taxonomy_cache["value"] = result
+    _taxonomy_cache["expires_at"] = now + _TAXONOMY_CACHE_TTL_SECONDS
+    return result
+
+
+def _load_taxonomy_uncached() -> dict[str, list[str]]:
     excluded = ("", "기타", "etc", "ETC", "기타/미정")
     placeholders = ",".join("?" * len(excluded))
     query = f"""
@@ -39,6 +57,28 @@ def load_taxonomy() -> dict[str, list[str]]:
         return {"businessArea": [], "technologyArea": []}
 
 
+_ABSTRACT_MAX_CHARS = 2000
+
+
+def _resolve_abstract(abstract: str | None, application_number: str | None) -> str:
+    """추천 정확도를 높이기 위한 초록 텍스트를 확보한다.
+
+    제목만으로는 분류 신호가 약하므로(특히 모호한 제목) 특허 초록을 함께 본다.
+    호출 측(BE/워크플로)이 abstract를 직접 넘겨주면 그것을 우선 쓰고, 없을 때만
+    applicationNumber로 KIPRIS 초록을 best-effort 조회한다. KIPRIS는 외부 API이므로
+    '공유 DB 접근은 BE 경유' 원칙과 무관하다. 조회 실패는 제목만으로 폴백.
+    """
+    text = (abstract or "").strip()
+    if not text and application_number:
+        try:
+            from services.patent.kipris_patent_service import fetch_kipris_abstract
+
+            text = (fetch_kipris_abstract(application_number) or "").strip()
+        except Exception:
+            text = ""
+    return text[:_ABSTRACT_MAX_CHARS]
+
+
 def recommend_fields(
     *,
     title: str | None = None,
@@ -46,17 +86,30 @@ def recommend_fields(
     application_number: str | None = None,
     technology_area: str | None = None,
     business_area: str | None = None,
+    abstract: str | None = None,
+    taxonomy: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
-    taxonomy = load_taxonomy()
+    # taxonomy는 BE가 관리자 관리 분류 목록을 넘겨주는 것이 정석(에이전트는 공유 DB에 직접 접근하지 않는다).
+    # 인자로 받지 못한 경우(로컬/단독 실행)에만 DB에서 폴백 적재한다.
+    if taxonomy is None:
+        taxonomy = load_taxonomy()
+    business_taxonomy = list(taxonomy.get("businessArea") or [])
+    technology_taxonomy = list(taxonomy.get("technologyArea") or [])
+
     payload = {
         "patent": {
             "title": title or "",
+            # 제목만으론 분류 신호가 약해 초록을 1순위 근거로 함께 제공한다.
+            "abstract": _resolve_abstract(abstract, application_number),
             "managementNumber": management_number or "",
             "applicationNumber": application_number or "",
             "currentTechnologyArea": technology_area or "",
             "currentBusinessArea": business_area or "",
         },
-        "taxonomy": taxonomy,
+        "taxonomy": {
+            "businessArea": business_taxonomy,
+            "technologyArea": technology_taxonomy,
+        },
     }
     prompt = (
         f"{load_prompt('field_recommendation/field_recommendation.md').strip()}\n\n"
@@ -70,13 +123,33 @@ def recommend_fields(
             reason="LLM 응답 파싱 실패 - 직접 입력해 주세요.",
         )
     confidence = max(0.0, min(1.0, float(parsed.get("confidence") or 0.0)))
-    confidence_text = parsed.get("confidenceText") or confidence_text_for_score(confidence)
+    business = parsed.get("businessArea") or business_area or ""
+    technology = parsed.get("technologyArea") or technology_area or ""
+    reason = parsed.get("reason") or ""
+
+    # 관리자 관리 분류는 controlled value다. taxonomy 목록이 비어있지 않은데 LLM이 목록 밖
+    # 값을 만들어내면 신뢰할 수 없으므로 입력값으로 되돌리고 confidence를 낮춘다.
+    rejected: list[str] = []
+    if business_taxonomy and business and business not in business_taxonomy:
+        rejected.append("관련사업 분야")
+        business = business_area or ""
+    if technology_taxonomy and technology and technology not in technology_taxonomy:
+        rejected.append("관련기술 분야")
+        technology = technology_area or ""
+    if rejected:
+        confidence = min(confidence, 0.3)
+        note = f"(주의: {', '.join(rejected)} 추천이 분류 목록에 없어 제외했습니다.)"
+        reason = f"{reason} {note}".strip()
+
+    # confidenceText는 LLM 값을 신뢰하지 않고 항상 최종 confidence에서 도출해 일관성을 보장한다
+    # (특히 목록 밖 거부로 confidence가 낮아진 경우 LLM이 준 텍스트는 어긋난다).
+    confidence_text = confidence_text_for_score(confidence)
     return {
-        "businessArea": parsed.get("businessArea") or business_area or "",
-        "technologyArea": parsed.get("technologyArea") or technology_area or "",
+        "businessArea": business,
+        "technologyArea": technology,
         "confidence": confidence,
         "confidenceText": confidence_text,
-        "reason": parsed.get("reason") or "",
+        "reason": reason,
     }
 
 

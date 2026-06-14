@@ -5,7 +5,7 @@ info:
   description: 'KIPRISPlus만 사용하는 특허 평가 데이터 수집용 OpenAPI 명세입니다.
 
 
-    평가 기준(권리성, 기술성, 시장성, 라이프사이클 경제성, 사업 연계성) 중 KIPRISPlus에서 수집 가능한 항목을 중심으로 구성했습니다.
+    평가 기준(권리성, 기술성, 시장성, 사업 연계성) 중 KIPRISPlus에서 수집 가능한 항목을 중심으로 구성했습니다.
 
     추후 WIPO, World Bank, 뉴스/공시, 내부문서 등 다른 데이터 소스를 붙일 수 있도록 x-evaluation-usage, x-future-extension,
     EvaluationDataSnapshot 스키마를 포함합니다.
@@ -241,11 +241,6 @@ paths:
         - 패밀리 규모
         - 지정국가
         - 출원인 국가
-        라이프사이클 경제성:
-        - 출원일자
-        - 등록일자
-        - 등록상태
-        - 법적상태
   /kipris/patent-utility/detail/family:
     get:
       tags:
@@ -423,8 +418,6 @@ paths:
       x-evaluation-usage:
         시장성:
         - 경쟁사 활동 여부
-        라이프사이클 경제성:
-        - 권리 유지 상태 후보 확인
   /kipris/patent-utility/admin-history/transfers:
     get:
       tags:
@@ -475,8 +468,6 @@ paths:
         권리성:
         - 리스크 요소
         - 법적 안정성
-        라이프사이클 경제성:
-        - 등록/소멸/포기 등 상태 변화 모니터링
   /kipris/overseas-patent/bibliography/claims:
     get:
       tags:
@@ -1038,10 +1029,6 @@ paths:
         - 패밀리
         - 출원인/국가
         - 경쟁사 검색 결과
-        라이프사이클 경제성:
-        - 출원일
-        - 등록일
-        - 처분/상태
         사업 연계성:
         - KIPRIS만으로는 부족하며 internalBusinessData 또는 externalData로 확장
 components:
@@ -1822,7 +1809,6 @@ components:
           - 권리성
           - 기술성
           - 시장성
-          - 라이프사이클 경제성
           - 사업 연계성
           - 최종 종합 지표
         availableFromKipris:
@@ -1869,12 +1855,6 @@ x-evaluation-design:
     - applicantNameSearchInfo
     - ipcSearchInfo
     - cpcSearchInfo
-    라이프사이클 경제성:
-    - applicationDate
-    - registerDate
-    - registerStatus
-    - finalDisposal
-    - legalStatusInfoArray
     사업 연계성:
     - KIPRIS만으로는 부족. 내부 제품/서비스/로드맵 데이터 필요
   futureExtensionPolicy: 새 API 소스는 paths에 /{source}/...로 추가하고, EvaluationDataSnapshot.externalData에
