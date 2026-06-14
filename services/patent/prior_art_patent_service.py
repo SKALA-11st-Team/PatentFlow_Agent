@@ -9,6 +9,7 @@ from services.evidence.api_normalizers import extract_kipris_items
 from services.patent.kipris_patent_service import (
     _download_pdf_url,
     _foreign_literature_number_candidates,
+    decode_google_patents_html_response,
     download_and_parse_patent_pdf,
     fetch_kipris_bibliography_basic,
     google_patents_pdf_url,
@@ -366,34 +367,24 @@ def download_foreign_prior_art_fulltext(
     country_code = normalize_text(candidate.get("country_code"))
     if not country_code:
         return None, None, None, None, ["country_code_missing"]
+    country = country_code.upper()
 
-    # CN 인용문헌은 Google에서 받은 공개번호만 있는데, KIPRIS 해외 전문은 CN을 출원번호(12자리+A0/B0)로만
-    # 조회한다. 즉 공개번호로는 KIPRIS가 항상 실패하므로, 쿼터 낭비를 막기 위해 KIPRIS 시도를 건너뛰고
-    # 곧장 Google Patents PDF로 간다(공개→출원 변환 비용도 없앤다).
-    skip_kipris_fulltext = country_code.upper() == "CN"
-
-    for literature_number in ([] if skip_kipris_fulltext else _foreign_literature_number_candidates(candidate)):
-        for fulltext_type, method_name in foreign_fulltext_operation_order(candidate):
-            try:
-                raw = getattr(client, method_name)(literature_number, country_code)
-                document = extract_foreign_fulltext_document(raw)
-                path = document.get("path")
-                if not path:
-                    errors.append(f"{literature_number}:{fulltext_type}:path_not_found")
-                    continue
-                pdf_path = download_foreign_fulltext_pdf(
-                    client,
-                    str(path),
-                    output_dir=output_dir,
-                    filename=normalize_text(document.get("doc_name")) or f"{literature_number}_{fulltext_type}.pdf",
-                )
-                parsed = parse_single_patent_pdf(
-                    pdf_path,
-                    output_dir=output_dir / safe_filename(Path(pdf_path).stem),
-                )
-                return parsed, literature_number, fulltext_type, str(pdf_path), errors
-            except Exception as exc:
-                errors.append(f"{literature_number}:{fulltext_type}:{exc.__class__.__name__}:{str(exc)[:180]}")
+    # 선행문헌 전문은 KIPRIS 해외 전문 공개 다운로드(remoteFile.do)에서 직접 받는다. 이 엔드포인트는
+    # ServiceKey/쿼터를 쓰지 않는 공개 파일 URL이고 publ_key가 결정론적이라, 쿼터 쓰는 전문 API 호출을
+    # 생략한다. (US/JP는 공개번호 기반, CN은 Google 페이지에서 출원번호를 받아 publ_key를 만든다.)
+    for publ_key in foreign_fulltext_remote_publ_keys(client, candidate, country):
+        try:
+            pdf_path = download_kipris_remote_fulltext(client, publ_key, country, output_dir=output_dir)
+            if pdf_path is None:
+                errors.append(f"{publ_key}:not_pdf")
+                continue
+            parsed = parse_single_patent_pdf(
+                pdf_path,
+                output_dir=output_dir / safe_filename(Path(pdf_path).stem),
+            )
+            return parsed, publ_key, "kipris_remote_fulltext", str(pdf_path), errors
+        except Exception as exc:
+            errors.append(f"{publ_key}:{exc.__class__.__name__}:{str(exc)[:180]}")
 
     patent = {
         "country": country_code,
@@ -419,6 +410,71 @@ def download_foreign_prior_art_fulltext(
     except Exception as exc:
         errors.append(f"google_patents:{exc.__class__.__name__}:{str(exc)[:180]}")
     return None, None, None, None, errors
+
+
+def foreign_fulltext_remote_publ_keys(client: Any, candidate: dict[str, Any], country: str) -> list[str]:
+    """remoteFile.do용 publ_key 후보를 만든다(국가 + 12자리 번호 + A0/B0).
+
+    US/JP는 공개번호 기반 문헌번호를 그대로 쓴다. CN은 remoteFile.do가 출원번호로만 조회되므로
+    인용문헌의 Google 페이지에서 출원번호를 받아 CN{출원12자리}A0/B0를 만든다.
+    """
+    if country == "CN":
+        application_number = resolve_cn_application_number(client, candidate)
+        if not application_number:
+            return []
+        return [f"CN{application_number}A0", f"CN{application_number}B0"]
+    return [f"{country}{literature_number}" for literature_number in _foreign_literature_number_candidates(candidate)]
+
+
+def resolve_cn_application_number(client: Any, candidate: dict[str, Any]) -> str | None:
+    """CN 인용문헌의 Google Patents 페이지에서 출원번호(12자리)를 추출한다(KIPRIS 쿼터 미사용)."""
+    publication_id = google_patents_publication_id(
+        {
+            "country": "CN",
+            "registration_number": candidate.get("display_number")
+            or candidate.get("publication_number")
+            or candidate.get("original_number"),
+        }
+    )
+    if not publication_id:
+        return None
+    try:
+        response = client.session.get(
+            f"https://patents.google.com/patent/{publication_id}/en",
+            timeout=getattr(client, "timeout", 20.0),
+        )
+        response.raise_for_status()
+        html = decode_google_patents_html_response(response)
+    except Exception:
+        return None
+    match = re.search(r'itemprop=["\']applicationNumber["\'][^>]*>([^<]+)<', html)
+    if not match:
+        return None
+    digits = re.sub(r"\D+", "", match.group(1))
+    # CN 출원번호는 12자리(+검증숫자 1자리). 앞 12자리만 KIPRIS publ_key에 쓴다.
+    return digits[:12] if len(digits) >= 12 else None
+
+
+def download_kipris_remote_fulltext(client: Any, publ_key: str, country: str, *, output_dir: Path) -> Path | None:
+    """KIPRIS 해외 전문 공개 다운로드(remoteFile.do)에서 PDF를 받는다.
+
+    ServiceKey/쿼터를 쓰지 않는다. 응답이 PDF가 아니면(구형 CN의 ZIP·HTML 에러 등) None을 반환해
+    호출부가 다음 후보나 Google 폴백으로 넘어가게 한다.
+    """
+    url = f"http://www.kipris.or.kr/abpat/remoteFile.do?method=fullText&publ_key={publ_key}&cntry={country}"
+    from services.evidence.news_article_extraction_service import validate_article_url
+
+    block_reason = validate_article_url(url)
+    if block_reason:
+        raise RuntimeError(f"document_url_blocked:{block_reason}")
+    response = client.session.get(url, timeout=getattr(client, "timeout", None))
+    response.raise_for_status()
+    if not response.content[:5].startswith(b"%PDF"):
+        return None
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / safe_filename(f"{publ_key}.pdf")
+    path.write_bytes(response.content)
+    return path
 
 
 def foreign_fulltext_operation_order(candidate: dict[str, Any]) -> list[tuple[str, str]]:

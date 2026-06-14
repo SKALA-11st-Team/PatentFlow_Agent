@@ -174,34 +174,12 @@ def test_build_prior_art_context_attempt_cap_when_fulltext_scarce(monkeypatch):
     assert len(attempts) == 8
 
 
-def test_resolve_foreign_prior_art_collects_registration_fulltext(monkeypatch, tmp_path):
+def test_resolve_foreign_prior_art_collects_remote_fulltext_without_api(monkeypatch, tmp_path):
+    # JP/US 인용 전문은 KIPRIS 전문 API(쿼터) 없이 remoteFile.do 공개 다운로드로 직접 받는다.
     class Client:
         def __init__(self):
-            self.session = Session()
+            self.session = Session()  # 모든 GET에 %PDF 응답
             self.timeout = 30.0
-            self.registration_calls = []
-            self.open_calls = []
-
-        def overseas_registration_fulltext(self, literature_number, country_code):
-            self.registration_calls.append((literature_number, country_code))
-            if literature_number == "000004002589B2":
-                return {
-                    "response": {
-                        "body": {
-                            "items": {
-                                "registrationFullTextInfo": {
-                                    "docName": "jp_registration.pdf",
-                                    "path": "https://example.com/jp_registration.pdf",
-                                }
-                            }
-                        }
-                    }
-                }
-            return {"response": {"body": {"items": {}}}}
-
-        def overseas_open_fulltext(self, literature_number, country_code):
-            self.open_calls.append((literature_number, country_code))
-            return {"response": {"body": {"items": {}}}}
 
     client = Client()
     monkeypatch.setattr("services.patent.prior_art_patent_service.KiprisClient", lambda: client)
@@ -229,27 +207,39 @@ def test_resolve_foreign_prior_art_collects_registration_fulltext(monkeypatch, t
     )
 
     assert result["country_code"] == "JP"
-    assert result["literature_number"] == "000004002589B2"
-    assert result["foreign_fulltext_type"] == "registration"
+    assert result["literature_number"] == "JP000004002589B2"
+    assert result["foreign_fulltext_type"] == "kipris_remote_fulltext"
     assert result["pdf_collected"] is True
-    assert result["pdf_path"].endswith("jp_registration.pdf")
     assert result["pdf_text"] == "JP registration full text with claims and detailed description"
-    assert client.registration_calls[0] == ("000004002589B2", "JP")
-    assert client.open_calls == []
-    assert client.session.calls[0]["url"] == "https://example.com/jp_registration.pdf"
+    # 쿼터 미사용 remoteFile.do 공개 URL로 받았는지 확인(전문 API 호출 없음).
+    first_url = client.session.calls[0]["url"]
+    assert "remoteFile.do" in first_url
+    assert "publ_key=JP000004002589B2" in first_url
 
 
 def test_resolve_foreign_prior_art_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
+    # remoteFile.do가 PDF가 아닌 응답(구형 CN의 ZIP·HTML 등)을 주면 Google Patents PDF로 폴백한다.
+    class RoutedResponse:
+        def __init__(self, content):
+            self.content = content
+
+        def raise_for_status(self):
+            return None
+
+    class RoutedSession:
+        def __init__(self):
+            self.calls = []
+
+        def get(self, url, timeout=None):
+            self.calls.append({"url": url, "timeout": timeout})
+            # remoteFile.do(KIPRIS 공개 전문)는 PDF가 아닌 응답 → 폴백 유도. 그 외(Google)는 PDF.
+            content = b"<html>not pdf</html>" if "remoteFile.do" in url else b"%PDF-google"
+            return RoutedResponse(content)
+
     class Client:
         def __init__(self):
-            self.session = Session()
+            self.session = RoutedSession()
             self.timeout = 30.0
-
-        def overseas_registration_fulltext(self, literature_number, country_code):
-            return {"response": {"body": {"items": {}}}}
-
-        def overseas_open_fulltext(self, literature_number, country_code):
-            return {"response": {"body": {"items": {}}}}
 
     monkeypatch.setattr("services.patent.prior_art_patent_service.KiprisClient", Client)
     monkeypatch.setattr(
