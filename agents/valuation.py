@@ -348,8 +348,8 @@ def build_final_valuation_result(
     for axis_result in validated_axes.values():
         axis_result["grade"] = grade_for_score(int(axis_result.get("score") or 0), cutoffs)
     # 종합 점수는 권리성·기술성·시장성 3축의 평균으로만 산정한다.
-    # 사업 연계성(business_fit)은 합산에 넣지 않고, 일정 점수 이상이면 종합 지표를
-    # 무조건 "유지"로 끌어올리는 오버라이드로만 작용한다.
+    # 사업 연계성(business_fit)은 합산에 넣지 않고, 일정 점수 이상이면 AI 권고를
+    # 무조건 "유지 권고"로 끌어올리는 오버라이드로만 작용한다.
     core_axes = {name: validated_axes[name] for name in CORE_VALUATION_AXES if name in validated_axes}
     total_score = sum(int(axis.get("score") or 0) for axis in core_axes.values())
     # total_score는 3축 단순 합(0~300)을 유지하고, 운영 설정 가중치는 average_score에만 반영한다.
@@ -359,10 +359,6 @@ def build_final_valuation_result(
     business_fit = validated_axes.get("business_fit") or {}
     business_fit_score = int(business_fit.get("score") or 0)
     business_fit_override = business_fit_score >= BUSINESS_FIT_OVERRIDE_SCORE
-
-    final_indicator = average_score_to_indicator(average_score)
-    if business_fit_override:
-        final_indicator = "유지"
 
     missing_information = unique_texts(
         item for axis in validated_axes.values() for item in axis.get("missing_information", [])
@@ -392,14 +388,13 @@ def build_final_valuation_result(
         "business_fit_score": business_fit_score,
         "business_fit_override": business_fit_override,
         "final_grade": final_grade,
-        "final_indicator": final_indicator,
         "recommendation": recommendation,
         "decision_rationale": build_decision_rationale(
             core_axes,
             total_score,
             average_score,
             final_grade,
-            final_indicator,
+            recommendation,
             business_fit_override=business_fit_override,
             business_fit_score=business_fit_score,
             config=applied_config,
@@ -448,16 +443,6 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
-def average_score_to_indicator(average_score: float) -> str:
-    if average_score >= 80:
-        return "유지"
-    if average_score >= 60:
-        return "조건부 유지"
-    if average_score >= 40:
-        return "포기 검토"
-    return "매각 후보"
-
-
 def score_to_final_recommendation(average_score: float, *, threshold: float = 60) -> str:
     if average_score >= threshold:
         return "유지 권고"
@@ -469,7 +454,7 @@ def build_decision_rationale(
     total_score: int,
     average_score: float,
     final_grade: str,
-    final_indicator: str,
+    recommendation: str,
     *,
     business_fit_override: bool = False,
     business_fit_score: int = 0,
@@ -486,12 +471,12 @@ def build_decision_rationale(
         score_line = (
             f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
             f"가중 평균 점수는 {average_score:g}/100점(가중치 {weight_text}), 종합 등급은 {final_grade}, "
-            f"최종 종합 지표는 {final_indicator}이다."
+            f"AI 권고는 {recommendation}이다."
         )
     else:
         score_line = (
             f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
-            f"평균 점수는 {average_score:g}/100점이며 최종 종합 지표는 {final_indicator}이다."
+            f"평균 점수는 {average_score:g}/100점이며 AI 권고는 {recommendation}이다."
         )
     rationale = [
         score_line,
@@ -501,7 +486,7 @@ def build_decision_rationale(
     if business_fit_override:
         rationale.append(
             f"사업 연계성 점수가 {business_fit_score}점으로 기준({BUSINESS_FIT_OVERRIDE_SCORE}점) 이상이어서, "
-            f"3축 점수와 무관하게 종합 지표를 유지로 판정했다."
+            f"3축 점수와 무관하게 권고를 유지 권고로 판정했다."
         )
     return rationale
 

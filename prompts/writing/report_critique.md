@@ -4,7 +4,7 @@
 이 체크는 점수-서술 일관성만 봅니다. 보고서 구조·필수 섹션·점수 표기 검증은 별도의 결정적 검증(report_validation)이 담당합니다.
 
 ## 입력
-- valuation_result (axes: 축별 점수/등급/근거, total_score, average_score, recommendation, final_indicator)
+- valuation_result (axes: 축별 점수/등급/근거, total_score, average_score, recommendation)
 - report_markdown (최종 보고서 Markdown 전문)
 
 ## 검증 기준

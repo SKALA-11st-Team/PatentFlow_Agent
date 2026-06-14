@@ -96,7 +96,6 @@ valuationReportMarkdown
 totalScore
 averageScore
 finalGrade
-finalIndicator
 degraded
 failureReason
 warnings

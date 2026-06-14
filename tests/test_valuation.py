@@ -221,7 +221,6 @@ def test_final_valuation_result_validates_schema_and_uses_domain_recommendation_
     assert result["total_score_max"] == 300
     assert result["average_score"] == 70.0
     assert result["final_grade"] == "B"
-    assert result["final_indicator"] == "유지"
     assert result["business_fit_override"] is True
     assert result["recommendation"] == "유지 권고"
     assert "technology_comparison_empty" in result["warnings"]
@@ -2082,7 +2081,6 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
         "total_score": 280,
         "average_score": 70,
         "recommendation": "유지 권고",
-        "final_indicator": "조건부 유지",
         "final_report_markdown": "# 기존 보고서",
         "axes": {
             "legal": {
@@ -2210,7 +2208,6 @@ def test_final_report_input_payload_ignores_structured_drawing_context(tmp_path)
     valuation_result = {
         "total_score": 300,
         "average_score": 75,
-        "final_indicator": "조건부 유지",
         "axes": {},
     }
 

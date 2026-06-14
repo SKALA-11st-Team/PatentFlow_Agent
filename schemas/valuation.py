@@ -6,9 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 ValuationAxis = Literal["legal", "technology", "market", "business_fit"]
 VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market", "business_fit")
 # 종합 점수(total_score/average_score)는 권리성·기술성·시장성 3축으로만 산정한다.
-# 사업 연계성(business_fit)은 합산 대신 종합 지표 오버라이드로만 작용한다.
+# 사업 연계성(business_fit)은 합산 대신 AI 권고(recommendation) 오버라이드로만 작용한다.
 CORE_VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market")
-FinalIndicator = Literal["유지", "조건부 유지", "포기 검토", "매각 후보"]
 FinalRecommendation = Literal["유지 권고", "포기 검토", "추가 정보 필요"]
 FinalGrade = Literal["A", "B", "C", "D"]
 
@@ -154,7 +153,6 @@ class ValuationResult(BaseModel):
     total_score: int = Field(ge=0, le=300)
     average_score: float = Field(ge=0, le=100)
     final_grade: FinalGrade
-    final_indicator: FinalIndicator
     recommendation: FinalRecommendation
     decision_rationale: list[str] = Field(default_factory=list)
     missing_information: list[str] = Field(default_factory=list)
