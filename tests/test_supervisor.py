@@ -802,7 +802,7 @@ def test_final_supervisor_prompt_includes_report_body_for_content_check():
         valuation_result={
             "axes": {axis: {"score": 70, "grade": "B"} for axis in ["legal", "technology", "market", "business_fit"]},
             "total_score": 70,
-            "recommendation": "추가 정보 필요",
+            "recommendation": "유지 권고",
             "final_report_markdown": "# 가치평가 리포트\n\n## 시장성\n\nREPORT_BODY_TEXT",
         },
         validation_result={"passed": True, "issues": []},

@@ -27,7 +27,7 @@ AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
 # 종합 점수는 권리성·기술성·시장성 3축만 평균낸다(사업 연계성 제외).
 CORE_VALUATION_AXES = ("legal", "technology", "market")
 CORE_VALUATION_TOTAL_MAX = len(CORE_VALUATION_AXES) * 100
-# 사업 연계성 점수가 이 값 이상이면 3축 점수와 무관하게 종합 지표를 "유지"로 본다.
+# 사업 연계성 점수가 이 값 이상이면 3축 점수와 무관하게 AI 권고 라벨을 "유지 권고"로 본다.
 BUSINESS_FIT_OVERRIDE_SCORE = 60
 
 
@@ -349,8 +349,8 @@ def build_final_valuation_result(
     for axis_result in validated_axes.values():
         axis_result["grade"] = grade_for_score(int(axis_result.get("score") or 0), cutoffs)
     # 종합 점수는 권리성·기술성·시장성 3축의 평균으로만 산정한다.
-    # 사업 연계성(business_fit)은 합산에 넣지 않고, 일정 점수 이상이면 종합 지표를
-    # 무조건 "유지"로 끌어올리는 오버라이드로만 작용한다.
+    # 사업 연계성(business_fit)은 합산에 넣지 않고, 일정 점수 이상이면 AI 권고 라벨을
+    # 무조건 "유지 권고"로 끌어올리는 오버라이드로만 작용한다.
     core_axes = {name: validated_axes[name] for name in CORE_VALUATION_AXES if name in validated_axes}
     total_score = sum(int(axis.get("score") or 0) for axis in core_axes.values())
     # total_score는 3축 단순 합(0~300)을 유지하고, 운영 설정 가중치는 average_score에만 반영한다.
@@ -361,19 +361,16 @@ def build_final_valuation_result(
     business_fit_score = int(business_fit.get("score") or 0)
     business_fit_override = business_fit_score >= BUSINESS_FIT_OVERRIDE_SCORE
 
-    final_indicator = average_score_to_indicator(average_score)
-    if business_fit_override:
-        final_indicator = "유지"
-
     missing_information = unique_texts(
         item for axis in validated_axes.values() for item in axis.get("missing_information", [])
     )
+    # 부족 정보(missing_information)는 거의 모든 특허에 늘 존재하는 보완 자료라, AI 검토 의견을 강등하는
+    # 트리거로 쓰지 않는다. 대신 담당 팀별 확인사항으로 분류해 보고서 하단에 체크리스트로 제공한다.
+    review_checklist = build_review_checklist(validated_axes)
     warnings = valuation_warnings(validated_axes)
     required_actions = []
     if business_fit.get("missing_information"):
         required_actions.append("사업부 적용 여부 및 향후 적용 계획 확인")
-    if missing_information:
-        required_actions.append("부족 정보 보완 후 최종 판단 재검토")
     # `or 60`은 유효 설정값 0(항상 유지 권고)을 기본값 60으로 되돌리는 버그라 None 체크로 처리한다.
     configured_threshold = applied_config.get("maintainThreshold")
     recommendation = score_to_final_recommendation(
@@ -382,8 +379,6 @@ def build_final_valuation_result(
     )
     if business_fit_override:
         recommendation = "유지 권고"
-    if missing_information and recommendation == "유지 권고":
-        recommendation = "추가 정보 필요"
     result = {
         "axes": validated_axes,
         "total_score": total_score,
@@ -393,20 +388,20 @@ def build_final_valuation_result(
         "business_fit_score": business_fit_score,
         "business_fit_override": business_fit_override,
         "final_grade": final_grade,
-        "final_indicator": final_indicator,
         "recommendation": recommendation,
         "decision_rationale": build_decision_rationale(
             core_axes,
             total_score,
             average_score,
             final_grade,
-            final_indicator,
+            recommendation,
             business_fit_override=business_fit_override,
             business_fit_score=business_fit_score,
             config=applied_config,
         ),
         "required_actions": unique_texts(required_actions),
         "missing_information": missing_information,
+        "review_checklist": review_checklist,
         "warnings": warnings,
         "applied_config": applied_config,
     }
@@ -449,20 +444,32 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
-def average_score_to_indicator(average_score: float) -> str:
-    if average_score >= 80:
-        return "유지"
-    if average_score >= 60:
-        return "조건부 유지"
-    if average_score >= 40:
-        return "포기 검토"
-    return "매각 후보"
-
-
 def score_to_final_recommendation(average_score: float, *, threshold: float = 60) -> str:
     if average_score >= threshold:
         return "유지 권고"
     return "포기 검토"
+
+
+# 부족 정보(missing_information)를 담당 팀별 확인사항으로 분류한다.
+# 권리성·기술성은 권리/선행기술 검토라 법무·특허팀, 시장성·사업연계성은 사업부서 몫으로 본다.
+REVIEW_TEAM_BY_AXIS = {
+    "legal": "법무·특허팀 확인사항",
+    "technology": "법무·특허팀 확인사항",
+    "market": "사업부서 확인사항",
+    "business_fit": "사업부서 확인사항",
+}
+REVIEW_TEAMS = ("사업부서 확인사항", "법무·특허팀 확인사항")
+
+
+def build_review_checklist(validated_axes: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    buckets: dict[str, list[str]] = {team: [] for team in REVIEW_TEAMS}
+    for axis_name, axis_result in validated_axes.items():
+        team = REVIEW_TEAM_BY_AXIS.get(axis_name, "사업부서 확인사항")
+        for item in axis_result.get("missing_information") or []:
+            text = str(item or "").strip()
+            if text:
+                buckets[team].append(text)
+    return {team: unique_texts(items) for team, items in buckets.items() if items}
 
 
 def build_decision_rationale(
@@ -470,7 +477,7 @@ def build_decision_rationale(
     total_score: int,
     average_score: float,
     final_grade: str,
-    final_indicator: str,
+    recommendation: str,
     *,
     business_fit_override: bool = False,
     business_fit_score: int = 0,
@@ -487,12 +494,12 @@ def build_decision_rationale(
         score_line = (
             f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
             f"가중 평균 점수는 {average_score:g}/100점(가중치 {weight_text}), 종합 등급은 {final_grade}, "
-            f"최종 종합 지표는 {final_indicator}이다."
+            f"AI 검토 의견은 {recommendation}이다."
         )
     else:
         score_line = (
             f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
-            f"평균 점수는 {average_score:g}/100점이며 최종 종합 지표는 {final_indicator}이다."
+            f"평균 점수는 {average_score:g}/100점, 종합 등급은 {final_grade}이며 AI 검토 의견은 {recommendation}이다."
         )
     rationale = [
         score_line,
@@ -502,7 +509,7 @@ def build_decision_rationale(
     if business_fit_override:
         rationale.append(
             f"사업 연계성 점수가 {business_fit_score}점으로 기준({BUSINESS_FIT_OVERRIDE_SCORE}점) 이상이어서, "
-            f"3축 점수와 무관하게 종합 지표를 유지로 판정했다."
+            f"3축 점수와 무관하게 AI 검토 의견을 유지 권고로 보정했다."
         )
     return rationale
 

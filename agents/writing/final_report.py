@@ -165,10 +165,10 @@ def compact_final_report_valuation_result(valuation_result: dict[str, Any]) -> d
             "total_score",
             "average_score",
             "recommendation",
-            "final_indicator",
             "decision_rationale",
             "required_actions",
             "missing_information",
+            "review_checklist",
         )
         if key in valuation_result
     } | {

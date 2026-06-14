@@ -53,30 +53,31 @@ def test_score_to_final_recommendation_60_cutoff(average, expected):
 
 
 # 종합 점수는 권리성·기술성·시장성 3축 합산(0~300)·평균이며, 사업 연계성(≥60)은
-# 종합 지표를 "유지"로 끌어올리는 오버라이드로만 작용한다.
+# AI 권고 라벨을 "유지 권고"로 끌어올리는 오버라이드로만 작용한다.
 @pytest.mark.parametrize(
-    "scores,total,avg,grade,indicator,recommendation",
+    "scores,total,avg,grade,recommendation",
     [
-        ((90, 90, 90, 90), 270, 90.0, "A", "유지", "유지 권고"),
-        ((50, 50, 50, 50), 150, 50.0, "C", "포기 검토", "포기 검토"),
-        # 평균 70은 본래 "조건부 유지"지만 business_fit 70(≥60) 오버라이드로 "유지".
-        ((70, 75, 65, 70), 210, 70.0, "B", "유지", "유지 권고"),
+        ((90, 90, 90, 90), 270, 90.0, "A", "유지 권고"),
+        ((50, 50, 50, 50), 150, 50.0, "C", "포기 검토"),
+        ((70, 75, 65, 70), 210, 70.0, "B", "유지 권고"),
     ],
 )
-def test_build_final_valuation_result_golden_table(scores, total, avg, grade, indicator, recommendation):
+def test_build_final_valuation_result_golden_table(scores, total, avg, grade, recommendation):
     result = build_final_valuation_result(_axes(*scores))
     assert result["total_score"] == total
     assert result["total_score_max"] == 300
     assert result["average_score"] == avg
     assert result["final_grade"] == grade
-    assert result["final_indicator"] == indicator
+    assert "final_indicator" not in result
     assert result["recommendation"] == recommendation
 
 
-def test_missing_information_overrides_recommendation_to_additional_info():
-    # 평균 70(원래 '유지 권고')이라도 한 축에 missing_information이 있으면 recommendation을 '추가 정보 필요'로 오버라이드.
+def test_missing_information_does_not_downgrade_recommendation():
+    # 부족 정보(missing_information)는 AI 검토 의견을 강등하지 않는다(점수 기반 그대로).
+    # 대신 담당 팀별 확인사항(review_checklist)으로 분류돼 보고서 하단 체크리스트로 제공된다.
     result = build_final_valuation_result(_axes(70, 70, 70, 70, market_missing=["시장 규모 자료"]))
     assert result["average_score"] == 70.0
-    assert result["recommendation"] == "추가 정보 필요"
+    assert result["recommendation"] == "유지 권고"
     assert "시장 규모 자료" in result["missing_information"]
-    assert "부족 정보 보완 후 최종 판단 재검토" in result["required_actions"]
+    # 시장성 부족 정보는 사업부서 확인사항으로 분류된다.
+    assert "시장 규모 자료" in result["review_checklist"]["사업부서 확인사항"]

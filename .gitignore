@@ -39,8 +39,11 @@ data/outputs/
 
 # Downloaded or generated local data
 data/patent_pdf/
+data/patents.sqlite3
 data/vector_db/*.sqlite3
 data/vector_db/*.db
+data/vector_db/*.jsonl
+data/industry_reports/
 
 # Logs
 *.log

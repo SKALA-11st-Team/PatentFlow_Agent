@@ -231,7 +231,6 @@ full_claims = valuation_claims(state) if axis == "legal" else []
 
 - `total_score`: 4개 축 합산 점수
 - `average_score`: 평균 점수
-- `final_indicator`: 유지 / 조건부 유지 / 포기 검토 등
 - `recommendation`: AI 권고 라벨
 
 최종 Markdown 보고서는 `agents/writing/final_report.py`가 `prompts/writing/final_report.md`를 사용해 생성하고, 기존 API/저장 로직과 호환되도록 `valuation_result["final_report_markdown"]`에 추가합니다.

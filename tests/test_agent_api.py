@@ -80,7 +80,6 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
             "recommendation": "유지 권고",
             "total_score": 280,
             "average_score": 70.0,
-            "final_indicator": "조건부 유지",
             "axes": {
                 "legal": {"label": "권리성", "score": 70, "grade": "B", "rationale": "권리성 근거"},
                 "technology": {"label": "기술성", "score": 75, "grade": "B", "rationale": "기술성 근거"},
@@ -115,7 +114,7 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     assert body["totalScore"] == 280
     assert body["averageScore"] == 70.0
     assert body["finalGrade"] == "B"
-    assert body["finalIndicator"] == "조건부 유지"
+    assert body["finalIndicator"] is None
     assert body["summaryMarkdown"].startswith("# 요약")
     assert body["valuationReportMarkdown"].startswith("# 특허 가치판단 종합 보고서")
     assert "rawMarkdown" not in body
@@ -324,7 +323,6 @@ def test_evaluate_patent_passes_through_rich_evidence(monkeypatch):
             "total_score": 300,
             "average_score": 75.0,
             "final_grade": "B",
-            "final_indicator": "유지 권고",
             "axes": {
                 "legal": {"label": "권리성", "score": 72, "grade": "B", "rationale": "권리성 근거",
                           "evidence_ids": []},
