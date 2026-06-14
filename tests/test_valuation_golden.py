@@ -46,9 +46,17 @@ def test_grade_for_score_boundary_cutoffs(score, grade):
 
 @pytest.mark.parametrize(
     "average,expected",
-    [(59.9, "포기 검토"), (60.0, "유지 권고"), (60.1, "유지 권고"), (0.0, "포기 검토"), (100.0, "유지 권고")],
+    [
+        (49.9, "포기 검토"),
+        (50.0, "조건부 유지"),
+        (69.9, "조건부 유지"),
+        (70.0, "유지 권고"),
+        (0.0, "포기 검토"),
+        (100.0, "유지 권고"),
+    ],
 )
-def test_score_to_final_recommendation_60_cutoff(average, expected):
+def test_score_to_final_recommendation_70_50_cutoff(average, expected):
+    # AI 검토 의견 컷오프: 평균점 ≥70 유지 권고, 50~69 조건부 유지, <50 포기 검토.
     assert score_to_final_recommendation(average) == expected
 
 
@@ -58,7 +66,7 @@ def test_score_to_final_recommendation_60_cutoff(average, expected):
     "scores,total,avg,grade,recommendation",
     [
         ((90, 90, 90, 90), 270, 90.0, "A", "유지 권고"),
-        ((50, 50, 50, 50), 150, 50.0, "C", "포기 검토"),
+        ((50, 50, 50, 50), 150, 50.0, "C", "조건부 유지"),
         ((70, 75, 65, 70), 210, 70.0, "B", "유지 권고"),
     ],
 )
