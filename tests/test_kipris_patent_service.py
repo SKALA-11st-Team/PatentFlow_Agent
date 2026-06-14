@@ -23,6 +23,8 @@ from services.patent.kipris_patent_service import (
     foreign_reference_candidate_from_text,
     resolve_foreign_prior_art_evidence,
     resolve_citation_evidence,
+    build_citing_stats,
+    fetch_foreign_target_reference_data,
     _fetch_foreign_claims,
     has_meaningful_pdf_text,
     parse_single_patent_pdf,
@@ -1606,6 +1608,128 @@ def test_fetch_kipris_bibliography_adds_citation_documents(monkeypatch):
     assert result["citation_stats"]["standardized_count"] == 1
     assert result["citing_documents"][0]["citing_application_number"] == "1020117007865"
     assert result["citing_stats"]["standardized_count"] == 1
+    assert result["citing_stats"]["available"] is True
+
+
+def test_build_citing_stats_marks_available():
+    stats = build_citing_stats([{"is_standardized": True}, {"is_standardized": False}])
+
+    assert stats["available"] is True
+    assert stats["total_count"] == 2
+    assert stats["standardized_count"] == 1
+    assert stats["non_standardized_count"] == 1
+
+
+def test_fetch_kipris_bibliography_marks_citing_unavailable_on_failure(monkeypatch):
+    class Client:
+        def bibliography_detail(self, application_number):
+            return {
+                "response": {
+                    "body": {
+                        "item": {
+                            "biblioSummaryInfoArray": {
+                                "biblioSummaryInfo": {
+                                    "applicationNumber": application_number,
+                                    "registerStatus": "등록",
+                                    "claimCount": "1",
+                                }
+                            },
+                            "claimInfoArray": {"claimInfo": [{"claim": "1. 청구항 내용"}]},
+                        }
+                    }
+                }
+            }
+
+        def family_patents(self, application_number):
+            return []
+
+        def citation_info_v3(self, application_number):
+            return {"response": {"body": {"items": {}}}}
+
+        def citing_info(self, standard_citation_application_number):
+            raise RuntimeError("citing api down")
+
+    monkeypatch.setattr("services.patent.kipris_patent_service._kipris_client", lambda: Client())
+
+    result = fetch_kipris_bibliography("10-2022-0150081")
+
+    # KR 실패 경로도 해외 경로와 동일 스키마(available + missing_reason)를 노출해야 한다.
+    assert result["citing_stats"]["available"] is False
+    assert result["citing_stats"]["missing_reason"] == "kipris_citing_info_fetch_failed"
+    assert result["citing_stats"]["total_count"] is None
+    assert any(w.startswith("citing_info_fetch_failed:") for w in result["warnings"])
+
+
+def test_fetch_foreign_target_reference_data_does_not_assume_standardization(monkeypatch):
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.fetch_google_patents_references",
+        lambda *args, **kwargs: ([], [], False),
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service.normalize_foreign_reference_documents",
+        lambda raw, *, source, direction: (
+            [{"display_number": "US 1234567 A", "direction": direction}] if raw else []
+        ),
+    )
+
+    class Client:
+        def overseas_us_patent_documents(self, literature_number, country_code):
+            return {"docs": [1]}
+
+        def overseas_foreign_patent_documents(self, literature_number, country_code):
+            return None
+
+    candidate = {"country_code": "US", "document_number": "1234567", "kind_code": "A"}
+
+    result = fetch_foreign_target_reference_data(Client(), [candidate])
+
+    stats = result["citation_stats"]
+    assert stats["total_count"] == 1
+    # 해외 참조엔 is_standardized 판정 근거가 없으므로 모두 표준화로 집계하지 않는다.
+    assert stats["standardized_count"] is None
+    assert stats["non_standardized_count"] is None
+    assert stats["missing_reason"] == "foreign_citation_standardization_basis_unavailable"
+
+
+def test_resolve_citation_evidence_records_bigquery_failure_warning(monkeypatch):
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_kipris",
+        lambda *args, **kwargs: [],
+    )
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("bigquery offline")
+
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_bigquery",
+        _raise,
+    )
+    monkeypatch.setattr(
+        "services.patent.kipris_patent_service._fetch_foreign_claims_from_google_patents",
+        lambda *args, **kwargs: [],
+    )
+
+    citation_documents = [
+        {
+            "country_code": "CN",
+            "standard_number": "113039310",
+            "kind_code": "A",
+            "original_number": "CN113039310 A",
+            "display_number": "CN113039310 A",
+            "is_standardized": True,
+        }
+    ]
+
+    result = resolve_citation_evidence(
+        object(),
+        citation_documents=citation_documents,
+        citing_documents=[],
+    )
+
+    assert result["foreign_citation_documents"] == []
+    assert any(
+        w.startswith("bigquery_claims_fetch_failed:RuntimeError") for w in result["warnings"]
+    )
 
 
 def test_normalize_kipris_claims_detects_je_dependency_phrase():

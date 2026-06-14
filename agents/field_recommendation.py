@@ -6,7 +6,7 @@ import time
 from typing import Any
 
 from app.config import settings
-from services.evidence.compression_service import parse_json_object
+from services.evidence.compression_service import parse_json_object, to_float
 from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 
@@ -122,10 +122,13 @@ def recommend_fields(
             technology_area=technology_area,
             reason="LLM 응답 파싱 실패 - 직접 입력해 주세요.",
         )
-    confidence = max(0.0, min(1.0, float(parsed.get("confidence") or 0.0)))
-    business = parsed.get("businessArea") or business_area or ""
-    technology = parsed.get("technologyArea") or technology_area or ""
-    reason = parsed.get("reason") or ""
+    # confidence는 LLM이 라벨(예: "높음")을 숫자 자리에 넣는 혼동을 방어해 안전 변환한다.
+    # 비숫자면 to_float가 None을 돌려주고 0.0으로 폴백(다른 파싱 실패와 동일하게 graceful 처리).
+    confidence = max(0.0, min(1.0, to_float(parsed.get("confidence")) or 0.0))
+    # str 필드는 LLM이 비-str 값을 줄 수 있어 정규화한다(Pydantic str 응답 모델에서 500 방지).
+    business = str(parsed.get("businessArea") or business_area or "")
+    technology = str(parsed.get("technologyArea") or technology_area or "")
+    reason = str(parsed.get("reason") or "")
 
     # 관리자 관리 분류는 controlled value다. taxonomy 목록이 비어있지 않은데 LLM이 목록 밖
     # 값을 만들어내면 신뢰할 수 없으므로 입력값으로 되돌리고 confidence를 낮춘다.

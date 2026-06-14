@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 import os
 import re
+import threading
 import time
 
 from open_api.secret_scrub import scrub_secrets
@@ -83,7 +84,9 @@ def _resolve_service_keys(explicit: str | None = None) -> list[str]:
 
 # 인스턴스가 호출마다 새로 생성될 수 있어(_kipris_client), 키 라운드로빈 시작점을
 # 모듈 전역 커서로 유지해 호출 간에도 부하가 고르게 분산되도록 한다.
+# 다중 스레드 동시 호출 시 read-modify-write 경쟁으로 시작점이 중복 선택되지 않도록 락으로 보호한다.
 _key_cursor = 0
+_key_cursor_lock = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -245,8 +248,9 @@ class KiprisClient:
         # 호출 실패(429/5xx/네트워크 오류) 시 남은 키로 순차 재시도한다.
         global _key_cursor
         count = len(self.service_keys)
-        start = _key_cursor % count
-        _key_cursor += 1
+        with _key_cursor_lock:
+            start = _key_cursor % count
+            _key_cursor += 1
         ordered = [self.service_keys[(start + i) % count] for i in range(count)]
 
         last_exc: Exception | None = None

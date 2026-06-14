@@ -81,18 +81,38 @@ _rate_limit_lock = Lock()
 _RATE_EXEMPT_PATHS = {"/", "/docs", "/redoc", "/openapi.json"}
 
 
+def _is_trusted_internal_caller(request: Request) -> bool:
+    # SEC-01: 신뢰된 내부 호출자(유효한 X-API-Key 보유 = 에이전트 evidence collector)는
+    # IP 기준 레이트리밋에서 면제한다. 게이트웨이의 유일한 정상 호출자가 단일 파드/단일 egress IP라
+    # 평가 1건의 다수 fan-out(KIPRIS+뉴스 근거 수집)이 같은 IP 윈도우에 집계돼 정상 근거 수집이
+    # 429로 차단(→ gateway_unreachable → degraded)되는 것을 막는다. 미인증 외부 트래픽은 계속 제한.
+    expected = os.getenv("UNIFIED_API_KEY")
+    if not expected:
+        return False
+    provided = request.headers.get("X-API-Key")
+    return bool(provided and hmac.compare_digest(provided, expected))
+
+
 @app.middleware("http")
 async def rate_limit(request: Request, call_next: Any) -> Any:
     try:
         per_minute = int(os.getenv("UNIFIED_API_RATELIMIT_PER_MINUTE", "120"))
     except ValueError:
         per_minute = 120
-    if per_minute <= 0 or request.method == "OPTIONS" or request.url.path in _RATE_EXEMPT_PATHS:
+    if (
+        per_minute <= 0
+        or request.method == "OPTIONS"
+        or request.url.path in _RATE_EXEMPT_PATHS
+        or _is_trusted_internal_caller(request)
+    ):
         return await call_next(request)
     client_ip = request.client.host if request.client else "unknown"
     now = time.monotonic()
     cutoff = now - 60.0
     with _rate_limit_lock:
+        # 만료 엔트리만 남은 다른 IP의 윈도우를 회수해 distinct 소스 IP 누적(메모리 누수)을 방지한다.
+        for stale_ip in [ip for ip, w in _rate_limit_windows.items() if w and w[-1] < cutoff]:
+            _rate_limit_windows.pop(stale_ip, None)
         window = _rate_limit_windows.setdefault(client_ip, deque())
         while window and window[0] < cutoff:
             window.popleft()
@@ -305,7 +325,8 @@ def naver_news_search(
         res.raise_for_status()
         return res.json()
     except requests.RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"NAVER 요청 실패: {exc}") from exc
+        # EXT-10: GNews/KIPRIS 경로와 동일하게 시크릿 마스킹을 공용 모듈로 일원화한다.
+        raise HTTPException(status_code=502, detail=f"NAVER 요청 실패: {_sanitize_external_error(exc)}") from exc
 
 
 @app.get("/api/news/naver/search", tags=["NAVER News"])

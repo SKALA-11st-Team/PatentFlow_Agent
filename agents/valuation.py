@@ -13,6 +13,7 @@ from services.observability.langsmith_service import trace
 from agents.valuation_axes import AXIS_MODULES
 from agents.valuation_axes.common import grade_for_score
 from schemas.valuation import (
+    DEFAULT_MAINTAIN_THRESHOLD,
     DEFAULT_SUBSCORE_WEIGHTS,
     is_default_valuation_config,
     resolve_valuation_config,
@@ -28,6 +29,10 @@ AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
 CORE_VALUATION_AXES = ("legal", "technology", "market")
 CORE_VALUATION_TOTAL_MAX = len(CORE_VALUATION_AXES) * 100
 # 사업 연계성 점수가 이 값 이상이면 3축 점수와 무관하게 AI 권고 라벨을 "유지 권고"로 본다.
+# 이는 운영 설정이 아닌 고정 제품 정책이며, 평균점 기준의 '유지 권고' 임계(valuationConfig.maintainThreshold)
+# 와는 별개 개념이다(기본값이 둘 다 60이라 우연히 겹치지만, maintainThreshold는 3축 평균에,
+# 이 값은 사업 연계성 단일 축에 적용된다). 오버라이드 발동 시 decision_rationale에 사유를 남긴다.
+# TODO(contract): 운영팀 조정이 필요하면 valuationConfig에 businessFitOverrideThreshold로 노출 검토.
 BUSINESS_FIT_OVERRIDE_SCORE = 60
 
 
@@ -114,7 +119,10 @@ def valuation_seed() -> int | None:
 
 def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
     # 재현성(VAL-01): seed 지원 모델이면 run_axis_llm_once가 seed를 전달해 동일 입력→동일 점수를 보장한다.
-    # seed 미지원(기본 gpt-5)일 때는 VALUATION_ENSEMBLE_RUNS 앙상블 중앙값으로 점수 분산을 줄인다.
+    # seed 미지원(기본 gpt-5)일 때는 VALUATION_ENSEMBLE_RUNS 앙상블 중앙값 run을 채택해 점수 분산을 줄인다.
+    # 주의: 각 축은 이후 reconcile_*/apply_*에서 채택된 run의 subscores로 최종 score를 결정론적으로
+    # 재산정하므로, combine_axis_ensemble이 덮어쓰는 평균 top-level score 자체는 최종 결과에 남지 않는다
+    # (앙상블 효과는 '중앙값 run의 subscores 선택'으로 실현된다). 분산 축소는 ensemble_runs>1일 때만 적용된다.
     ensemble_runs = max(1, int(settings.valuation_ensemble_runs or 1))
     if ensemble_runs > 1:
         results = [run_axis_llm_once(axis=axis, prompt=prompt, evidence=evidence) for _ in range(ensemble_runs)]
@@ -272,7 +280,10 @@ def normalize_axis_llm_result(axis: str, parsed: dict[str, Any], *, evidence: li
     missing_fields = [field for field in required_fields if parsed.get(field) in (None, "", [])]
     if missing_fields:
         raise RuntimeError(f"LLM valuation response for {axis} is missing: {', '.join(missing_fields)}.")
-    score = max(0, min(100, int(parsed["score"])))
+    try:
+        score = max(0, min(100, int(float(parsed["score"]))))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"LLM valuation response for {axis} has non-numeric score.") from exc
     result = {
         "axis": axis,
         "label": AXIS_LABELS[axis],
@@ -371,7 +382,12 @@ def build_final_valuation_result(
     required_actions = []
     if business_fit.get("missing_information"):
         required_actions.append("사업부 적용 여부 및 향후 적용 계획 확인")
-    recommendation = score_to_final_recommendation(average_score)
+    # '유지 권고' 임계 평균 점수는 운영 설정(valuationConfig.maintainThreshold, BE 단일 출처)을 따른다.
+    # 설정이 없으면 schemas의 기본값(60)으로 resolve된 값이 들어온다.
+    recommendation = score_to_final_recommendation(
+        average_score,
+        maintain_cutoff=maintain_threshold_cutoff(applied_config),
+    )
     if business_fit_override:
         recommendation = "유지 권고"
     result = {
@@ -440,9 +456,20 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
 
 
 # AI 검토 의견(recommendation) 점수 컷오프(평균점 기준):
-#   ≥70 유지 권고 · 50~69 조건부 유지 · <50 포기 검토.
-MAINTAIN_RECOMMENDATION_CUTOFF = 70.0
+#   ≥유지임계 유지 권고 · 그 미만이고 ≥조건부임계 조건부 유지 · <조건부임계 포기 검토.
+# '유지 권고' 임계(maintain_cutoff)는 운영 설정 valuationConfig.maintainThreshold(BE 단일 출처,
+# 기본 60)로 결정된다. 설정 미주입 경로의 폴백 기본값도 schemas의 DEFAULT_MAINTAIN_THRESHOLD에 맞춘다.
+MAINTAIN_RECOMMENDATION_CUTOFF = DEFAULT_MAINTAIN_THRESHOLD
 CONDITIONAL_RECOMMENDATION_CUTOFF = 50.0
+
+
+def maintain_threshold_cutoff(config: dict[str, Any] | None) -> float:
+    """resolve된 valuationConfig에서 '유지 권고' 임계 평균 점수를 꺼낸다.
+    누락/비수치 시 기본값(DEFAULT_MAINTAIN_THRESHOLD)으로 폴백한다."""
+    try:
+        return float((config or {}).get("maintainThreshold", MAINTAIN_RECOMMENDATION_CUTOFF))
+    except (TypeError, ValueError):
+        return MAINTAIN_RECOMMENDATION_CUTOFF
 
 
 def score_to_final_recommendation(

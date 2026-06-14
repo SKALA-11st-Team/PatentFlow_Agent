@@ -312,7 +312,6 @@ def _build_graph() -> Any:
         {
             "query_rewriting": "query_rewriting",
             "valuation_team": "valuation_axes_analyze",
-            "top_supervisor": "top_supervisor",
             "end": END,
         },
     )

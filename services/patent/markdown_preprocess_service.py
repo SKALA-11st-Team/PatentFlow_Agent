@@ -457,7 +457,7 @@ def build_preprocessed_patent(
         source.get("application_number") if source else None,
     )
 
-    country_prefix = str(metadata.get("country") or db_metadata.get("country") or "KR").upper()
+    country_prefix = str(metadata.get("country") or (db_metadata or {}).get("country") or "KR").upper()
     result = {
         "patent_id": f"{country_prefix}{patent_id}" if patent_id else None,
         "source": {

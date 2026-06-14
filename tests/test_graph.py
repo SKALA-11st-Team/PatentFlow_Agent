@@ -230,6 +230,15 @@ def test_writing_retry_reuses_existing_document_nodes(monkeypatch):
     assert result.final_report["summary"]["summary_markdown"].startswith("# 특허 요약")
 
 
+def test_research_supervisor_has_no_dead_top_supervisor_route():
+    # ORCH-09: _route_after_research_supervisor never returns "top_supervisor",
+    # so the conditional-edge mapping must not carry a dead route back to it.
+    edges = workflow_graph.WORKFLOW_GRAPH.get_graph().edges
+    research_targets = {edge.target for edge in edges if edge.source == "research_supervisor"}
+
+    assert "top_supervisor" not in research_targets
+
+
 def test_writing_graph_reuses_report_nodes_for_retry():
     graph_nodes = workflow_graph.WORKFLOW_GRAPH.get_graph().nodes
 

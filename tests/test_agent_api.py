@@ -324,6 +324,71 @@ def test_recommend_fields_endpoint_returns_business_and_technology_only(monkeypa
     assert "productName" not in body
 
 
+def test_recommend_fields_survives_non_numeric_confidence(monkeypatch):
+    # LLM이 confidence 자리에 숫자가 아닌 라벨(예: "높음")을 넣어도 float() 예외로 500이
+    # 나지 않고, 다른 파싱 실패처럼 graceful하게 0.0으로 폴백해야 한다.
+    import json as _json
+
+    from agents import field_recommendation
+
+    monkeypatch.setattr(field_recommendation, "load_prompt", lambda _name: "prompt")
+    monkeypatch.setattr(
+        field_recommendation,
+        "call_llm",
+        lambda _prompt: _json.dumps(
+            {
+                "businessArea": "Data",
+                "technologyArea": "데이터분석",
+                "confidence": "높음",
+                "reason": "분류 근거.",
+            }
+        ),
+    )
+
+    result = field_recommendation.recommend_fields(
+        title="강화학습 기반 자산배분 시스템",
+        abstract="요약 본문",
+        taxonomy={"businessArea": ["Data"], "technologyArea": ["데이터분석"]},
+    )
+
+    assert 0.0 <= result["confidence"] <= 1.0
+    assert result["confidence"] == 0.0
+    assert result["businessArea"] == "Data"
+    assert result["technologyArea"] == "데이터분석"
+
+
+def test_recommend_fields_normalizes_non_string_fields(monkeypatch):
+    # LLM이 str 필드(reason 등)에 비-str 값을 주더라도 str로 정규화해 Pydantic 응답
+    # 모델(str)에서 500이 나지 않게 한다.
+    import json as _json
+
+    from agents import field_recommendation
+
+    monkeypatch.setattr(field_recommendation, "load_prompt", lambda _name: "prompt")
+    monkeypatch.setattr(
+        field_recommendation,
+        "call_llm",
+        lambda _prompt: _json.dumps(
+            {
+                "businessArea": "Data",
+                "technologyArea": "데이터분석",
+                "confidence": 0.82,
+                "reason": 123,
+            }
+        ),
+    )
+
+    result = field_recommendation.recommend_fields(
+        title="강화학습 기반 자산배분 시스템",
+        abstract="요약 본문",
+        taxonomy={"businessArea": ["Data"], "technologyArea": ["데이터분석"]},
+    )
+
+    assert isinstance(result["reason"], str)
+    assert result["reason"] == "123"
+    assert result["confidence"] == 0.82
+
+
 def test_evaluate_patent_passes_through_rich_evidence(monkeypatch):
     # ORCH-06/AIREPORT-02: 워크플로가 산출한 축별 출처·리포트 레벨 리치 근거가 API로 풀스루되는지 검증.
     def fake_run_workflow(state):
@@ -391,6 +456,66 @@ def test_evaluate_patent_passes_through_rich_evidence(monkeypatch):
     assert news_detail["source"]["url"] == "https://example.com/news/1"
     legal_axis = next(s for s in body["scores"] if s["category"] == "권리성")
     assert legal_axis["evidenceDetails"] == []
+
+
+def test_degraded_evaluation_defaults_recommendation_to_review_again(monkeypatch):
+    # 평가 미산출/degraded(축 점수 없음)로 recommendation이 비면 '포기 검토'(ABANDON)로 단정하지 않고
+    # 중립값 '추가 정보 필요'(BE Recommendation.REVIEW_AGAIN)를 기본값으로 둔다.
+    def fake_run_workflow(state):
+        state.summary_result = {"plain_summary": "요약"}
+        state.evidence_bundle = []
+        state.valuation_result = {"axes": {}, "final_report_markdown": "보고서"}
+        return state
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", lambda state: {})
+
+    response = client.post("/api/v1/ai/patents/PAT-DEGRADED/evaluate", json={"noSave": True})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["degraded"] is True
+    assert body["recommendation"] == "추가 정보 필요"
+
+
+def test_valuation_average_score_fallback_divides_by_three_core_axes():
+    from app.api import valuation_average_score
+
+    # average_score가 없고 total_score(3축 합, max 300)만 있으면 핵심 축 수(3)로 나눠 평균을 환산한다.
+    assert valuation_average_score({"total_score": 300}) == 100.0
+    assert valuation_average_score({"total_score": 210}) == 70.0
+    # average_score가 있으면 그대로 사용한다(폴백 미적용).
+    assert valuation_average_score({"total_score": 300, "average_score": 75.0}) == 75.0
+
+
+def test_evaluate_patent_survives_save_outputs_failure(monkeypatch):
+    # 영속화 실패가 이미 계산된 평가 응답을 폐기하지 않고, warnings로만 표면화되는지 검증.
+    def fake_run_workflow(state):
+        state.summary_result = {"plain_summary": "요약"}
+        state.valuation_result = {
+            "recommendation": "유지 권고",
+            "axes": {
+                "legal": {"label": "권리성", "score": 70, "grade": "B", "rationale": "r"},
+                "technology": {"label": "기술성", "score": 70, "grade": "B", "rationale": "r"},
+                "market": {"label": "시장성", "score": 70, "grade": "B", "rationale": "r"},
+                "business_fit": {"label": "사업 연계성", "score": 70, "grade": "B", "rationale": "r"},
+            },
+            "final_report_markdown": "보고서",
+        }
+        return state
+
+    def fake_save_outputs(state):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", fake_save_outputs)
+
+    response = client.post("/api/v1/ai/patents/PAT-SAVE-FAIL/evaluate", json={"title": "테스트"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["recommendation"] == "유지 권고"
+    assert any(warning.startswith("artifact_save_failed:") for warning in body["warnings"])
 
 
 def test_inbound_auth_passes_through_when_key_unset(monkeypatch):

@@ -232,19 +232,40 @@ def collect_external_evidence(
             warnings.append("naver_news_skipped:no_domestic_queries_selected")
         for query in selected_queries:
             if is_foreign:
-                fetch_tasks.append({
-                    "fetch": lambda q=query: search_news_via_tavily(
-                        q, max_results=news_results_per_query, country=domestic_country
-                    ),
-                    "normalize": lambda raw, q=query: normalize_tavily_news_response(
-                        raw, query=q, source="domestic_news", country=domestic_country
-                    ),
-                    "enrich": True,
-                    "source_type": "news",
-                    "source": "domestic_news",
-                    "query": query,
-                    "warn_prefix": f"domestic_news call failed for query '{query}'",
-                })
+                # 해외특허 domestic 채널: 대상국이 한정된(COUNTRY_LOCALE_MAP 매핑) 경우만
+                # 본국 현지 뉴스(domestic_news)로 본다 — Tavily country+현지어 쿼리로 관련성이
+                # 확보돼 news_filter가 키워드 매칭 거부를 면제한다. EP/WO·미매핑 해외국은
+                # domestic_country=None이라 search_news_via_tavily가 country 제한 없는 글로벌
+                # 영어 뉴스(topic=news)로 분기하므로, 키워드 면제 전제가 깨진다. 이 경우는
+                # global_news로 태깅해 일반 관련성 필터(no_patent_keyword_match)를 적용한다.
+                if domestic_country:
+                    fetch_tasks.append({
+                        "fetch": lambda q=query: search_news_via_tavily(
+                            q, max_results=news_results_per_query, country=domestic_country
+                        ),
+                        "normalize": lambda raw, q=query: normalize_tavily_news_response(
+                            raw, query=q, source="domestic_news", country=domestic_country
+                        ),
+                        "enrich": True,
+                        "source_type": "news",
+                        "source": "domestic_news",
+                        "query": query,
+                        "warn_prefix": f"domestic_news_call_failed:query='{query}'",
+                    })
+                else:
+                    fetch_tasks.append({
+                        "fetch": lambda q=query: search_global_news_via_tavily(
+                            q, max_results=news_results_per_query
+                        ),
+                        "normalize": lambda raw, q=query: normalize_tavily_news_response(
+                            raw, query=q, source="global_news"
+                        ),
+                        "enrich": True,
+                        "source_type": "news",
+                        "source": "global_news",
+                        "query": query,
+                        "warn_prefix": f"global_news_call_failed:query='{query}'",
+                    })
             else:
                 fetch_tasks.append({
                     "fetch": lambda q=query: request_json(
@@ -257,7 +278,7 @@ def collect_external_evidence(
                     "source_type": "news",
                     "source": "naver_news",
                     "query": query,
-                    "warn_prefix": f"naver_news call failed for query '{query}'",
+                    "warn_prefix": f"naver_news_call_failed:query='{query}'",
                 })
     if include_gnews:
         if not selected_gnews_queries:
@@ -271,7 +292,7 @@ def collect_external_evidence(
                 "source_type": "news",
                 "source": "global_news",
                 "query": gnews_query,
-                "warn_prefix": f"global_news call failed for query '{gnews_query}'",
+                "warn_prefix": f"global_news_call_failed:query='{gnews_query}'",
             })
     if include_kipris and application_number and not is_foreign:
         # 경쟁특허 검색(`patent-utility/search/application-number`)은 국내 KR 특허 DB를 출원번호로
@@ -290,7 +311,7 @@ def collect_external_evidence(
             "source_type": "competitor_patent",
             "source": "kipris",
             "query": kipris_query,
-            "warn_prefix": f"kipris call failed for application_number '{application_number}'",
+            "warn_prefix": f"kipris_call_failed:application_number='{application_number}'",
         })
 
     attempted_calls = len(fetch_tasks)
@@ -321,6 +342,11 @@ def collect_external_evidence(
                 empty_warning = f"{task['source']}_empty_results:query='{task['query']}'"
             if task["source"] == "global_news" and not items:
                 empty_warning = f"global_news_empty_results:query='{task['query']}'"
+            # 경쟁특허(kipris) 0건도 뉴스 소스와 동일하게 빈 결과를 표면화한다 — 정상적으로
+            # 경쟁특허가 없는 경우도 있으나, 0건 가시성이 비대칭이면 디버깅/운영 신호가 누락된다.
+            # (degraded 판정용 '_failed:' 신호가 아니라 관찰성 경고이므로 포맷을 구분한다.)
+            if task["source"] == "kipris" and not items:
+                empty_warning = f"kipris_empty_results:query='{task['query']}'"
             return {"items": items, "saved": saved, "warning": None, "empty_warning": empty_warning}
         except Exception as exc:
             # AG-03: 네트워크 오류(RequestException)만이 아니라 외부 응답 형태 드리프트로
