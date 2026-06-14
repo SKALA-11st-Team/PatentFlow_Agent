@@ -123,7 +123,8 @@ def test_build_prior_art_context_stops_after_target_fulltext(monkeypatch):
     ]
     attempts: list[str] = []
 
-    def fake_resolve(candidate, *, output_dir, collect_pdf, text_limit):
+    def fake_resolve(candidate, *, output_dir, collect_pdf, text_limit, fulltext_source):
+        assert fulltext_source == "remote"
         display = candidate.get("display_number")
         attempts.append(display)
         index = int(display.removeprefix("US"))
@@ -153,10 +154,10 @@ def test_build_prior_art_context_attempt_cap_when_fulltext_scarce(monkeypatch):
         {"display_number": f"EP{index}", "country_code": "EP", "kind_code": "A1"}
         for index in range(20)
     ]
-    attempts: list[str] = []
+    attempts: list[tuple[str, str]] = []
 
-    def fake_resolve(candidate, *, output_dir, collect_pdf, text_limit):
-        attempts.append(candidate.get("display_number"))
+    def fake_resolve(candidate, *, output_dir, collect_pdf, text_limit, fulltext_source):
+        attempts.append((fulltext_source, candidate.get("display_number")))
         return {"display_number": candidate.get("display_number"), "_warnings": []}
 
     monkeypatch.setattr(prior_art_service, "resolve_prior_art_candidate", fake_resolve)
@@ -171,7 +172,8 @@ def test_build_prior_art_context_attempt_cap_when_fulltext_scarce(monkeypatch):
     )
 
     assert context["fulltext_count"] == 0
-    assert len(attempts) == 8
+    assert [source for source, _display in attempts].count("remote") == 8
+    assert [source for source, _display in attempts].count("google") == 8
 
 
 def test_resolve_foreign_prior_art_collects_remote_fulltext_without_api(monkeypatch, tmp_path):
@@ -183,9 +185,10 @@ def test_resolve_foreign_prior_art_collects_remote_fulltext_without_api(monkeypa
 
     client = Client()
     monkeypatch.setattr("services.patent.prior_art_patent_service.KiprisClient", lambda: client)
+    monkeypatch.setattr("services.evidence.news_article_extraction_service.validate_article_url", lambda _url: None)
     monkeypatch.setattr(
         "services.patent.prior_art_patent_service.parse_single_patent_pdf",
-        lambda pdf_path, output_dir: {
+        lambda pdf_path, output_dir, country=None: {
             "markdown_paths": [str(output_dir / "jp_registration.md")],
             "markdown_text": "JP registration full text with claims and detailed description",
         },
@@ -217,8 +220,52 @@ def test_resolve_foreign_prior_art_collects_remote_fulltext_without_api(monkeypa
     assert "publ_key=JP000004002589B2" in first_url
 
 
-def test_resolve_foreign_prior_art_falls_back_to_google_patents_pdf(monkeypatch, tmp_path):
-    # remoteFile.do가 PDF가 아닌 응답(구형 CN의 ZIP·HTML 등)을 주면 Google Patents PDF로 폴백한다.
+def test_build_prior_art_context_fills_remote_shortfall_with_google(monkeypatch):
+    # 먼저 remoteFile.do만 전체 후보에 시도하고, 목표 건수에 부족할 때만 실패 후보를 Google로 보충한다.
+    citation_documents = [
+        {"display_number": f"US{index}", "country_code": "US", "kind_code": "A1"}
+        for index in range(5)
+    ]
+    attempts: list[tuple[str, str]] = []
+
+    def fake_resolve(candidate, *, output_dir, collect_pdf, text_limit, fulltext_source):
+        display = candidate.get("display_number")
+        attempts.append((fulltext_source, display))
+        item = {"display_number": display, "_warnings": []}
+        index = int(display.removeprefix("US"))
+        if fulltext_source == "remote" and index == 1:
+            item["pdf_text"] = f"remote 본문 {display}"
+        if fulltext_source == "google" and index in {0, 2}:
+            item["pdf_text"] = f"google 본문 {display}"
+        return item
+
+    monkeypatch.setattr(prior_art_service, "resolve_prior_art_candidate", fake_resolve)
+
+    context = build_prior_art_patent_context(
+        target_metadata={},
+        kipris_api_data={"citation_documents": citation_documents},
+        collect_pdf=True,
+        target_fulltext_count=3,
+        max_resolution_attempts=5,
+        home_country="US",
+    )
+
+    assert context["fulltext_count"] == 3
+    assert attempts == [
+        ("remote", "US0"),
+        ("remote", "US1"),
+        ("remote", "US2"),
+        ("remote", "US3"),
+        ("remote", "US4"),
+        ("google", "US0"),
+        ("google", "US2"),
+    ]
+    assert [item["display_number"] for item in context["prior_art_patents"] if item.get("pdf_text")] == ["US0", "US1", "US2"]
+
+
+def test_resolve_foreign_prior_art_remote_mode_does_not_fall_back_to_google(monkeypatch, tmp_path):
+    # remoteFile.do가 PDF가 아닌 응답(구형 CN의 ZIP·HTML 등)을 주면 이 후보는 실패 처리하고,
+    # 바깥 수집 루프가 다음 후보로 넘어가게 한다. Google은 2차 패스에서만 사용한다.
     class RoutedResponse:
         def __init__(self, content):
             self.content = content
@@ -242,13 +289,14 @@ def test_resolve_foreign_prior_art_falls_back_to_google_patents_pdf(monkeypatch,
             self.timeout = 30.0
 
     monkeypatch.setattr("services.patent.prior_art_patent_service.KiprisClient", Client)
+    monkeypatch.setattr("services.evidence.news_article_extraction_service.validate_article_url", lambda _url: None)
     monkeypatch.setattr(
         "services.patent.prior_art_patent_service.google_patents_pdf_url",
-        lambda *args, **kwargs: "https://example.com/us-publication.pdf",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("google fallback must not run in remote mode")),
     )
     monkeypatch.setattr(
         "services.patent.prior_art_patent_service.parse_single_patent_pdf",
-        lambda pdf_path, output_dir: {
+        lambda pdf_path, output_dir, country=None: {
             "markdown_paths": [str(output_dir / "us_publication.md")],
             "markdown_text": "What is claimed is:\n1. A method comprising a processor and a memory.",
         },
@@ -265,20 +313,16 @@ def test_resolve_foreign_prior_art_falls_back_to_google_patents_pdf(monkeypatch,
         output_dir=tmp_path,
         collect_pdf=True,
         text_limit=None,
+        fulltext_source="remote",
     )
 
-    assert result["foreign_fulltext_type"] == "google_patents"
-    assert result["literature_number"] == "US20100241261A1"
-    assert result["pdf_collected"] is True
-    assert "CLAIMS" in result["pdf_text"]
-    assert result["representative_claims"][0]["claim_no"] == 1
-    assert result["representative_claims"][0]["text"] == "A method comprising a processor and a memory."
-    assert result["comparison_status"] == "claim_comparison_ready"
+    assert result["pdf_collected"] is False
+    assert "foreign_fulltext_type" not in result
+    assert any("not_pdf" in warning for warning in result["_warnings"])
 
 
 def test_resolve_cn_prior_art_skips_kipris_fulltext_and_uses_google(monkeypatch, tmp_path):
-    # CN 인용은 공개번호만 있어 KIPRIS 전문(출원번호 기반)이 항상 실패한다. 쿼터 낭비를 막기 위해
-    # KIPRIS 전문 호출을 아예 하지 않고 곧장 Google Patents PDF로 가야 한다.
+    # 2차 Google 패스에서는 KIPRIS 전문 API(쿼터)를 쓰지 않고 Google Patents PDF만 시도한다.
     class Client:
         def __init__(self):
             self.session = Session()
@@ -296,13 +340,14 @@ def test_resolve_cn_prior_art_skips_kipris_fulltext_and_uses_google(monkeypatch,
 
     client = Client()
     monkeypatch.setattr("services.patent.prior_art_patent_service.KiprisClient", lambda: client)
+    monkeypatch.setattr("services.evidence.news_article_extraction_service.validate_article_url", lambda _url: None)
     monkeypatch.setattr(
         "services.patent.prior_art_patent_service.google_patents_pdf_url",
         lambda *args, **kwargs: "https://example.com/cn-publication.pdf",
     )
     monkeypatch.setattr(
         "services.patent.prior_art_patent_service.parse_single_patent_pdf",
-        lambda pdf_path, output_dir: {
+        lambda pdf_path, output_dir, country=None: {
             "markdown_paths": [str(output_dir / "cn.md")],
             "markdown_text": "权利要求\n1. 一种半导体工艺监测方法。",
         },
@@ -320,6 +365,7 @@ def test_resolve_cn_prior_art_skips_kipris_fulltext_and_uses_google(monkeypatch,
         output_dir=tmp_path,
         collect_pdf=True,
         text_limit=None,
+        fulltext_source="google",
     )
 
     # KIPRIS 전문 메서드는 한 번도 호출되지 않아야 한다(쿼터 0).
@@ -327,3 +373,71 @@ def test_resolve_cn_prior_art_skips_kipris_fulltext_and_uses_google(monkeypatch,
     assert client.registration_calls == []
     assert result["foreign_fulltext_type"] == "google_patents"
     assert result["pdf_collected"] is True
+
+
+def _make_tiff_zip() -> bytes:
+    import io as _io
+    import zipfile as _zip
+
+    buffer = _io.BytesIO()
+    with _zip.ZipFile(buffer, "w") as archive:
+        archive.writestr("000001.TIF", b"II*\x00fake-tiff-page-1")
+        archive.writestr("000002.TIF", b"II*\x00fake-tiff-page-2")
+    return buffer.getvalue()
+
+
+def test_download_kipris_remote_fulltext_ocrs_zip_of_tiffs(monkeypatch, tmp_path):
+    # 구형 특허는 PDF 대신 ZIP(of TIFF)으로 온다 → tesseract OCR로 전문 텍스트를 만든다.
+    import services.patent.prior_art_patent_service as svc
+
+    zip_bytes = _make_tiff_zip()
+
+    class Resp:
+        content = zip_bytes
+
+        def raise_for_status(self):
+            return None
+
+    class Sess:
+        def get(self, url, timeout=None):
+            return Resp()
+
+    class Client:
+        session = Sess()
+        timeout = 30.0
+
+    monkeypatch.setattr(svc.shutil, "which", lambda name: "/usr/bin/tesseract")
+
+    class Completed:
+        # 페이지당 충분한 길이의 OCR 텍스트(중국어 전문 가정)
+        stdout = "본문 텍스트 " * 60
+
+    monkeypatch.setattr(svc.subprocess, "run", lambda *a, **k: Completed())
+
+    result = svc.download_kipris_remote_fulltext(Client(), "CN200480037968A0", "CN", output_dir=tmp_path)
+    assert result is not None
+    assert result["kind"] == "ocr"
+    assert "본문 텍스트" in result["markdown_text"]
+    assert result["markdown_path"].exists()
+
+
+def test_download_kipris_remote_fulltext_returns_pdf(monkeypatch, tmp_path):
+    import services.patent.prior_art_patent_service as svc
+
+    class Resp:
+        content = b"%PDF-1.7 fake"
+
+        def raise_for_status(self):
+            return None
+
+    class Sess:
+        def get(self, url, timeout=None):
+            return Resp()
+
+    class Client:
+        session = Sess()
+        timeout = 30.0
+
+    result = svc.download_kipris_remote_fulltext(Client(), "US000012417849B2", "US", output_dir=tmp_path)
+    assert result["kind"] == "pdf"
+    assert result["pdf_path"].suffix == ".pdf"

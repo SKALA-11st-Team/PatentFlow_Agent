@@ -1576,6 +1576,7 @@ def _google_patents_pdf_document(
         parsed = parse_single_patent_pdf(
             pdf_path,
             output_dir=Path(settings.output_dir) / "prior_art_markdown" / publication_id,
+            country=str(candidate.get("country_code") or "").strip().upper() or None,
         )
         claims = extract_foreign_claims_from_text(parsed.get("markdown_text") or "")
         return _foreign_prior_art_document(
