@@ -89,7 +89,6 @@ For new cross-system requirements, prefer the current `FR-LEGAL-*`, `FR-BUS-*`, 
 - FR-014: 부서별 수신자 및 메일링 매핑 등록/수정
 - FR-015: 메일 미리보기
 - FR-016: 메일 발송 이력 저장/조회
-- FR-017: 포기 특허를 매각 후보 리스트로 분류/조회
 - FR-018~FR-022: Already assumed in project planning. Do not renumber earlier requirements.
 
 If a new Agent-only legacy requirement is still unavoidable, assign it from FR-023 onward only in a dedicated Agent requirement document. Do not use legacy `FR-023+` IDs for cross-system FE/BE requirements.
@@ -147,48 +146,34 @@ Suggested shared domain values:
 type PatentLifecycleStatus =
   | "ACTIVE"
   | "ABANDONED"
-  | "SOLD"
   | "EXPIRED";
 
 type ReviewWorkflowStatus =
-  | "NOT_IN_REVIEW_QUARTER"
+  | "NOT_IN_REVIEW"
   | "REVIEW_QUARTER_STARTED"
-  | "REPORT_GENERATED"
   | "MAIL_READY"
   | "WAITING_BUSINESS_RESPONSE"
-  | "BUSINESS_RESPONSE_RECEIVED"
-  | "WAITING_EXECUTIVE_APPROVAL"
-  | "APPROVAL_COMPLETED"
-  | "LEGAL_ACTION_RECORDED";
+  | "BUSINESS_RESPONSE_RECEIVED";
 
 type Recommendation =
   | "MAINTAIN"
   | "REVIEW_AGAIN"
   | "ABANDON"
-  | "SALES_CANDIDATE"
   | "HOLD";
 
 type BusinessOpinionDecision =
   | "MAINTAIN"
   | "ABANDON";
 
-type ExecutiveApprovalDecision =
-  | "APPROVED_MAINTAIN"
-  | "APPROVED_ABANDON"
-  | "APPROVED_SELL"
-  | "REJECTED"
-  | "REQUEST_CHANGES";
-
 type LegalActionResult =
   | "MAINTAINED"
-  | "ABANDONED"
-  | "SOLD";
+  | "ABANDONED";
 
 type EvaluationCategory =
   | "RIGHTS"
   | "TECHNOLOGY"
   | "MARKET"
-  | "BUSINESS_FIT";
+  | "BUSINESS_ALIGNMENT";
 ```
 
 ## Shared API Expectations
@@ -246,7 +231,7 @@ Official UI IDs:
 | UI-006 | 사업부 마이페이지 | 사업부 사용자 | 사업부가 검토 요청받은 특허 목록을 확인하고 의견을 입력하는 화면 |
 | UI-007 | 메일링 | 관리자 | 메일 미리보기, 수신자 매핑, 발송 내역 조회 |
 | UI-008 | 설정 | 관리자 | 운영 기준, 평가 기준, 메일링 매핑 정보 설정 |
-| UI-009 | 레포트 | 관리자, 사업부 사용자 | 평가 이력, 최종 판단 이력, 매각 후보 리스트, AI 피드백 조회 |
+| UI-009 | 레포트 | 관리자, 사업부 사용자 | 평가 이력, 최종 판단 이력, AI 피드백 조회 |
 
 Do not invent another final UI ID system. If the UI ID is unknown, use `TODO-UI-ID`.
 
