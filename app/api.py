@@ -149,9 +149,6 @@ class PatentEvaluationResponse(BaseModel):
     evidenceConfidence: str | None = None
     # ORCH-06/AIREPORT-02: 리포트 레벨 리치 근거. BE record가 그동안 수용하지 못해 FE까지 유실되던 필드들.
     missingInformation: list[str] = Field(default_factory=list)
-    # 부족 정보를 담당 팀별(사업부서/법무·특허팀)로 분류한 확인사항. 보고서 `## 5. 역할별 확인 사항`의
-    # 구조화 소스이며, FE가 팀별 체크리스트로 그대로 렌더링할 수 있다.
-    reviewChecklist: dict[str, list[str]] = Field(default_factory=dict)
     keyEvidence: str | None = None
     judgementGrounds: list[str] = Field(default_factory=list)
     businessCheckRequests: list[str] = Field(default_factory=list)
@@ -324,10 +321,6 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         evidenceConfidence=evidence_confidence(final_state),
         # ORCH-06/AIREPORT-02: 워크플로가 이미 산출한 리치 근거를 API로 풀스루한다.
         missingInformation=[str(item) for item in (valuation_result.get("missing_information") or []) if item],
-        reviewChecklist={
-            str(team): [str(item) for item in (items or []) if item]
-            for team, items in (valuation_result.get("review_checklist") or {}).items()
-        },
         keyEvidence=build_key_evidence(valuation_result),
         judgementGrounds=[str(item) for item in (valuation_result.get("decision_rationale") or []) if item],
         businessCheckRequests=[str(item) for item in (valuation_result.get("required_actions") or []) if item],
