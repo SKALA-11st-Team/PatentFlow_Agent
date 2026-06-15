@@ -1963,7 +1963,7 @@ def test_collect_similar_patent_candidates_filters_foreign_country_and_uses_ipc(
     assert calls[0][0] == "G06F 40/30"
 
 
-def test_technology_candidate_subscores_use_50_50_structure():
+def test_technology_candidate_subscores_use_60_40_structure():
     from agents.valuation_axes.technology import apply_technology_scores
 
     result = apply_technology_scores(
@@ -1979,22 +1979,22 @@ def test_technology_candidate_subscores_use_50_50_structure():
                 "technical_differentiation": {
                     "label": "기술 차별성",
                     "score": 47,
-                    "max_score": 50,
+                    "max_score": 60,
                     "details": {
-                        "configuration_operation_differentiation": 17,
-                        "effect_differentiation": 10,
-                        "imitation_avoidance_difficulty": 7,
+                        "configuration_operation_differentiation": 20,
+                        "effect_differentiation": 12,
+                        "imitation_avoidance_difficulty": 8,
                     },
                     "rationale": "차별 요소가 확인됨",
                 },
                 "implementation_specificity": {
                     "label": "구현 구체성",
                     "score": 30,
-                    "max_score": 50,
+                    "max_score": 40,
                     "details": {
-                        "component_specificity": 14,
-                        "procedure_specificity": 20,
-                        "implementation_utilization_specificity": 7,
+                        "component_specificity": 11,
+                        "procedure_specificity": 16,
+                        "implementation_utilization_specificity": 6,
                     },
                     "rationale": "구성 요소와 처리 절차는 구체적이나 구현 설명은 제한적임",
                 },
@@ -2003,20 +2003,22 @@ def test_technology_candidate_subscores_use_50_50_structure():
         {"similar_patents": [{"application_number": "1020200000001", "pdf_collected": True}]},
     )
 
-    assert result["score"] == 75
-    assert result["grade"] == "A"  # A컷 70 → 75점은 A
-    assert result["subscores"]["technical_differentiation"]["score"] == 34
-    assert result["subscores"]["implementation_specificity"]["score"] == 41
+    assert result["score"] == 73
+    assert result["grade"] == "A"
+    assert result["subscores"]["technical_differentiation"]["score"] == 40
+    assert result["subscores"]["technical_differentiation"]["max_score"] == 60
+    assert result["subscores"]["implementation_specificity"]["score"] == 33
+    assert result["subscores"]["implementation_specificity"]["max_score"] == 40
     assert "technical_substantiality" not in result["subscores"]
     assert result["subscores"]["technical_differentiation"]["details"] == {
-        "configuration_operation_differentiation": 17,
-        "effect_differentiation": 10,
-        "imitation_avoidance_difficulty": 7,
+        "configuration_operation_differentiation": 20,
+        "effect_differentiation": 12,
+        "imitation_avoidance_difficulty": 8,
     }
     assert result["subscores"]["implementation_specificity"]["details"] == {
-        "component_specificity": 14,
-        "procedure_specificity": 20,
-        "implementation_utilization_specificity": 7,
+        "component_specificity": 11,
+        "procedure_specificity": 16,
+        "implementation_utilization_specificity": 6,
     }
 
 
@@ -2024,13 +2026,13 @@ def test_technology_candidate_subscores_preserve_detailed_score_evidence():
     from agents.valuation_axes.technology import apply_technology_scores
 
     detail = {
-        "score": 16,
+        "score": 19,
         "assessment_status": "evaluated",
         "target_basis": ["독립항 1의 A-B-C 처리"],
         "comparison_basis": ["KR-A 청구항 1의 A-B 처리"],
         "common_points": ["A-B 구성"],
         "difference_points": ["C 판단 단계"],
-        "score_reason": "기반 구성은 같지만 C 판단 단계가 최종 출력을 변경하므로 17점",
+        "score_reason": "기반 구성은 같지만 C 판단 단계가 최종 출력을 변경하므로 20점",
         "missing_information": [],
     }
     result = apply_technology_scores(
@@ -2039,15 +2041,15 @@ def test_technology_candidate_subscores_preserve_detailed_score_evidence():
                 "technical_differentiation": {
                     "details": {
                         "configuration_operation_differentiation": detail,
-                        "effect_differentiation": {"score": 10},
-                        "imitation_avoidance_difficulty": {"score": 7},
+                        "effect_differentiation": {"score": 12},
+                        "imitation_avoidance_difficulty": {"score": 8},
                     }
                 },
                 "implementation_specificity": {
                     "details": {
-                        "component_specificity": {"score": 14},
-                        "procedure_specificity": {"score": 14},
-                        "implementation_utilization_specificity": {"score": 7},
+                        "component_specificity": {"score": 11},
+                        "procedure_specificity": {"score": 11},
+                        "implementation_utilization_specificity": {"score": 6},
                     }
                 },
             }
@@ -2058,10 +2060,10 @@ def test_technology_candidate_subscores_preserve_detailed_score_evidence():
     normalized = result["subscores"]["technical_differentiation"]["details"][
         "configuration_operation_differentiation"
     ]
-    assert normalized["score"] == 17
+    assert normalized["score"] == 20
     assert normalized["target_basis"] == ["독립항 1의 A-B-C 처리"]
     assert normalized["difference_points"] == ["C 판단 단계"]
-    assert result["score"] == 69
+    assert result["score"] == 68
 
 
 def test_valuation_fails_when_llm_valuation_is_disabled():
@@ -2255,7 +2257,7 @@ def test_final_report_input_payload_is_compact_without_raw_technology_sources():
                 "missing_information": [],
                 "confidence": 0.7,
                 "subscores": {
-                    "technical_differentiation": {"score": 35, "max_score": 50},
+                    "technical_differentiation": {"score": 42, "max_score": 60},
                 },
                 "technology_metrics": {
                     "representative_cpc": "G06F 40/00",

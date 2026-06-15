@@ -29,15 +29,19 @@ COMPARISON_TECHNICAL_CONTENT_LIMITS = {
 }
 TECHNOLOGY_DETAIL_SCORE_CANDIDATES = {
     "technical_differentiation": {
-        "configuration_operation_differentiation": (0, 8, 17, 25),
-        "effect_differentiation": (0, 5, 10, 15),
-        "imitation_avoidance_difficulty": (0, 3, 7, 10),
+        "configuration_operation_differentiation": (0, 10, 20, 30),
+        "effect_differentiation": (0, 6, 12, 18),
+        "imitation_avoidance_difficulty": (0, 4, 8, 12),
     },
     "implementation_specificity": {
-        "component_specificity": (0, 7, 14, 20),
-        "procedure_specificity": (0, 7, 14, 20),
-        "implementation_utilization_specificity": (0, 3, 7, 10),
+        "component_specificity": (0, 6, 11, 16),
+        "procedure_specificity": (0, 6, 11, 16),
+        "implementation_utilization_specificity": (0, 2, 6, 8),
     },
+}
+TECHNOLOGY_SUBSCORE_MAX_SCORES = {
+    "technical_differentiation": 60,
+    "implementation_specificity": 40,
 }
 
 
@@ -426,7 +430,7 @@ def normalize_candidate_subscores(subscores: dict[str, Any]) -> dict[str, Any]:
     for key in TECHNOLOGY_DETAIL_SCORE_CANDIDATES:
         item = dict(subscores.get(key) or {})
         item["score"] = normalize_technology_detail_scores(item, key=key)
-        item["max_score"] = 50
+        item["max_score"] = TECHNOLOGY_SUBSCORE_MAX_SCORES[key]
         normalized[key] = item
     return normalized
 
@@ -435,7 +439,11 @@ def normalize_technology_detail_scores(item: dict[str, Any], *, key: str) -> int
     details = item.get("details")
     candidates_by_detail = TECHNOLOGY_DETAIL_SCORE_CANDIDATES[key]
     if not isinstance(details, dict):
-        return clamp_int(item.get("score"), default=0, max_value=50)
+        return clamp_int(
+            item.get("score"),
+            default=0,
+            max_value=TECHNOLOGY_SUBSCORE_MAX_SCORES[key],
+        )
     normalized_details = {}
     for detail_key, candidates in candidates_by_detail.items():
         raw_detail = details.get(detail_key)

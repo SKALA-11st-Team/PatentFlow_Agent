@@ -527,12 +527,12 @@ TECHNOLOGY_DETAIL_KEYS = {
 }
 
 TECHNOLOGY_SCORE_CANDIDATES = {
-    "configuration_operation_differentiation": {0, 8, 17, 25},
-    "effect_differentiation": {0, 5, 10, 15},
-    "imitation_avoidance_difficulty": {0, 3, 7, 10},
-    "component_specificity": {0, 7, 14, 20},
-    "procedure_specificity": {0, 7, 14, 20},
-    "implementation_utilization_specificity": {0, 3, 7, 10},
+    "configuration_operation_differentiation": {0, 10, 20, 30},
+    "effect_differentiation": {0, 6, 12, 18},
+    "imitation_avoidance_difficulty": {0, 4, 8, 12},
+    "component_specificity": {0, 6, 11, 16},
+    "procedure_specificity": {0, 6, 11, 16},
+    "implementation_utilization_specificity": {0, 2, 6, 8},
 }
 
 TECHNOLOGY_MAX_SCORE_LIMITATION_TERMS = (

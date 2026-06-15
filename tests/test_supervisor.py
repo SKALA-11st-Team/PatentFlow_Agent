@@ -326,19 +326,19 @@ def test_run_axis_supervisor_checks_defaults_to_passed_without_llm():
 
     technology_subscores = {
         "technical_differentiation": {
-            "score": 34,
+            "score": 40,
             "details": {
-                "configuration_operation_differentiation": technology_detail(17),
-                "effect_differentiation": technology_detail(10),
-                "imitation_avoidance_difficulty": technology_detail(7),
+                "configuration_operation_differentiation": technology_detail(20),
+                "effect_differentiation": technology_detail(12),
+                "imitation_avoidance_difficulty": technology_detail(8),
             }
         },
         "implementation_specificity": {
-            "score": 35,
+            "score": 28,
             "details": {
-                "component_specificity": technology_detail(14),
-                "procedure_specificity": technology_detail(14),
-                "implementation_utilization_specificity": technology_detail(7),
+                "component_specificity": technology_detail(11),
+                "procedure_specificity": technology_detail(11),
+                "implementation_utilization_specificity": technology_detail(6),
             }
         },
     }
@@ -361,7 +361,7 @@ def test_run_axis_supervisor_checks_defaults_to_passed_without_llm():
         valuation_result={
             "axes": {
                 axis: {
-                    "score": 66 if axis == "business_fit" else 69 if axis == "technology" else 70,
+                    "score": 66 if axis == "business_fit" else 68 if axis == "technology" else 70,
                     "grade": "B",
                     "rationale": "known 근거 기반 평가",
                     "evidence_ids": ["known"],
@@ -444,26 +444,26 @@ def test_rule_technology_supervisor_accepts_complete_detail_evidence():
         valuation_result={
             "axes": {
                 "technology": {
-                    "score": 33,
+                    "score": 34,
                     "grade": "C",
                     "rationale": "기술성 평가",
                     "confidence": 0.8,
                     "evidence_ids": [],
                     "subscores": {
                         "technical_differentiation": {
-                            "score": 16,
+                            "score": 20,
                             "details": {
-                                "configuration_operation_differentiation": detail(8),
-                                "effect_differentiation": detail(5),
-                                "imitation_avoidance_difficulty": detail(3),
+                                "configuration_operation_differentiation": detail(10),
+                                "effect_differentiation": detail(6),
+                                "imitation_avoidance_difficulty": detail(4),
                             }
                         },
                         "implementation_specificity": {
-                            "score": 17,
+                            "score": 14,
                             "details": {
-                                "component_specificity": detail(7),
-                                "procedure_specificity": detail(7),
-                                "implementation_utilization_specificity": detail(3),
+                                "component_specificity": detail(6),
+                                "procedure_specificity": detail(6),
+                                "implementation_utilization_specificity": detail(2),
                             }
                         },
                     },
@@ -544,36 +544,36 @@ def test_rule_technology_supervisor_retries_for_max_score_with_acknowledged_gap(
         valuation_result={
             "axes": {
                 "technology": {
-                    "score": 94,
+                    "score": 92,
                     "grade": "A",
                     "rationale": "기술성 평가",
                     "confidence": 0.88,
                     "evidence_ids": [],
                     "subscores": {
                         "technical_differentiation": {
-                            "score": 47,
+                            "score": 56,
                             "details": {
-                                "configuration_operation_differentiation": detail(25),
-                                "effect_differentiation": detail(15),
-                                "imitation_avoidance_difficulty": detail(7),
+                                "configuration_operation_differentiation": detail(30),
+                                "effect_differentiation": detail(18),
+                                "imitation_avoidance_difficulty": detail(8),
                             },
                         },
                         "implementation_specificity": {
-                            "score": 47,
+                            "score": 36,
                             "details": {
                                 "component_specificity": detail(
-                                    20,
+                                    16,
                                     difference_points=[
                                         "일부 인터페이스가 추상적이어서 추가 설계가 필요합니다."
                                     ],
                                 ),
                                 "procedure_specificity": detail(
-                                    20,
+                                    16,
                                     difference_points=[
                                         "반복 최적화의 종료조건과 탐색 범위가 명시되지 않았습니다."
                                     ],
                                 ),
-                                "implementation_utilization_specificity": detail(7),
+                                "implementation_utilization_specificity": detail(6),
                             },
                         },
                     },
