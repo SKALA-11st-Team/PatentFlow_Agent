@@ -605,12 +605,18 @@ def final_grade_for_average(
     return grade_for_score(average_score, cutoffs)
 
 
+def supervisor_structural_failure(state: PatentWorkflowState) -> dict[str, Any] | None:
+    """재시도 한도를 넘겨도 구조 검증을 통과 못 해 워크플로가 종료된 경우의 사유를 돌려준다."""
+    return (state.supervisor_decision or {}).get("metadata", {}).get("structural_failure")
+
+
 def is_degraded(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> bool:
     scores = valuation_scores(valuation_result)
     has_scored_axis = any(isinstance(score.score, int) for score in scores)
     warnings = set(workflow_warnings(state))
     return (
-        not has_scored_axis
+        bool(supervisor_structural_failure(state))
+        or not has_scored_axis
         or evidence_confidence(state) == "LOW"
         or "technology_comparison_empty" in warnings
         or any("_failed:" in warning for warning in warnings)
@@ -620,6 +626,10 @@ def is_degraded(state: PatentWorkflowState, valuation_result: dict[str, Any]) ->
 def failure_reason(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> str | None:
     if not is_degraded(state, valuation_result):
         return None
+    structural = supervisor_structural_failure(state)
+    if structural:
+        issues = "; ".join(str(item) for item in (structural.get("issues") or [])) or "필수 필드 누락"
+        return f"가치평가 결과가 구조 검증을 통과하지 못해 평가를 중단했습니다 ({issues})."
     if "technology_comparison_empty" in workflow_warnings(state):
         return "기술성 비교군을 확보하지 못해 제한된 근거로 AI 평가가 생성되었습니다."
     if not state.evidence_bundle:

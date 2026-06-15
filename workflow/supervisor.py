@@ -1087,7 +1087,8 @@ def apply_supervisor_retry_limit(
         return decision
 
     retry_count = increment_supervisor_retry_count(state, scope)
-    if retry_count <= retry_limit or not allow_fallback:
+    if retry_count <= retry_limit:
+        # 한도까지는 재시도한다 — 비결정 모델은 재시도 시 다른 출력이 나와 일시 글리치가 회복될 수 있다.
         return decision
 
     metadata = dict(decision.metadata)
@@ -1095,18 +1096,36 @@ def apply_supervisor_retry_limit(
         "scope": scope,
         "retry_count": retry_count,
         "retry_limit": retry_limit,
-        "fallback_action": fallback_action,
+        "fallback_action": fallback_action if allow_fallback else "end",
     }
+    if allow_fallback:
+        # 결과가 구조적으로 유효하면 다음 단계로 진행한다(graceful).
+        return SupervisorDecision(
+            passed=True,
+            current_team=decision.current_team,
+            next_team=fallback_team,
+            stage=decision.stage,
+            next_action=fallback_action,
+            issues=decision.issues,
+            missing_evidence=decision.missing_evidence,
+            reason=fallback_reason,
+            route_reason=fallback_reason,
+            metadata=metadata,
+        )
+    # 한도를 넘겼는데도 결과가 구조적으로 유효하지 않다 — 재시도해도(특히 seed 고정 시) 같은 실패가
+    # 반복되어 재귀 한도(GraphRecursionError) 크래시로 직행한다. 무한루프 대신 명확한 오류로 종료한다.
+    structural_reason = f"{scope} 결과가 구조 검증을 통과하지 못해(재시도 {retry_count}회 후) 평가를 중단했습니다."
+    metadata["structural_failure"] = {"scope": scope, "issues": list(decision.issues)}
     return SupervisorDecision(
-        passed=True,
+        passed=False,
         current_team=decision.current_team,
-        next_team=fallback_team,
+        next_team="final",
         stage=decision.stage,
-        next_action=fallback_action,
+        next_action="end",
         issues=decision.issues,
         missing_evidence=decision.missing_evidence,
-        reason=fallback_reason,
-        route_reason=fallback_reason,
+        reason=structural_reason,
+        route_reason=structural_reason,
         metadata=metadata,
     )
 
@@ -1640,9 +1659,10 @@ def check_valuation_result(state: PatentWorkflowState) -> SupervisorDecision:
         if not axis_result:
             issues.append(f"Missing valuation axis: {axis}")
             continue
-        for field in ["score", "grade", "rationale", "evidence_ids", "risk_factors", "confidence"]:
-            if field == "evidence_ids":
-                continue
+        # score·grade·rationale·confidence는 실질 값이 있어야 한다. evidence_ids·risk_factors는
+        # 빈 리스트가 정상 값이므로(근거 미사용·리스크 없음) 누락으로 보지 않는다 — 빈 값을 실패로
+        # 처리하면 seed 고정 모델에서 동일 출력이 반복돼 재시도 무한루프(GraphRecursionError)에 빠진다.
+        for field in ["score", "grade", "rationale", "confidence"]:
             if axis_result.get(field) in (None, "", []):
                 issues.append(f"{axis} missing {field}")
         for evidence_id in axis_result.get("evidence_ids", []):

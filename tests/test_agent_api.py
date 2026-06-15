@@ -172,6 +172,26 @@ def test_degraded_reflects_technology_comparison_warning():
     assert failure_reason(state, state.valuation_result).startswith("기술성 비교군")
 
 
+def test_degraded_surfaces_supervisor_structural_failure():
+    # 재시도 한도 초과 후 구조 검증 실패로 종료된 경우, 구체 사유가 failureReason에 노출된다.
+    from app.api import failure_reason, is_degraded
+
+    state = PatentWorkflowState(
+        evidence_bundle=[{"evidence_id": "e1"}],
+        supervisor_decision={
+            "passed": False,
+            "next_action": "end",
+            "metadata": {"structural_failure": {"scope": "valuation", "issues": ["market missing score"]}},
+        },
+        valuation_result={"axes": {}},
+    )
+
+    assert is_degraded(state, state.valuation_result) is True
+    reason = failure_reason(state, state.valuation_result)
+    assert "구조 검증" in reason
+    assert "market missing score" in reason
+
+
 def test_failure_reason_names_missing_search_api_key():
     from app.api import failure_reason
 

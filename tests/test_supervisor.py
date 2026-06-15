@@ -1,6 +1,7 @@
 from schemas.supervisor import SupervisorDecision
 from workflow.state import PatentWorkflowState
 from workflow.supervisor import (
+    apply_supervisor_retry_limit,
     build_supervisor_judge_prompt,
     research_supervisor_node,
     run_axis_supervisor_checks,
@@ -8,6 +9,56 @@ from workflow.supervisor import (
     valuation_supervisor_node,
     writing_supervisor_node,
 )
+
+
+def _retry_decision(issues):
+    return SupervisorDecision(
+        passed=False,
+        current_team="valuation",
+        next_team="valuation",
+        stage="valuation_check",
+        next_action="valuation_team",
+        issues=issues,
+        reason="재시도 요청",
+    )
+
+
+def _apply(state, decision, *, allow_fallback):
+    return apply_supervisor_retry_limit(
+        state,
+        decision,
+        scope="valuation",
+        retry_action="valuation_team",
+        retry_limit=1,
+        fallback_team="writing",
+        fallback_action="writing_team",
+        fallback_reason="retry limit reached; structurally valid.",
+        allow_fallback=allow_fallback,
+    )
+
+
+def test_retry_limit_retries_within_limit_even_if_invalid():
+    # 한도 내(첫 실패)에서는 구조가 깨졌어도 일단 재시도한다(일시 글리치 회복 기회).
+    state = PatentWorkflowState()
+    result = _apply(state, _retry_decision(["market missing score"]), allow_fallback=False)
+    assert result.next_action == "valuation_team"  # 여전히 재시도
+
+
+def test_retry_limit_ends_with_error_on_persistent_structural_failure():
+    # 한도를 넘겼는데도 구조가 깨져 있으면(allow_fallback=False) 무한루프 대신 end로 종료하고 사유를 남긴다.
+    state = PatentWorkflowState(team_status={"supervisor_retry_counts": {"valuation": 1}})
+    result = _apply(state, _retry_decision(["market missing score"]), allow_fallback=False)
+    assert result.passed is False
+    assert result.next_action == "end"
+    assert result.metadata["structural_failure"]["issues"] == ["market missing score"]
+
+
+def test_retry_limit_continues_when_valid_after_limit():
+    # 한도를 넘겼지만 구조가 유효하면 정상적으로 다음 단계 진행.
+    state = PatentWorkflowState(team_status={"supervisor_retry_counts": {"valuation": 1}})
+    result = _apply(state, _retry_decision([]), allow_fallback=True)
+    assert result.passed is True
+    assert result.next_action == "writing_team"
 
 
 def test_axis_supervisor_criteria_files_are_non_routing_guides():
@@ -230,6 +281,35 @@ def test_valuation_supervisor_routes_unknown_evidence_to_research():
     assert result.supervisor_decision["passed"] is False
     assert result.supervisor_decision["next_team"] == "research"
     assert result.supervisor_decision["next_action"] == "query_rewriting"
+
+
+def test_check_valuation_result_accepts_empty_risk_factors():
+    # risk_factors·missing_information은 정말 비어 있을 수 있으므로(리스크 없음/추가 확인 불필요)
+    # 빈 리스트를 '필드 누락'으로 보지 않는다. 빈 값을 실패 처리하면 seed 고정 모델에서 무한루프가 난다.
+    from workflow.supervisor import check_valuation_result
+
+    state = PatentWorkflowState(
+        evidence_bundle=[{"evidence_id": "known", "source": "naver", "source_type": "news", "content": "본문"}],
+        valuation_result={
+            "axes": {
+                axis: {
+                    "score": 80,
+                    "grade": "A",
+                    "rationale": "근거 기반 평가",
+                    "evidence_ids": ["known"],
+                    "risk_factors": [],
+                    "missing_information": [],
+                    "confidence": 0.8,
+                }
+                for axis in ["legal", "technology", "market", "business_fit"]
+            }
+        },
+    )
+
+    decision = check_valuation_result(state)
+
+    assert decision.passed is True
+    assert decision.issues == []
 
 
 def test_valuation_supervisor_uses_llm_judge_to_retry_valuation(monkeypatch):
