@@ -211,12 +211,6 @@ score = 권리안정성(40) + 권리보호력(40) + 포트폴리오·방어가�
 - claim_protection.score = core_solution_coverage.score + independent_claim_scope.score + dependent_claim_support.score + infringement_detectability.score   (max 40)
 - portfolio_defensive_value.score = portfolio_connection_coverage.score + follow_on_right_signal.score + overseas_right_coverage.score   (max 20)
 
-grade:
-80 이상 → A
-60 이상 → B
-40 이상 → C
-미만 → D
-
 confidence:
 0.0 ~ 1.0
 
