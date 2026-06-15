@@ -1,6 +1,6 @@
 # Unified API Backend (KIPRIS + NAVER + GNews)
 
-하나의 `main.py`에서 아래 3개 API를 통합 제공하는 FastAPI 백엔드입니다.
+하나의 `api_server.py`에서 아래 3개 API를 통합 제공하는 FastAPI 백엔드입니다.
 
 - KIPRISPlus
 - NAVER News Search
@@ -35,7 +35,7 @@ GNEWS_API_KEY=YOUR_GNEWS_API_KEY
 
 ```bash
 source venv/bin/activate
-python -m uvicorn main:app --reload
+python -m uvicorn open_api.api_server:app --reload
 ```
 
 실행 후:

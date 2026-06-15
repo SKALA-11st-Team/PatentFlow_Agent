@@ -80,7 +80,10 @@ def convert_industry_pdfs_to_markdown(
                 encoding="utf-8",
             )
             converted.append(markdown_path)
-    except ImportError:
+    except Exception:
+        # pdfplumber missing (ImportError) or a corrupted/encrypted PDF raising
+        # PDFSyntaxError/KeyError/OSError must not abort the batch — fall through
+        # to the opendataloader / pypdf fallbacks below.
         converted = []
 
     if converted:
@@ -96,7 +99,7 @@ def convert_industry_pdfs_to_markdown(
                 format="markdown-with-images",
             )
         converted.extend(sorted(output_dir.rglob("*.md")))
-    except subprocess.CalledProcessError:
+    except (ImportError, subprocess.CalledProcessError):
         converted = []
 
     if converted:
@@ -660,6 +663,10 @@ def split_long_text(text: str, *, token_limit: int, overlap: int) -> list[str]:
     if len(tokens) <= token_limit:
         return [text]
 
+    # Clamp overlap so the sliding window always advances; overlap >= token_limit
+    # would otherwise leave start unchanged (infinite loop) or move it backward
+    # (re-chunking the same tokens).
+    overlap = min(max(overlap, 0), token_limit - 1)
     chunks = []
     start = 0
     while start < len(tokens):

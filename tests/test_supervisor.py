@@ -1344,3 +1344,23 @@ def test_final_check_prompt_checks_format_and_content():
     assert "axis_scores의 점수·등급과 모순되지 않는가" in text
     assert "입력에 없는 사실을 단정하지 않았는가" in text
     assert "특허 전문 검토를 사업부 확인 사항에 배치하면 passed=false" in text
+
+
+def test_query_plan_payload_reads_industry_rag_item_count():
+    from workflow.supervisor import query_plan_payload
+
+    # nodes.py populates industry_rag with "item_count" (not "results"); the
+    # observation payload must reflect a non-empty RAG result from that key.
+    payload = query_plan_payload({"industry_rag": {"item_count": 3, "warning": None}})
+
+    assert payload["industry_rag"]["has_results"] is True
+    assert payload["industry_rag"]["result_count"] == 3
+
+
+def test_query_plan_payload_reports_empty_industry_rag():
+    from workflow.supervisor import query_plan_payload
+
+    payload = query_plan_payload({"industry_rag": {"item_count": 0, "warning": None}})
+
+    assert payload["industry_rag"]["has_results"] is False
+    assert payload["industry_rag"]["result_count"] == 0

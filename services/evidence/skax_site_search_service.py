@@ -378,7 +378,6 @@ def build_query_generation_plan(
     business_area = patent_field(patent_context, "business_area")
     technology_area = patent_field(patent_context, "technology_area")
     title_keywords = extract_title_keywords(title, limit=4)
-    strong_terms = strong_search_terms(patent_context, title_keywords)
     domain_profiles = business_domain_profiles(patent_context)
     domain_hints = business_domain_hints(patent_context)
 

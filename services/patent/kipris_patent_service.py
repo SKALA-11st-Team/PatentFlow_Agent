@@ -126,7 +126,13 @@ def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
     except Exception as exc:
         result["citing_documents"] = []
         result["citing_document_records"] = []
-        result["citing_stats"] = {"total_count": 0, "standardized_count": 0, "non_standardized_count": 0}
+        result["citing_stats"] = {
+            "available": False,
+            "total_count": None,
+            "standardized_count": None,
+            "non_standardized_count": None,
+            "missing_reason": "kipris_citing_info_fetch_failed",
+        }
         result.setdefault("warnings", []).append(
             f"citing_info_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
         )
@@ -1020,8 +1026,9 @@ def normalize_kipris_citing_documents(raw: dict[str, Any]) -> list[dict[str, Any
     return _dedupe_kipris_citing_documents(normalized)
 
 
-def build_citing_stats(citing_documents: list[dict[str, Any]]) -> dict[str, int]:
+def build_citing_stats(citing_documents: list[dict[str, Any]]) -> dict[str, Any]:
     return {
+        "available": True,
         "total_count": len(citing_documents),
         "standardized_count": sum(1 for item in citing_documents if item.get("is_standardized")),
         "non_standardized_count": sum(1 for item in citing_documents if not item.get("is_standardized")),
@@ -1100,6 +1107,7 @@ def resolve_citation_evidence(
             foreign_citation_documents = fetcher(
                 deduped_foreign_candidates,
                 max_candidates=max_foreign_citations,
+                warnings=warnings,
             )
         except Exception as exc:
             warnings.append(f"foreign_claims_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}")
@@ -1376,6 +1384,7 @@ def _fetch_foreign_claims(
     candidates: list[dict[str, Any]],
     *,
     max_candidates: int = 3,
+    warnings: list[str] | None = None,
     **kwargs: Any,
 ) -> list[dict[str, Any]]:
     kipris_documents = _fetch_foreign_claims_from_kipris(
@@ -1405,8 +1414,12 @@ def _fetch_foreign_claims(
             max_candidates=max_candidates,
             **kwargs,
         )
-    except Exception:
+    except Exception as exc:
         bigquery_documents = []
+        if warnings is not None:
+            warnings.append(
+                f"bigquery_claims_fetch_failed:{exc.__class__.__name__}:{str(exc)[:300]}"
+            )
     documents = [*kipris_documents, *bigquery_documents]
     resolved_keys = {_foreign_document_key(document) for document in documents}
     remaining_candidates = [
@@ -2000,10 +2013,14 @@ def fetch_foreign_target_reference_data(
         cited_documents = dedupe_foreign_reference_documents(google_cited)[:max_documents]
         cited_source = "google_patents_html_backward_references"
 
+    # 해외 참조 문헌엔 KR build_citation_stats가 쓰는 is_standardized 판정 근거가 없어
+    # 표준화/비표준화 분해 자체가 불가능하다. 모두 표준화로 집계하면 KR과 의미가 어긋나므로
+    # 표준화 분해는 미상으로 노출한다.
     stats = {
         "total_count": len(cited_documents),
-        "standardized_count": len(cited_documents),
-        "non_standardized_count": 0,
+        "standardized_count": None,
+        "non_standardized_count": None,
+        "missing_reason": "foreign_citation_standardization_basis_unavailable",
     }
     citing_stats = build_citing_stats(citing_documents)
     citing_stats["available"] = citing_available

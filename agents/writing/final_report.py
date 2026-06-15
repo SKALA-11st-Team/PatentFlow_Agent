@@ -328,6 +328,19 @@ def final_report_patent_metadata(state: PatentWorkflowState) -> dict[str, Any]:
     }
 
 
+# 외부 근거의 title/source는 본문(content)과 달리 sanitize를 거치지 않고 final_report 프롬프트로
+# 유입될 수 있어, 제어문자 제거 + 공백 정규화 + 길이 제한으로 본문과 같은 방어 수준을 맞춘다(SEC-03).
+_REFERENCE_CONTROL_CHARS_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _sanitize_reference_text(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    cleaned = _REFERENCE_CONTROL_CHARS_RE.sub("", value)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:300]
+
+
 def build_evidence_references(state: PatentWorkflowState, valuation_result: dict[str, Any]) -> list[dict[str, Any]]:
     evidence_axis_usage = collect_evidence_axis_usage(valuation_result)
     if not evidence_axis_usage:
@@ -344,13 +357,13 @@ def build_evidence_references(state: PatentWorkflowState, valuation_result: dict
             {
                 "evidence_id": evidence_id,
                 "source_type": item.get("source_type"),
-                "source": item.get("source"),
+                "source": _sanitize_reference_text(item.get("source")),
                 "source_domain": item.get("source_domain")
                 or ((item.get("metadata") or {}).get("source_domain") if isinstance(item.get("metadata"), dict) else None),
                 "source_tier": item.get("source_tier")
                 or ((item.get("metadata") or {}).get("source_tier") if isinstance(item.get("metadata"), dict) else None),
-                "title": item.get("title") or item.get("source"),
-                "citation_title": item.get("title") or item.get("source"),
+                "title": _sanitize_reference_text(item.get("title") or item.get("source")),
+                "citation_title": _sanitize_reference_text(item.get("title") or item.get("source")),
                 "url": item.get("url"),
                 "published_at": item.get("published_at"),
                 "cited_by_axes": evidence_axis_usage[evidence_id],

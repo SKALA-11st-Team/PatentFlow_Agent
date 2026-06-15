@@ -463,6 +463,79 @@ def test_analyze_portfolio_siblings_builds_portfolio_context(tmp_path):
     assert "뉴스 이벤트를 추출하는 방법" in captured_prompts[0]
 
 
+def test_find_sibling_patents_matches_exactly_when_product_family_empty(tmp_path):
+    db_path = tmp_path / "patents.sqlite3"
+    create_patent_db(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            """
+            INSERT INTO patents (
+                id, management_number, application_number, registration_number, title_final,
+                business_area, technology_area, related_product, country, joint_application,
+                joint_applicant_name, status, application_date, registration_date,
+                expected_expiration_date, source_file_id, title_draft, evaluation_status,
+                data_source_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    301,
+                    "Q1",
+                    "10-2024-0000201",
+                    "10-5000201",
+                    "괄호 시작 제품 대상 특허",
+                    "AI",
+                    "제어",
+                    "（스마트팩토리）솔루션",
+                    "KR",
+                    "N",
+                    None,
+                    "등록",
+                    "2024-01-01",
+                    "2025-01-01",
+                    None,
+                    1,
+                    None,
+                    None,
+                    None,
+                ),
+                (
+                    302,
+                    "Q2",
+                    "10-2024-0000202",
+                    "10-5000202",
+                    "동일 제품 sibling 특허",
+                    "AI",
+                    "제어",
+                    "（스마트팩토리）솔루션",
+                    "KR",
+                    "N",
+                    None,
+                    "등록",
+                    "2024-02-01",
+                    "2025-02-01",
+                    None,
+                    1,
+                    None,
+                    None,
+                    None,
+                ),
+            ],
+        )
+
+    siblings = find_sibling_patents(
+        {
+            "id": 301,
+            "related_product": "（스마트팩토리）솔루션",
+            "application_date": "2024-01-01",
+        },
+        database_path=db_path,
+    )
+
+    assert [sibling["id"] for sibling in siblings] == [302]
+    assert siblings[0]["sibling_match_reasons"] == ["same_related_product"]
+
+
 def test_enrich_sibling_patents_skips_foreign_api_fetch():
     calls = []
 

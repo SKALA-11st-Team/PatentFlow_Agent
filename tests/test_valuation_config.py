@@ -91,11 +91,12 @@ def test_grade_for_score_uses_custom_cutoffs():
 
 
 def test_score_to_final_recommendation_three_tier_cutoffs():
-    # ≥70 유지 권고, 50~69 조건부 유지, <50 포기 검토.
-    assert score_to_final_recommendation(70) == "유지 권고"
-    assert score_to_final_recommendation(60) == "조건부 유지"
+    # 기본 '유지 권고' 임계(maintainThreshold)는 60: ≥60 유지 권고, 50~59 조건부 유지, <50 포기 검토.
+    assert score_to_final_recommendation(60) == "유지 권고"
+    assert score_to_final_recommendation(55) == "조건부 유지"
     assert score_to_final_recommendation(49) == "포기 검토"
-    # 컷오프는 파라미터로 조정 가능하다.
+    # 컷오프는 파라미터로 조정 가능하다(운영 설정 maintainThreshold가 여기에 주입된다).
+    assert score_to_final_recommendation(72, maintain_cutoff=75) == "조건부 유지"
     assert score_to_final_recommendation(55, maintain_cutoff=50) == "유지 권고"
 
 
@@ -135,15 +136,20 @@ def test_build_final_valuation_result_applies_weighted_average_and_cutoffs():
     assert result["axes"]["legal"]["grade"] == "A"
 
 
-def test_recommendation_uses_fixed_cutoffs_not_config_threshold():
-    # recommendation은 고정 컷오프(70/50)를 적용하며 maintainThreshold 설정에 영향받지 않는다.
+def test_recommendation_uses_configured_maintain_threshold():
+    # recommendation의 '유지 권고' 임계는 운영 설정 maintainThreshold(BE 단일 출처)를 따른다.
     config = resolve_valuation_config({"maintainThreshold": 75})
 
-    # business_fit < 60(오버라이드 없음), 평균 70 → 설정과 무관하게 유지 권고(70 ≥ 70).
+    # business_fit < 60(오버라이드 없음), 평균 70 < 임계 75 → 조건부 유지.
     result = build_final_valuation_result(four_axes(70, 70, 70, 50), config=config)
 
     assert result["average_score"] == 70.0
-    assert result["recommendation"] == "유지 권고"
+    assert result["recommendation"] == "조건부 유지"
+
+    # 임계를 70으로 낮추면 같은 평균(70)이 유지 권고로 올라간다.
+    lower = resolve_valuation_config({"maintainThreshold": 70})
+    result_lower = build_final_valuation_result(four_axes(70, 70, 70, 50), config=lower)
+    assert result_lower["recommendation"] == "유지 권고"
 
 
 def test_build_final_valuation_result_business_fit_override_wins_over_threshold():
@@ -157,13 +163,14 @@ def test_build_final_valuation_result_business_fit_override_wins_over_threshold(
     assert result["recommendation"] == "유지 권고"
 
 
-def test_recommendation_ignores_maintain_threshold_config():
-    # recommendation은 점수 기반 고정 컷오프(70/50)를 쓰므로 maintainThreshold 설정에 좌우되지 않는다.
+def test_recommendation_respects_low_maintain_threshold_config():
+    # maintainThreshold를 0으로 낮추면 '유지 권고' 임계가 0이 되어 모든 평균이 유지 권고로 산정된다.
+    # (운영 설정이 recommendation에 실효성을 갖는지 검증 — BE 계약상 유지 임계는 0~100 조정 가능.)
     config = resolve_valuation_config({"maintainThreshold": 0})
 
     result = build_final_valuation_result(four_axes(10, 10, 10, 10), config=config)
 
-    assert result["recommendation"] == "포기 검토"
+    assert result["recommendation"] == "유지 권고"
 
 
 def test_reconcile_legal_scores_uses_configured_subscore_max():

@@ -89,15 +89,26 @@ def find_sibling_patents(
 
     if related_product not in EXCLUDED_RELATED_PRODUCTS:
         product_family = normalize_product_family(related_product)
-        conditions.append(
-            """
-            (
-                COALESCE(related_product, '') NOT IN ('', '기타', 'etc', 'ETC', '기타/미정')
-                AND (related_product = ? OR related_product LIKE ?)
+        if product_family:
+            conditions.append(
+                """
+                (
+                    COALESCE(related_product, '') NOT IN ('', '기타', 'etc', 'ETC', '기타/미정')
+                    AND (related_product = ? OR related_product LIKE ?)
+                )
+                """
             )
-            """
-        )
-        params.extend([related_product, f"{product_family}%" if product_family else ""])
+            params.extend([related_product, f"{product_family}%"])
+        else:
+            conditions.append(
+                """
+                (
+                    COALESCE(related_product, '') NOT IN ('', '기타', 'etc', 'ETC', '기타/미정')
+                    AND related_product = ?
+                )
+                """
+            )
+            params.append(related_product)
 
     if management_family:
         conditions.append("(management_number = ? OR management_number LIKE ?)")

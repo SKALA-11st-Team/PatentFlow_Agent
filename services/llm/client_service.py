@@ -60,6 +60,10 @@ def call_llm(
         }
         if supports_temperature(selected_model):
             chat_request["temperature"] = temperature
+        # 호출별 timeout 오버라이드(전역 클라이언트 timeout보다 우선). Chat Completions도
+        # per-request timeout을 받으므로, seed 경로에서 호출자가 넘긴 timeout을 잃지 않는다.
+        if timeout is not None:
+            chat_request["timeout"] = timeout
         chat_response = _get_client().chat.completions.create(**chat_request)
         content = chat_response.choices[0].message.content if chat_response.choices else None
         if not content:

@@ -21,6 +21,8 @@ DEFAULT_AXIS_WEIGHTS: dict[str, float] = {
 }
 DEFAULT_GRADE_CUTOFFS: dict[str, float] = {"A": 80.0, "B": 60.0, "C": 40.0}
 DEFAULT_MAINTAIN_THRESHOLD: float = 60.0
+# 사업 연계성(business_fit) 점수가 이 값 이상이면 AI 권고를 '유지 권고'로 끌어올리는 오버라이드 기준점.
+DEFAULT_BUSINESS_FIT_OVERRIDE: float = 60.0
 DEFAULT_SUBSCORE_WEIGHTS: dict[str, dict[str, int]] = {
     "legal": {
         "right_stability": 40,
@@ -47,6 +49,7 @@ class ValuationConfig(BaseModel):
     # 범위 검증은 resolve_valuation_config에서 클램프로 처리한다(필드 제약으로 두면
     # 한 값의 범위 초과가 유효한 나머지 설정 전체를 기본값으로 폴백시키기 때문).
     maintainThreshold: float = DEFAULT_MAINTAIN_THRESHOLD
+    businessFitOverrideThreshold: float = DEFAULT_BUSINESS_FIT_OVERRIDE
     subscoreWeights: dict[str, dict[str, int]] = Field(
         default_factory=lambda: {axis: dict(values) for axis, values in DEFAULT_SUBSCORE_WEIGHTS.items()}
     )
@@ -91,6 +94,8 @@ def resolve_valuation_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     threshold = float(config.maintainThreshold)
     threshold = min(100.0, max(0.0, threshold))
 
+    business_fit_threshold = min(100.0, max(0.0, float(config.businessFitOverrideThreshold)))
+
     subscore_weights: dict[str, dict[str, int]] = {}
     for axis, defaults in DEFAULT_SUBSCORE_WEIGHTS.items():
         provided = config.subscoreWeights.get(axis) or {}
@@ -108,6 +113,7 @@ def resolve_valuation_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         "axisWeights": axis_weights,
         "gradeCutoffs": cutoffs,
         "maintainThreshold": threshold,
+        "businessFitOverrideThreshold": business_fit_threshold,
         "subscoreWeights": subscore_weights,
         "source": source,
     }

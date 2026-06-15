@@ -3452,6 +3452,37 @@ def test_normalize_axis_result_passes_through_prior_art_references():
     assert result["prior_art_references"] == ["KR10-0948760", "KR10-2014-0072547"]
 
 
+def test_normalize_axis_result_raises_runtime_error_on_non_numeric_score():
+    from agents.valuation import normalize_axis_llm_result
+
+    parsed = {
+        "axis": "legal",
+        "label": "권리성",
+        "score": "높음",  # 숫자가 아닌 문자열 → 도메인 친화적 RuntimeError로 통일
+        "rationale": "근거 기반 평가",
+        "confidence": 0.7,
+    }
+
+    with pytest.raises(RuntimeError, match="non-numeric score"):
+        normalize_axis_llm_result("legal", parsed, evidence=[])
+
+
+def test_normalize_axis_result_accepts_decimal_string_score():
+    from agents.valuation import normalize_axis_llm_result
+
+    parsed = {
+        "axis": "legal",
+        "label": "권리성",
+        "score": "75.5",  # 소수 문자열은 절삭해 수용(confidence float()와 톤 정합)
+        "rationale": "근거 기반 평가",
+        "confidence": "0.7",
+    }
+
+    result = normalize_axis_llm_result("legal", parsed, evidence=[])
+
+    assert result["score"] == 75
+
+
 def test_axis_llm_retries_when_first_response_is_not_json(monkeypatch):
     import agents.valuation as valuation
 

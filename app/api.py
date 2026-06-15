@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from agents.field_recommendation import recommend_fields
+from agents.valuation import CORE_VALUATION_AXES
 from agents.valuation_axes.common import grade_for_score
 from agents.writing.final_report import build_evidence_references
 from app.config import settings
@@ -74,21 +75,6 @@ class PatentEvaluationRequest(BaseModel):
     # 계약 C1: BE가 전달하는 가치평가 기준(축 가중치/등급 컷오프/유지 임계/subscore 배점).
     # 누락 시 기본값으로 평가한다(구 BE 호환). 잘못된 값은 resolve_valuation_config가 보정한다.
     valuationConfig: dict[str, Any] | None = None
-
-
-class ValuationPromptResponse(BaseModel):
-    axis: str
-    label: str
-    path: str
-    markdown: str
-    checksum: str
-    updatedAt: datetime | None = None
-
-
-class ValuationPromptUpdateRequest(BaseModel):
-    markdown: str
-    reason: str | None = None
-    expectedChecksum: str | None = None
 
 
 # ORCH-06/AIREPORT-02: 축별 근거의 클릭형 출처. evidence_id로 연결되는 근거의 제목/URL을 노출한다.
@@ -308,8 +294,14 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
     initial_state = PatentWorkflowState(user_input=build_api_user_input(patent_id, request))
     final_state = run_workflow_guarded(initial_state)
 
+    # 영속화(부가 기능) 실패가 이미 계산된 평가 응답을 통째로 날리지 않도록 best-effort로 처리한다.
+    # 실패는 warnings로 표면화해 BE/FE가 인지하되, 핵심 PatentEvaluationResponse는 정상 반환한다.
+    save_warnings: list[str] = []
     if not request.noSave:
-        save_outputs(final_state)
+        try:
+            save_outputs(final_state)
+        except Exception as exc:  # noqa: BLE001 - 저장 실패는 경고로만 표면화하고 평가 응답은 유지
+            save_warnings.append(f"artifact_save_failed:{exc.__class__.__name__}")
     summary_result = final_state.summary_result or {}
     valuation_result = final_state.valuation_result or {}
     valuation_markdown = (valuation_result.get("final_report_markdown") or "").strip()
@@ -317,10 +309,13 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
 
     evidence_bundle = final_state.evidence_bundle or []
     applied_config = valuation_result.get("applied_config") or final_state.user_input.get("valuation_config")
+    degraded = is_degraded(final_state, valuation_result)
     return PatentEvaluationResponse(
         patentId=patent_id,
         scores=valuation_scores(valuation_result, evidence_bundle),
-        recommendation=valuation_result.get("recommendation") or "포기 검토",
+        # 평가 미산출/degraded로 recommendation이 비면 '포기(ABANDON)'로 단정하지 않고
+        # 중립값 '추가 정보 필요'(BE Recommendation.REVIEW_AGAIN)를 기본값으로 둔다(BE fallback과 정렬).
+        recommendation=valuation_result.get("recommendation") or ("추가 정보 필요" if degraded else "포기 검토"),
         summaryMarkdown=summary_markdown or None,
         summaryBrief=summary_result.get("summary_brief") or None,
         valuationReportMarkdown=valuation_markdown or None,
@@ -330,9 +325,9 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         averageScore=valuation_average_score(valuation_result),
         finalGrade=valuation_result.get("final_grade")
         or final_grade_for_average(valuation_average_score(valuation_result), applied_config),
-        degraded=is_degraded(final_state, valuation_result),
+        degraded=degraded,
         failureReason=failure_reason(final_state, valuation_result),
-        warnings=workflow_warnings(final_state),
+        warnings=dedupe(workflow_warnings(final_state) + save_warnings),
         evidenceConfidence=evidence_confidence(final_state),
         # ORCH-06/AIREPORT-02: 워크플로가 이미 산출한 리치 근거를 API로 풀스루한다.
         missingInformation=[str(item) for item in (valuation_result.get("missing_information") or []) if item],
@@ -503,7 +498,8 @@ def valuation_scores(
                 category=axis_result.get("label") or axis,
                 score=axis_result.get("score"),
                 grade=axis_result.get("grade"),
-                evidence=axis_result.get("rationale") or "평가 근거가 생성되지 않았습니다.",
+                # 축 근거 미산출(degraded) 시 출처 결손 표준 표현으로 표기한다.
+                evidence=axis_result.get("rationale") or "추가 확인 필요(평가 근거 미산출)",
                 evidenceDetails=build_axis_evidence_details(axis_result, evidence_index),
             )
         )
@@ -547,7 +543,8 @@ def valuation_average_score(valuation_result: dict[str, Any]) -> float | None:
         return round(float(average_score), 1)
     total_score = valuation_result.get("total_score")
     if isinstance(total_score, (int, float)):
-        return round(float(total_score) / 4, 1)
+        # total_score는 권리성·기술성·시장성 3축 합(max 300)이므로 핵심 축 수로 나눠 평균을 환산한다.
+        return round(float(total_score) / len(CORE_VALUATION_AXES), 1)
     return None
 
 

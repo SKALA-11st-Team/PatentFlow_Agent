@@ -613,6 +613,90 @@ def test_collect_external_evidence_empty_results_not_flagged_as_gateway_failure(
     assert not any("external_evidence_unavailable" in warning for warning in result["warnings"])
 
 
+# agent-evidence-1: 해외특허인데 대상국이 미한정(EP/WO·미매핑국, domestic_country=None)이면
+# domestic 채널은 country 제한 없는 글로벌 영어 뉴스로 분기하므로 'domestic_news'가 아니라
+# 'global_news'로 태깅돼 일반 키워드 관련성 필터를 적용받아야 한다(키워드 면제 우회 방지).
+def test_collect_external_evidence_unmapped_foreign_tags_global_news_not_domestic(monkeypatch):
+    tavily_country_args = []
+
+    def fake_search_news_via_tavily(query, *, max_results, country=None):
+        tavily_country_args.append(country)
+        raise AssertionError("미한정 해외국은 country 한정 domestic_news 경로를 타면 안 된다")
+
+    def fake_search_global_news_via_tavily(query, *, max_results):
+        return {
+            "results": [
+                {
+                    "title": query,
+                    "url": f"https://example.com/{query.replace(' ', '-')}",
+                    "content": f"{query} description",
+                    "published_date": "2026-05-05T00:00:00Z",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.search_news_via_tavily",
+        fake_search_news_via_tavily,
+    )
+    monkeypatch.setattr(
+        "services.evidence.external_search_service.search_global_news_via_tavily",
+        fake_search_global_news_via_tavily,
+    )
+
+    result = collect_external_evidence(
+        preprocessed_patent={"metadata": {"title": "AI inference engine"}, "sections": {"abstract": "AI model serving"}},
+        patent_id=1,
+        include_naver=True,
+        include_gnews=False,
+        include_kipris=False,
+        is_foreign=True,
+        domestic_country=None,
+        domestic_queries_override=["AI inference engine market"],
+        en_queries_override=[],
+        query_limit_per_axis=1,
+        fetch_news_full_text=False,
+        save=False,
+    )
+
+    # country 한정 domestic_news 경로(키워드 면제)는 타지 않고 global_news로 수집된다.
+    assert tavily_country_args == []
+    assert result["items"]
+    assert all(item.get("source") == "global_news" for item in result["items"])
+    assert "domestic_news" not in result["rewrite_meta"]["debug_fetch_task_sources"]
+    assert "global_news" in result["rewrite_meta"]["debug_fetch_task_sources"]
+
+
+# agent-evidence-4: KIPRIS 경쟁특허 검색이 예외 없이 0건을 반환하면 뉴스 소스와 동일하게
+# 빈 결과 경고를 남겨 관찰성 비대칭을 없앤다.
+def test_collect_external_evidence_kipris_empty_results_emits_warning(monkeypatch):
+    def fake_request_json(base_url, path, params, *, timeout=20):
+        del base_url, timeout
+        if path == "/api/news/search":
+            return {"items": []}
+        # KIPRIS 경쟁특허 검색이 정상 응답으로 0건 반환.
+        return {"response": {"body": {"items": ""}}}
+
+    monkeypatch.setattr("services.evidence.external_search_service.request_json", fake_request_json)
+
+    result = collect_external_evidence(
+        preprocessed_patent={"metadata": {"title": "스마트팩토리"}, "sections": {"abstract": "공장 자동화"}},
+        patent_id=1,
+        application_number="1020230012345",
+        include_naver=False,
+        include_gnews=False,
+        include_kipris=True,
+        is_foreign=False,
+        domestic_queries_override=[],
+        en_queries_override=[],
+        query_limit_per_axis=1,
+        fetch_news_full_text=False,
+        save=False,
+    )
+
+    assert any(warning.startswith("kipris_empty_results:") for warning in result["warnings"])
+
+
 def test_save_skax_site_search_result_persists_queries_and_diagnostics(tmp_path):
     # collect_skax_site_evidence 반환 형태를 그대로 저장한다.
     skax_result = {
@@ -706,4 +790,8 @@ def test_collect_external_evidence_survives_malformed_source_payload(monkeypatch
     )
 
     assert result["items"] == []
-    assert any("naver_news call failed" in warning and "TypeError" in warning for warning in result["warnings"])
+    # 부분 소스 실패 경고는 '_failed:' 규약으로 통일돼 is_degraded(app/api.py) 신호로 연결된다.
+    assert any(
+        "naver_news_call_failed:" in warning and "_failed:" in warning and "TypeError" in warning
+        for warning in result["warnings"]
+    )

@@ -1341,8 +1341,8 @@ def query_plan_payload(query_plan: dict[str, Any]) -> dict[str, Any]:
             "warnings": limit_list(news_filter.get("warnings"), 10),
         },
         "industry_rag": {
-            "has_results": bool(industry_rag.get("results")),
-            "result_count": safe_len(industry_rag.get("results")),
+            "has_results": bool(industry_rag.get("item_count")),
+            "result_count": industry_rag.get("item_count") or 0,
             "warning": industry_rag.get("warning"),
         },
         "compressed_evidence": {

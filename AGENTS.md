@@ -153,13 +153,14 @@ type ReviewWorkflowStatus =
   | "REVIEW_QUARTER_STARTED"
   | "MAIL_READY"
   | "WAITING_BUSINESS_RESPONSE"
-  | "BUSINESS_RESPONSE_RECEIVED";
+  | "BUSINESS_RESPONSE_RECEIVED"
+  | "LEGAL_ACTION_RECORDED";
 
 type Recommendation =
   | "MAINTAIN"
   | "REVIEW_AGAIN"
   | "ABANDON"
-  | "HOLD";
+  | "CONDITIONAL_MAINTAIN";
 
 type BusinessOpinionDecision =
   | "MAINTAIN"

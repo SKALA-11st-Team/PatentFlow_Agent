@@ -14,7 +14,7 @@ from services.rag.industry_rag_service import (
     resolve_patent_industries,
 )
 from rag.chunkers.ai_index_chunker import is_noise_section, strip_embedded_chart_ocr_tail
-from rag.industry_report_chunker import Section, infer_published_year
+from rag.industry_report_chunker import Section, infer_published_year, split_long_text
 from services.rag import industry_rag_service
 
 
@@ -349,3 +349,14 @@ def test_openai_embedding_uses_timeout_and_retry_settings():
 
     assert model.timeout == settings.openai_embedding_timeout
     assert model.max_retries == settings.openai_embedding_max_retries
+
+
+def test_split_long_text_advances_when_overlap_not_below_limit():
+    # overlap >= token_limit must not stall (infinite loop) or re-chunk backward;
+    # the window is expected to keep advancing and terminate.
+    text = " ".join(str(i) for i in range(10))
+
+    chunks = split_long_text(text, token_limit=4, overlap=4)
+
+    assert chunks
+    assert chunks[-1].split()[-1] == "9"

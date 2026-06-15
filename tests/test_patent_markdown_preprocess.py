@@ -566,3 +566,14 @@ def test_foreign_ipc_prefers_api_over_body():
         api_data={"metadata": {"country": "US", "ipc": ["G16H 50/70"]}, "sections": {}, "claims": []},
     )
     assert result["metadata"]["ipc"] == ["G16H 50/70"]
+
+
+def test_country_prefix_falls_back_to_kr_when_db_metadata_is_none_with_api_data():
+    # api_data 지정 + db_metadata=None + 양쪽 country 결손 조합에서 country_prefix 계산이
+    # db_metadata.get(...)로 크래시하지 않고 KR 폴백되어야 한다.
+    result = build_preprocessed_patent(
+        "(11) 등록번호 10-1234567\n",
+        db_metadata=None,
+        api_data={"metadata": {"registration_number": "10-1234567"}, "sections": {}, "claims": []},
+    )
+    assert result["patent_id"] == "KR10-1234567"
