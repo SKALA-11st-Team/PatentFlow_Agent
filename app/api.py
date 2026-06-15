@@ -128,6 +128,10 @@ class PatentEvaluationScore(BaseModel):
     evidence: str
     # ORCH-06/AIREPORT-02: 축별 세부 근거(출처 URL 포함). 데이터 없으면 빈 리스트.
     evidenceDetails: list[EvidenceDetail] = Field(default_factory=list)
+    # AIREPORT-AXIS: 축별 상세 모달용 — 위험 요인·부족 정보·신뢰도(0~1).
+    riskFactors: list[str] = Field(default_factory=list)
+    missingInformation: list[str] = Field(default_factory=list)
+    confidence: float | None = None
 
 
 class PatentEvaluationResponse(BaseModel):
@@ -548,6 +552,9 @@ def valuation_scores(
                 # 축 근거 미산출(degraded) 시 출처 결손 표준 표현으로 표기한다.
                 evidence=axis_result.get("rationale") or "추가 확인 필요(평가 근거 미산출)",
                 evidenceDetails=build_axis_evidence_details(axis_result, evidence_index),
+                riskFactors=[str(item) for item in (axis_result.get("risk_factors") or []) if item],
+                missingInformation=[str(item) for item in (axis_result.get("missing_information") or []) if item],
+                confidence=axis_result.get("confidence"),
             )
         )
     return scores
