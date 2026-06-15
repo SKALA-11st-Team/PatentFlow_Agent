@@ -246,6 +246,57 @@ def test_evaluate_patent_does_not_use_shared_db_fallback_by_default(monkeypatch)
     assert captured["patent_id"] == 1
 
 
+def test_evaluate_patent_builds_patent_record_from_metadata(monkeypatch):
+    captured = {}
+
+    def fake_run_workflow(state: PatentWorkflowState):
+        captured.update(state.user_input)
+        state.summary_result = {"plain_summary": "요약"}
+        state.valuation_result = {"axes": {}, "final_report_markdown": "보고서"}
+        return state
+
+    monkeypatch.setattr("app.api.run_workflow", fake_run_workflow)
+    monkeypatch.setattr("app.api.save_outputs", lambda state: {})
+
+    response = client.post(
+        "/api/v1/ai/patents/PAT-2026-0028/evaluate",
+        json={
+            "noSave": True,
+            "applicationNumber": "10-2024-0115774",
+            "registrationNumber": "10-2932891",
+            "managementNumber": "P202405001-KR0",
+            "patent": {
+                "title": "강화학습 자산배분 엔진",
+                "draftTitle": "자산배분 시스템",
+                "businessArea": "Data",
+                "technologyArea": "데이터분석",
+                "productName": "로보어드바이저",
+                "country": "KR",
+                "coApplicants": None,
+                "jointApplication": False,
+                "applicationDate": "2024-08-28",
+                "registrationDate": "2026-02-25",
+                "expectedExpirationDate": "2044-08-28",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    # BE 메타데이터가 오면 로컬 SQLite 키 컨벤션의 patent_record가 구성된다(snake_case + 등록 파생).
+    record = captured["patent_record"]
+    assert record["application_number"] == "10-2024-0115774"
+    assert record["title_final"] == "강화학습 자산배분 엔진"
+    assert record["title_draft"] == "자산배분 시스템"
+    assert record["business_area"] == "Data"
+    assert record["technology_area"] == "데이터분석"
+    assert record["related_product"] == "로보어드바이저"
+    assert record["country"] == "KR"
+    assert record["status"] == "등록"
+    assert record["application_date"] == "2024-08-28"
+    # None 값(coApplicants)은 레코드에서 제외된다.
+    assert "joint_applicant_name" not in record
+
+
 def test_evaluate_patent_can_use_shared_db_fallback_when_enabled(monkeypatch):
     captured = {}
 

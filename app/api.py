@@ -64,11 +64,29 @@ VALUATION_PROMPT_LABELS = {
 }
 
 
+# BE가 공유 PG에서 보유한 특허 메타데이터. 제공되면 에이전트는 로컬 patents.sqlite3 조회를
+# 건너뛰고 이 값으로 patent_structured를 구성한다(특허 본문은 여전히 KIPRIS/PDF에서 수집).
+# 누락 시 기존대로 번호로 로컬 DB를 조회한다(에이전트 단독 실행/구 BE 호환).
+class PatentMetadata(BaseModel):
+    title: str | None = None
+    draftTitle: str | None = None
+    businessArea: str | None = None
+    technologyArea: str | None = None
+    productName: str | None = None
+    country: str | None = None
+    coApplicants: str | None = None
+    jointApplication: bool | None = None
+    applicationDate: str | None = None
+    registrationDate: str | None = None
+    expectedExpirationDate: str | None = None
+
+
 class PatentEvaluationRequest(BaseModel):
     managementNumber: str | None = None
     applicationNumber: str | None = None
     registrationNumber: str | None = None
     title: str | None = None
+    patent: PatentMetadata | None = None
     noSave: bool = False
     useLlmSupervisor: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -404,6 +422,31 @@ def build_api_user_input(patent_id: str, request: PatentEvaluationRequest) -> di
         user_input["patent_id"] = int(patent_id)
     else:
         user_input["management_number"] = patent_id
+    # BE가 특허 메타데이터를 넘기면 로컬 patents.sqlite3 조회 없이 patent_record를 구성한다.
+    # patent_fetch_node가 이 레코드를 patent_structured로 쓰고, 본문은 application_number로 KIPRIS/PDF에서 수집한다.
+    if request.patent is not None:
+        meta = request.patent
+        record = {
+            "id": patent_id,
+            "management_number": management_number,
+            "application_number": application_number,
+            "registration_number": registration_number,
+            "title_final": meta.title,
+            "title": meta.title,
+            "title_draft": meta.draftTitle,
+            "business_area": meta.businessArea,
+            "technology_area": meta.technologyArea,
+            "related_product": meta.productName,
+            "country": meta.country,
+            "joint_application": meta.jointApplication,
+            "joint_applicant_name": meta.coApplicants,
+            # 에이전트 status는 법적 상태("등록"/"출원") 컨벤션 — 등록번호 유무로 충실히 파생한다.
+            "status": "등록" if registration_number else "출원",
+            "application_date": meta.applicationDate,
+            "registration_date": meta.registrationDate,
+            "expected_expiration_date": meta.expectedExpirationDate,
+        }
+        user_input["patent_record"] = {key: value for key, value in record.items() if value is not None}
     # EVID-02: DART 재무근거(opt-in) — 요청 metadata에 corp_code가 있으면 근거 수집에 전달.
     dart_corp_code = normalize_optional_identifier((request.metadata or {}).get("dart_corp_code"))
     if dart_corp_code:

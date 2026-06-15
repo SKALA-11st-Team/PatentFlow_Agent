@@ -47,14 +47,22 @@ from workflow.state import PatentWorkflowState
 
 @trace(run_type="tool")
 def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
-    patent = get_patent(
-        patent_id=state.user_input.get("patent_id"),
-        application_number=state.user_input.get("application_number"),
-        registration_number=state.user_input.get("registration_number"),
-        management_number=state.user_input.get("management_number"),
-    )
+    # BE가 메타데이터(patent_record)를 넘기면 로컬 SQLite 조회를 건너뛰고 그대로 쓴다(본문은 아래 KIPRIS/PDF로 수집).
+    record = state.user_input.get("patent_record")
+    if record:
+        patent = dict(record)
+    else:
+        patent = get_patent(
+            patent_id=state.user_input.get("patent_id"),
+            application_number=state.user_input.get("application_number"),
+            registration_number=state.user_input.get("registration_number"),
+            management_number=state.user_input.get("management_number"),
+        )
     state.patent_structured = patent
-    if patent and (state.user_input.get("collect_kipris_api") or state.user_input.get("collect_pdf")):
+    # KIPRIS/PDF 수집은 출원번호가 있어야 가능하다(메타데이터 경로에서 누락 시 방어).
+    if patent and patent.get("application_number") and (
+        state.user_input.get("collect_kipris_api") or state.user_input.get("collect_pdf")
+    ):
         country = str(patent.get("country") or "").strip().upper()
         if country and country != "KR":
             state.kipris_api_data = fetch_foreign_patent_rights_data(
@@ -84,7 +92,8 @@ def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
             },
         }
     patent_country = str((patent or {}).get("country") or "").strip().upper()
-    if patent and state.user_input.get("collect_pdf") and not state.parsed_pdf and patent_country in {"", "KR"}:
+    if (patent and patent.get("application_number") and state.user_input.get("collect_pdf")
+            and not state.parsed_pdf and patent_country in {"", "KR"}):
         try:
             parsed_pdf = download_and_parse_patent_pdf(
                 patent["application_number"],
