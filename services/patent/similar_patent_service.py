@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from math import sqrt
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Protocol
 
+from app.config import settings
 from open_api.kipris_client import KiprisClient
 from services.evidence.api_normalizers import extract_kipris_items
 from services.patent.kipris_patent_service import download_and_parse_patent_pdf
@@ -22,10 +24,11 @@ def build_similar_patent_context(
     representative_ipc: str | None = None,
     country_code: str | None = None,
     top_k: int = 3,
-    max_candidates: int = 80,
+    max_candidates: int = 50,
     collect_pdf: bool = False,
     output_dir: str | Path | None = None,
     pdf_text_limit: int | None = None,
+    embedding_model: "EmbeddingModel | None" = None,
 ) -> dict[str, Any]:
     if country_code:
         # 해외 타깃은 가용한 분류 검색이 국내 DB(ipcSearchInfo)뿐이라, 결과가 국가 필터(KR≠대상국)에서
@@ -103,7 +106,9 @@ def build_similar_patent_context(
             "warnings": ["similar_patent_candidates_not_found"],
         }
 
-    ranked = rank_similar_patent_candidates(target_text=target_text, candidates=candidates)
+    ranked = rank_similar_patent_candidates(
+        target_text=target_text, candidates=candidates, embedding_model=embedding_model
+    )
     similar_patents = [
         {
             key: value
@@ -120,7 +125,9 @@ def build_similar_patent_context(
             text_limit=pdf_text_limit,
         )
         warnings.extend(pdf_warnings)
-        similar_patents = rank_similar_patent_candidates(target_text=target_text, candidates=similar_patents)
+        similar_patents = rank_similar_patent_candidates(
+            target_text=target_text, candidates=similar_patents, embedding_model=embedding_model
+        )
     else:
         warnings.append("similarity_scoring_disabled")
     return {
@@ -290,16 +297,92 @@ def target_similarity_text(target_metadata: dict[str, Any]) -> str:
     )
 
 
-def rank_similar_patent_candidates(*, target_text: str, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+class EmbeddingModel(Protocol):
+    def embed_many(self, texts: list[str]) -> list[list[float]]:
+        ...
+
+
+def rank_similar_patent_candidates(
+    *,
+    target_text: str,
+    candidates: list[dict[str, Any]],
+    embedding_model: EmbeddingModel | None = None,
+) -> list[dict[str, Any]]:
+    """후보를 대상 특허와의 유사도로 정렬한다.
+
+    임베딩 코사인을 우선 사용하고(의미·동의어·교차언어에 강함), 모델이 없거나 임베딩
+    호출이 실패하면 토큰 Jaccard(text_overlap_similarity)로 폴백한다. similarity 값은
+    정렬 순서로만 소비되므로 두 방식의 점수 분포가 달라도 하위 로직에 영향이 없다.
+    """
+    if not candidates:
+        return []
+
+    model = embedding_model if embedding_model is not None else _default_similarity_embedding_model()
+    if model is not None:
+        embedded = _rank_by_embedding(target_text=target_text, candidates=candidates, model=model)
+        if embedded is not None:
+            return embedded
+
     ranked = [
         {
             **candidate,
             "similarity": round(text_overlap_similarity(target_text, candidate.get("similarity_text")), 4),
+            "similarity_method": "jaccard",
         }
         for candidate in candidates
     ]
     ranked.sort(key=lambda item: item.get("similarity") or 0.0, reverse=True)
     return ranked
+
+
+def _rank_by_embedding(
+    *,
+    target_text: str,
+    candidates: list[dict[str, Any]],
+    model: EmbeddingModel,
+) -> list[dict[str, Any]] | None:
+    """임베딩 코사인으로 정렬한다. 실패하면 None을 돌려 호출부가 Jaccard로 폴백하게 한다."""
+    texts = [target_text, *[normalize_text(candidate.get("similarity_text")) for candidate in candidates]]
+    try:
+        vectors = model.embed_many(texts)
+    except Exception:
+        return None
+    if not vectors or len(vectors) != len(texts):
+        return None
+    target_vector = vectors[0]
+    ranked = [
+        {
+            **candidate,
+            "similarity": round(cosine_similarity(target_vector, vectors[index + 1]), 4),
+            "similarity_method": "embedding",
+        }
+        for index, candidate in enumerate(candidates)
+    ]
+    ranked.sort(key=lambda item: item.get("similarity") or 0.0, reverse=True)
+    return ranked
+
+
+def _default_similarity_embedding_model() -> EmbeddingModel | None:
+    """운영 기본 임베딩 모델. API 키가 없으면 None을 반환해 Jaccard로 폴백한다."""
+    if not settings.openai_api_key:
+        return None
+    try:
+        from rag.industry_vector_store import OpenAIEmbeddingModel
+
+        return OpenAIEmbeddingModel()
+    except Exception:
+        return None
+
+
+def cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right))
+    left_norm = sqrt(sum(a * a for a in left))
+    right_norm = sqrt(sum(b * b for b in right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return dot / (left_norm * right_norm)
 
 
 def patent_similarity_text_from_markdown(markdown_text: str, *, title: Any = None, abstract: Any = None) -> str:
