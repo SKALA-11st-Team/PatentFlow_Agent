@@ -3,8 +3,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from typing import Any, Callable
-from html import unescape as html_unescape
-from urllib.parse import parse_qs, quote_plus, unquote, urldefrag, urlparse
+from urllib.parse import urldefrag, urlparse
 import json
 import logging
 import os
@@ -38,10 +37,7 @@ DEFAULT_MAX_EVIDENCE_ITEMS = 3
 DEFAULT_MAX_CONTENT_CHARS = 5000
 DEFAULT_SEARCH_WORKERS = 4
 DEFAULT_SEARCH_TIMEOUT_SECONDS = settings.skax_search_timeout_seconds
-DEFAULT_SEARCH_HTML_PREVIEW_CHARS = 800
 DEFAULT_API_ERROR_BODY_PREVIEW_CHARS = 1000
-GOOGLE_SEARCH_URL = "https://www.google.com/search"
-GOOGLE_CUSTOM_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 SEARCH_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -107,76 +103,26 @@ class SearchClient:
         raise NotImplementedError
 
 
-class GoogleHtmlSearchClient(SearchClient):
-    def search(self, query: str, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> dict[str, Any]:
-        results, diagnostics = default_html_searcher_with_diagnostics(query, max_results=max_results)
-        return {
-            "results": results,
-            "diagnostics": diagnostics,
-        }
+class EmptySearchClient(SearchClient):
+    """SK AX 사이트 검색 키(Tavily)가 없을 때 쓰는 무동작 클라이언트.
 
+    과거에는 Google CSE/HTML 폴백을 썼으나 모두 제거됐다. 키가 없으면 검색을
+    수행하지 못하므로, 'missing_config'를 진단에 남기고 빈 결과를 반환한다.
+    """
 
-class GoogleCustomSearchClient(SearchClient):
-    provider = "google_custom_search_json"
-
-    def __init__(
-        self,
-        *,
-        api_key: str | None = None,
-        cx: str | None = None,
-        timeout: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
-    ) -> None:
-        self.api_key = api_key if api_key is not None else os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY")
-        self.cx = cx if cx is not None else os.getenv("GOOGLE_CUSTOM_SEARCH_CX")
-        self.timeout = timeout
-
-    @classmethod
-    def has_config(cls) -> bool:
-        return bool(os.getenv("GOOGLE_CUSTOM_SEARCH_API_KEY") and os.getenv("GOOGLE_CUSTOM_SEARCH_CX"))
+    provider = "no_search_provider"
 
     def search(self, query: str, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> dict[str, Any]:
+        del max_results
         diagnostics = build_empty_search_diagnostics(query)
         diagnostics.update(
             {
                 "search_provider": self.provider,
-                "search_request_url": GOOGLE_CUSTOM_SEARCH_URL,
-                "missing_config": False,
+                "missing_config": True,
+                "search_failure_reason": "missing_config",
             }
         )
-        if not self.api_key or not self.cx:
-            diagnostics["missing_config"] = True
-            diagnostics["search_failure_reason"] = "missing_config"
-            return {"results": [], "diagnostics": diagnostics}
-
-        try:
-            response = requests.get(
-                GOOGLE_CUSTOM_SEARCH_URL,
-                params={
-                    "key": self.api_key,
-                    "cx": self.cx,
-                    "q": query,
-                    "num": min(10, max(1, int(max_results))),
-                    "hl": "ko",
-                    "gl": "kr",
-                },
-                timeout=self.timeout,
-            )
-            diagnostics["search_status_code"] = response.status_code
-            response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
-            diagnostics["search_failure_reason"] = f"fetch_error:{exc.__class__.__name__}"
-            response = getattr(exc, "response", None)
-            if response is not None:
-                diagnostics.update(parse_google_api_error_response(response, sensitive_values=[self.api_key, self.cx]))
-            return {"results": [], "diagnostics": diagnostics}
-
-        results = parse_custom_search_json(payload, max_results=max_results)
-        diagnostics["parsed_link_count"] = len(payload.get("items", [])) if isinstance(payload, dict) else 0
-        diagnostics["parsed_result_count"] = len(results)
-        if not results:
-            diagnostics["search_failure_reason"] = "no_skax_results"
-        return {"results": results, "diagnostics": diagnostics}
+        return {"results": [], "diagnostics": diagnostics}
 
 
 class TavilySearchClient(SearchClient):
@@ -312,51 +258,6 @@ class PageHTMLParser(HTMLParser):
     @property
     def content(self) -> str:
         return normalize_text(" ".join(self.text_parts))
-
-
-class GoogleSearchHTMLParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.links: list[dict[str, str]] = []
-        self.current_href: str | None = None
-        self.current_text_parts: list[str] = []
-        self.skip_depth = 0
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        tag = tag.lower()
-        if tag in {"script", "style", "noscript", "svg"}:
-            self.skip_depth += 1
-            return
-        if self.skip_depth:
-            return
-        if tag == "a":
-            href = dict(attrs).get("href")
-            if href:
-                self.current_href = href
-                self.current_text_parts = []
-
-    def handle_endtag(self, tag: str) -> None:
-        tag = tag.lower()
-        if self.skip_depth:
-            if tag in {"script", "style", "noscript", "svg"}:
-                self.skip_depth = max(0, self.skip_depth - 1)
-            return
-        if tag == "a" and self.current_href:
-            self.links.append(
-                {
-                    "href": self.current_href,
-                    "text": normalize_text(" ".join(self.current_text_parts)),
-                }
-            )
-            self.current_href = None
-            self.current_text_parts = []
-
-    def handle_data(self, data: str) -> None:
-        if self.skip_depth or not self.current_href:
-            return
-        text = normalize_text(data)
-        if text:
-            self.current_text_parts.append(text)
 
 
 def build_search_queries(
@@ -654,14 +555,13 @@ def search_queries_concurrently(
 def default_search_client() -> SearchClient:
     if TavilySearchClient.has_config():
         return TavilySearchClient()
-    if GoogleCustomSearchClient.has_config():
-        return GoogleCustomSearchClient()
-    # EVID-12: Tavily·CSE 키가 모두 없으면 Google HTML 스크레이프 종단 폴백을 쓰지만 JS/CAPTCHA로 사실상 0건이다.
-    # 'SK AX 근거 없음'이 조용한 비기능이 아니라 키 미설정 때문임을 운영자가 인지하도록 경고를 남긴다.
+    # SK AX 사이트 검색은 Tavily 단독으로 수행한다(과거 Google CSE/HTML 폴백은 제거됨).
+    # 키가 없으면 검색이 불가능하므로, 'SK AX 근거 없음'이 조용한 비기능이 아니라
+    # 키 미설정 때문임을 운영자가 인지하도록 경고를 남기고 빈 결과 클라이언트를 쓴다.
     _logger.warning(
-        "SK AX 사이트 검색 키(TAVILY/GOOGLE_CSE) 미설정 — Google HTML 폴백은 차단으로 근거 0건일 수 있습니다."
+        "SK AX 사이트 검색 키(TAVILY_API_KEY) 미설정 — SK AX 근거 0건으로 진행합니다."
     )
-    return GoogleHtmlSearchClient()
+    return EmptySearchClient()
 
 
 def search_with_default_fallback(
@@ -669,38 +569,22 @@ def search_with_default_fallback(
     *,
     max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
 ) -> dict[str, Any]:
-    clients: list[SearchClient] = []
-    if TavilySearchClient.has_config():
-        clients.append(TavilySearchClient())
-    if GoogleCustomSearchClient.has_config():
-        clients.append(GoogleCustomSearchClient())
-    clients.append(GoogleHtmlSearchClient())
-
-    attempts: list[dict[str, Any]] = []
-    last_response: dict[str, Any] = {"results": [], "diagnostics": build_empty_search_diagnostics(query)}
-    for client in clients:
-        try:
-            response = client.search(query, max_results=max_results)
-        except Exception as exc:
-            response = {
-                "results": [],
-                "diagnostics": build_search_error_diagnostics(query, exc),
-            }
-        results = list(response.get("results", []))
-        diagnostics = dict(response.get("diagnostics") or {})
-        attempts.append(
-            {
-                "search_provider": diagnostics.get("search_provider") or client.__class__.__name__,
-                "result_count": len(results),
-                "search_failure_reason": diagnostics.get("search_failure_reason"),
-            }
-        )
-        diagnostics["fallback_attempts"] = attempts
-        diagnostics["fallback_used"] = len(attempts) > 1
-        last_response = {"results": results, "diagnostics": diagnostics}
-        if results:
-            return last_response
-    return last_response
+    client = default_search_client()
+    try:
+        response = client.search(query, max_results=max_results)
+    except Exception as exc:
+        response = {"results": [], "diagnostics": build_search_error_diagnostics(query, exc)}
+    results = list(response.get("results", []))
+    diagnostics = dict(response.get("diagnostics") or {})
+    diagnostics["fallback_attempts"] = [
+        {
+            "search_provider": diagnostics.get("search_provider") or client.__class__.__name__,
+            "result_count": len(results),
+            "search_failure_reason": diagnostics.get("search_failure_reason"),
+        }
+    ]
+    diagnostics["fallback_used"] = False
+    return {"results": results, "diagnostics": diagnostics}
 
 
 def build_related_media_queries(base_queries: list[str], *, max_queries: int = DEFAULT_MAX_QUERIES) -> list[str]:
@@ -718,52 +602,6 @@ def build_related_media_queries(base_queries: list[str], *, max_queries: int = D
     return unique_texts(related_queries)
 
 
-def default_html_searcher(query: str) -> list[SearchResult]:
-    try:
-        return parse_google_search_html(fetch_google_search_html(query))
-    except Exception:
-        return []
-
-
-def default_html_searcher_with_diagnostics(
-    query: str,
-    *,
-    max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
-) -> tuple[list[SearchResult], dict[str, Any]]:
-    diagnostics = build_empty_search_diagnostics(query)
-    try:
-        response = fetch_google_search_response(query)
-    except Exception as exc:
-        diagnostics.update(build_search_error_diagnostics(query, exc))
-        return [], diagnostics
-
-    html = response["html"]
-    diagnostics.update(
-        {
-            "search_status_code": response["status_code"],
-            "search_final_url": response["url"],
-            "search_html_length": len(html),
-            "search_html_preview": html[:DEFAULT_SEARCH_HTML_PREVIEW_CHARS],
-            "search_failure_reason": detect_google_search_failure(
-                html,
-                status_code=response["status_code"],
-                final_url=response["url"],
-            ),
-        }
-    )
-    results, parse_diagnostics = parse_google_search_html_with_diagnostics(html, max_results=max_results)
-    diagnostics.update(parse_diagnostics)
-    if (
-        not diagnostics["search_failure_reason"]
-        and diagnostics["parsed_result_count"] == 0
-        and looks_like_google_requires_javascript(html)
-    ):
-        diagnostics["search_failure_reason"] = "google_requires_javascript"
-    if not diagnostics["search_failure_reason"] and not results and diagnostics["parsed_link_count"] == 0:
-        diagnostics["search_failure_reason"] = "no_parseable_google_links"
-    return results, diagnostics
-
-
 def fetch_skax_page_html(
     url: str,
     *,
@@ -776,117 +614,6 @@ def fetch_skax_page_html(
     )
     response.raise_for_status()
     return response.text
-
-
-def fetch_google_search_html(
-    query: str,
-    *,
-    timeout: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
-) -> str:
-    return fetch_google_search_response(query, timeout=timeout)["html"]
-
-
-def fetch_google_search_response(
-    query: str,
-    *,
-    timeout: int = DEFAULT_SEARCH_TIMEOUT_SECONDS,
-) -> dict[str, Any]:
-    search_url = f"{GOOGLE_SEARCH_URL}?q={quote_plus(query)}"
-    response = requests.get(
-        search_url,
-        headers={"User-Agent": SEARCH_USER_AGENT},
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    return {
-        "status_code": response.status_code,
-        "url": response.url,
-        "html": response.text,
-    }
-
-
-def parse_google_search_html(html: str, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> list[SearchResult]:
-    results, _ = parse_google_search_html_with_diagnostics(html, max_results=max_results)
-    return results
-
-
-def parse_google_search_html_with_diagnostics(
-    html: str,
-    *,
-    max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY,
-) -> tuple[list[SearchResult], dict[str, Any]]:
-    diagnostics = {
-        "parsed_link_count": 0,
-        "parsed_result_count": 0,
-    }
-    if not normalize_text(html):
-        return [], diagnostics
-    parser = GoogleSearchHTMLParser()
-    try:
-        parser.feed(html)
-        parser.close()
-    except Exception:
-        diagnostics["search_failure_reason"] = "html_parse_error"
-        return [], diagnostics
-    diagnostics["parsed_link_count"] = len(parser.links)
-
-    results: list[SearchResult] = []
-    seen: set[str] = set()
-    for link in parser.links:
-        url = extract_google_target_url(link.get("href"))
-        if not url or url in seen or not is_skax_url(url) or is_file_url(url):
-            continue
-        seen.add(url)
-        results.append(
-            {
-                "title": link.get("text") or url,
-                "url": url,
-                "snippet": "",
-            }
-        )
-        if len(results) >= max(1, int(max_results)):
-            break
-
-    if len(results) < max(1, int(max_results)):
-        for url in extract_skax_urls_from_text(html):
-            if url in seen or is_file_url(url):
-                continue
-            seen.add(url)
-            results.append(
-                {
-                    "title": url,
-                    "url": url,
-                    "snippet": "",
-                }
-            )
-            if len(results) >= max(1, int(max_results)):
-                break
-    diagnostics["parsed_result_count"] = len(results)
-    return results, diagnostics
-
-
-def parse_custom_search_json(payload: Any, *, max_results: int = DEFAULT_MAX_RESULTS_PER_QUERY) -> list[SearchResult]:
-    if not isinstance(payload, dict):
-        return []
-    results: list[SearchResult] = []
-    seen: set[str] = set()
-    for item in payload.get("items", []) or []:
-        if not isinstance(item, dict):
-            continue
-        url = normalize_url(item.get("link"))
-        if not url or url in seen or not is_skax_url(url) or is_file_url(url):
-            continue
-        seen.add(url)
-        results.append(
-            {
-                "title": normalize_text(item.get("title")) or url,
-                "url": url,
-                "snippet": normalize_text(item.get("snippet")),
-            }
-        )
-        if len(results) >= max(1, int(max_results)):
-            break
-    return results
 
 
 def parse_tavily_search_json(
@@ -1009,32 +736,6 @@ def annotate_candidate_final_selection(
                 candidate["final_skip_reason"] = "empty_content"
 
 
-def parse_google_api_error_response(
-    response: Any,
-    *,
-    sensitive_values: list[str | None] | None = None,
-) -> dict[str, Any]:
-    body_text = sanitize_sensitive_text(normalize_text(getattr(response, "text", "")), sensitive_values or [])
-    payload: Any
-    try:
-        payload = response.json()
-    except Exception:
-        try:
-            payload = json.loads(body_text)
-        except Exception:
-            payload = {}
-    error = payload.get("error", {}) if isinstance(payload, dict) else {}
-    details = error.get("errors", []) if isinstance(error, dict) else []
-    first_detail = details[0] if details and isinstance(details[0], dict) else {}
-    return {
-        "api_error_body_preview": body_text[:DEFAULT_API_ERROR_BODY_PREVIEW_CHARS],
-        "api_error_code": error.get("code") if isinstance(error, dict) else None,
-        "api_error_status": error.get("status") if isinstance(error, dict) else None,
-        "api_error_message": error.get("message") if isinstance(error, dict) else None,
-        "api_error_reason": first_detail.get("reason"),
-    }
-
-
 def sanitize_sensitive_text(text: str, sensitive_values: list[str | None]) -> str:
     sanitized = text
     for value in sensitive_values:
@@ -1093,69 +794,6 @@ def build_search_error_diagnostics(query: str, exc: Exception) -> dict[str, Any]
     diagnostics = build_empty_search_diagnostics(query)
     diagnostics["search_failure_reason"] = f"fetch_error:{exc.__class__.__name__}"
     return diagnostics
-
-
-def detect_google_search_failure(
-    html: str,
-    *,
-    status_code: int | None,
-    final_url: str | None,
-) -> str | None:
-    if status_code and status_code >= 400:
-        return f"http_status_{status_code}"
-    haystack = normalize_text(f"{final_url or ''} {html}").lower()
-    if looks_like_google_requires_javascript(html, final_url=final_url):
-        return "google_requires_javascript"
-    if "consent.google" in haystack or "before you continue" in haystack:
-        return "google_consent_page"
-    if "sorry/index" in haystack or "unusual traffic" in haystack:
-        return "google_blocked_or_captcha"
-    if "captcha" in haystack:
-        return "captcha_page"
-    return None
-
-
-def looks_like_google_requires_javascript(html: str, *, final_url: str | None = None) -> bool:
-    haystack = normalize_text(f"{final_url or ''} {html}").lower()
-    return any(
-        marker in haystack
-        for marker in (
-            "/httpservice/retry/enablejs",
-            "enablejs",
-            "<noscript",
-            "몇 초 안에 이동하지 않는 경우",
-        )
-    )
-
-
-def extract_google_target_url(href: str | None) -> str | None:
-    if not href:
-        return None
-    text = normalize_text(href).replace("\\/", "/")
-    if text.startswith("/url?") or text.startswith("https://www.google.com/url?"):
-        parsed = urlparse(text)
-        query = parse_qs(parsed.query)
-        target = first_value(query.get("q")) or first_value(query.get("url"))
-        return normalize_url(unquote(target)) if target else None
-    if text.startswith("/search?") or text.startswith("#"):
-        return None
-    return normalize_url(text)
-
-
-def extract_skax_urls_from_text(text: str) -> list[str]:
-    decoded = html_unescape(unquote(normalize_text(text))).replace("\\/", "/")
-    domain_pattern = "|".join(re.escape(domain) for domain in SK_OWNED_DOMAINS)
-    candidates = re.findall(rf"https?://(?:[A-Za-z0-9-]+\.)*(?:{domain_pattern})[^\s\"'<>)]*", decoded)
-    urls: list[str] = []
-    for candidate in candidates:
-        url = normalize_url(strip_google_tail_params(candidate).rstrip(".,;:"))
-        if url and is_skax_url(url) and url not in urls:
-            urls.append(url)
-    return urls
-
-
-def strip_google_tail_params(url: str) -> str:
-    return re.split(r"&(sa|ved|usg|ei|source)=", url, maxsplit=1)[0]
 
 
 def filter_search_results(results: list[dict[str, Any]], patent_context: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1414,7 +1052,3 @@ def unique_texts(values: list[str]) -> list[str]:
     return result
 
 
-def first_value(values: list[str] | None) -> str | None:
-    if not values:
-        return None
-    return values[0]

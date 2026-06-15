@@ -39,8 +39,7 @@ BE 레포에 이미 있는 값들을 **에이전트 레포에도** 등록해야 
 |---|---|
 | `GNEWS_API_KEY` | GNews 뉴스 검색 |
 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | Naver 검색 |
-| `GOOGLE_CUSTOM_SEARCH_API_KEY`, `GOOGLE_CUSTOM_SEARCH_CX` | Google CSE (SK AX 사이트 검색) |
-| `TAVILY_API_KEY` | Tavily 검색(대체) |
+| `TAVILY_API_KEY` | Tavily 검색 (SK AX 사이트 검색 · 글로벌 뉴스) |
 
 > BigQuery(해외특허, `BIGQUERY_PROJECT` + GCP 서비스계정)는 별도 인증이 필요해 이 워크플로에 포함하지
 > 않았다. 필요 시 GOOGLE_APPLICATION_CREDENTIALS 마운트를 추가로 구성해야 한다.
