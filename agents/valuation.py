@@ -32,7 +32,7 @@ CORE_VALUATION_TOTAL_MAX = len(CORE_VALUATION_AXES) * 100
 # 이는 운영 설정이 아닌 고정 제품 정책이며, 평균점 기준의 '유지 권고' 임계(valuationConfig.maintainThreshold)
 # 와는 별개 개념이다(기본값이 둘 다 60이라 우연히 겹치지만, maintainThreshold는 3축 평균에,
 # 이 값은 사업 연계성 단일 축에 적용된다). 오버라이드 발동 시 decision_rationale에 사유를 남긴다.
-# TODO(contract): 운영팀 조정이 필요하면 valuationConfig에 businessFitOverrideThreshold로 노출 검토.
+# 운영 설정 valuationConfig.businessFitOverrideThreshold로 조정 가능(미설정 시 아래 기본값).
 BUSINESS_FIT_OVERRIDE_SCORE = 60
 
 
@@ -370,7 +370,8 @@ def build_final_valuation_result(
 
     business_fit = validated_axes.get("business_fit") or {}
     business_fit_score = int(business_fit.get("score") or 0)
-    business_fit_override = business_fit_score >= BUSINESS_FIT_OVERRIDE_SCORE
+    # 오버라이드 기준점은 운영 설정(valuationConfig.businessFitOverrideThreshold)을 따른다(미설정 시 기본 60).
+    business_fit_override = business_fit_score >= business_fit_override_cutoff(applied_config)
 
     missing_information = unique_texts(
         item for axis in validated_axes.values() for item in axis.get("missing_information", [])
@@ -472,6 +473,15 @@ def maintain_threshold_cutoff(config: dict[str, Any] | None) -> float:
         return MAINTAIN_RECOMMENDATION_CUTOFF
 
 
+def business_fit_override_cutoff(config: dict[str, Any] | None) -> float:
+    """resolve된 valuationConfig에서 사업 연계성 오버라이드 기준점을 꺼낸다.
+    누락/비수치 시 기본값(BUSINESS_FIT_OVERRIDE_SCORE)으로 폴백한다."""
+    try:
+        return float((config or {}).get("businessFitOverrideThreshold", BUSINESS_FIT_OVERRIDE_SCORE))
+    except (TypeError, ValueError):
+        return BUSINESS_FIT_OVERRIDE_SCORE
+
+
 def score_to_final_recommendation(
     average_score: float,
     *,
@@ -543,7 +553,7 @@ def build_decision_rationale(
     ]
     if business_fit_override:
         rationale.append(
-            f"사업 연계성 점수가 {business_fit_score}점으로 기준({BUSINESS_FIT_OVERRIDE_SCORE}점) 이상이어서, "
+            f"사업 연계성 점수가 {business_fit_score}점으로 기준({int(business_fit_override_cutoff(config))}점) 이상이어서, "
             f"3축 점수와 무관하게 AI 검토 의견을 유지 권고로 보정했다."
         )
     return rationale
