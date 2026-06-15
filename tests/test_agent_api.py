@@ -167,6 +167,35 @@ def test_degraded_reflects_technology_comparison_warning():
     assert failure_reason(state, state.valuation_result).startswith("기술성 비교군")
 
 
+def test_failure_reason_names_missing_search_api_key():
+    from app.api import failure_reason
+
+    # 증거 0건 + 검색 키 미설정 신호 → 일반 문구 대신 키 미설정 원인을 명시한다.
+    state = PatentWorkflowState(
+        evidence_bundle=[],
+        query_plan={
+            "search_warnings": [
+                "global_news_call_failed:query='x': RequestException: TAVILY_API_KEY is not set"
+            ],
+        },
+        valuation_result={"axes": {}},
+    )
+
+    reason = failure_reason(state, state.valuation_result)
+    assert "외부 검색 API 키" in reason
+
+
+def test_failure_reason_falls_back_to_generic_empty_evidence():
+    from app.api import failure_reason
+
+    # 진단 신호가 없으면 기존 일반 문구를 유지한다(정상적으로 외부 결과가 없는 경우).
+    state = PatentWorkflowState(evidence_bundle=[], valuation_result={"axes": {}})
+
+    assert failure_reason(state, state.valuation_result) == (
+        "외부 근거 수집 결과가 없어 AI 평가 신뢰도가 낮습니다."
+    )
+
+
 def test_evaluate_patent_builds_patent_id_input(monkeypatch):
     captured = {}
 

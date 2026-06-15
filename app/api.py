@@ -576,8 +576,43 @@ def failure_reason(state: PatentWorkflowState, valuation_result: dict[str, Any])
     if "technology_comparison_empty" in workflow_warnings(state):
         return "기술성 비교군을 확보하지 못해 제한된 근거로 AI 평가가 생성되었습니다."
     if not state.evidence_bundle:
-        return "외부 근거 수집 결과가 없어 AI 평가 신뢰도가 낮습니다."
+        return external_evidence_empty_reason(state)
     return "일부 근거 수집 단계가 실패해 제한된 근거로 AI 평가가 생성되었습니다."
+
+
+def external_evidence_empty_reason(state: PatentWorkflowState) -> str:
+    """evidence_bundle이 비었을 때 가능한 한 구체적인 원인을 돌려준다.
+
+    '근거 0건'은 정상적으로 외부 결과가 없는 경우와, 검색 API 키 미설정·외부 호출 전면
+    실패처럼 운영 조치가 필요한 경우가 섞여 있다. 후자를 일반 문구로 덮으면 운영자가
+    키 누락을 정상 결과로 오인한다 — query_plan에 저장된 진단 신호로 원인을 구분한다.
+    """
+    query_plan = state.query_plan or {}
+    external = query_plan.get("external_evidence") or {}
+    skax = query_plan.get("skax_site_search") or {}
+    search_warnings = query_plan.get("search_warnings")
+    signal = " ".join(
+        str(item)
+        for item in [
+            *(search_warnings if isinstance(search_warnings, list) else []),
+            external.get("missing_reason"),
+            skax.get("warning"),
+        ]
+        if item
+    )
+    # 검색 자격증명(키) 미설정 — 배포 환경에서 가장 흔한 원인. 명시해 즉시 조치하게 한다.
+    if "is not set" in signal or "미설정" in signal:
+        return (
+            "외부 검색 API 키가 설정되지 않아 외부 근거를 수집하지 못했습니다. "
+            "검색 API 키 설정을 확인해 주세요(제한된 근거로 AI 평가가 생성되었습니다)."
+        )
+    # 외부 호출이 전부 실패(게이트웨이 미도달 등)해 근거를 확보하지 못한 경우.
+    if external.get("gateway_unreachable") or external.get("missing_reason"):
+        return (
+            "외부 근거 수집 호출이 모두 실패해 외부 근거를 확보하지 못했습니다. "
+            "제한된 근거로 AI 평가가 생성되었습니다."
+        )
+    return "외부 근거 수집 결과가 없어 AI 평가 신뢰도가 낮습니다."
 
 
 def evidence_confidence(state: PatentWorkflowState) -> str:
