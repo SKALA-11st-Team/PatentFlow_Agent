@@ -1019,7 +1019,20 @@ def extract_us_patent_sections(raw_text: str, *, cleaned_text: str = "") -> dict
         "solution": postprocess_agent_text(_extract_uspto_section(text, "Technical Solution", "SUMMARY OF THE INVENTION", "SUMMARY")),
         "effect": postprocess_agent_text(_extract_uspto_section(text, "Advantageous Effects")),
         "detailed_description": postprocess_agent_text(
-            _extract_uspto_section(text, "DETAILED DESCRIPTION", "DESCRIPTION", "BEST MODE")
+            # PCT 국내단계(WIPO 표준) 명세서는 상세설명을 "BEST MODE"/"MODE FOR CARRYING OUT
+            # THE INVENTION" 헤딩 아래 둔다. 기존의 단독 "DESCRIPTION" 라벨은 "DESCRIPTION OF
+            # (THE) DRAWINGS"를 먼저 매칭해 도면 설명을 상세설명으로 잘못 잡았으므로 제거하고,
+            # WIPO 국내단계 헤딩 변형을 명시적으로 인식한다.
+            _extract_uspto_section(
+                text,
+                "DETAILED DESCRIPTION",
+                "DESCRIPTION OF THE EMBODIMENTS",
+                "DESCRIPTION OF EMBODIMENTS",
+                "BEST MODE FOR CARRYING OUT THE INVENTION",
+                "MODE FOR CARRYING OUT THE INVENTION",
+                "MODE FOR THE INVENTION",
+                "BEST MODE",
+            )
         ),
     }
 
@@ -1067,9 +1080,12 @@ def _extract_uspto_section(text: str, *labels: str) -> str:
         "SUMMARY",
         "BRIEF DESCRIPTION OF THE DRAWINGS",
         "BRIEF DESCRIPTION OF DRAWINGS",
+        "DESCRIPTION OF THE DRAWINGS",
         "DESCRIPTION OF DRAWINGS",
         "DESCRIPTION",
         "DETAILED DESCRIPTION",
+        "BEST MODE FOR CARRYING OUT THE INVENTION",
+        "MODE FOR CARRYING OUT THE INVENTION",
         "BEST MODE",
         "What is claimed is",
         "The invention claimed is",

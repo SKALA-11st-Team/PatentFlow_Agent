@@ -376,6 +376,64 @@ The processor analyzes document data.
     assert "processor analyzes" in result["sections"]["detailed_description"]
 
 
+def test_preprocess_extracts_best_mode_as_detailed_description_not_drawings():
+    # PCT 국내단계(WIPO 표준) 명세서는 상세설명을 "BEST MODE" 아래 둔다. 과거에는 단독
+    # "DESCRIPTION" 라벨이 "DESCRIPTION OF DRAWINGS"를 먼저 잡아 도면 설명을 상세설명으로
+    # 잘못 분류했다. 이제 BEST MODE 본문을 상세설명으로 잡고 도면 설명은 제외해야 한다.
+    raw_text = """
+(57) ABSTRACT
+
+A navigation device with a photo frame function.
+
+TECHNICAL FIELD
+
+The present invention relates to a navigation device.
+
+BACKGROUND ART
+
+Related-art devices lack photo frame functionality.
+
+DESCRIPTION OF DRAWINGS
+
+FIG. 1 is a block diagram of the navigation device.
+
+BEST MODE
+
+Hereinafter, the navigation device includes a map data storage and a control unit that switches between a navigation mode and a photo frame mode.
+
+What is claimed is:
+
+1. A navigation device comprising a control unit.
+"""
+
+    result = build_preprocessed_patent(
+        raw_text,
+        db_metadata={
+            "country": "US",
+            "application_number": "15/550,596",
+            "registration_number": "10,657,384",
+            "title_final": "Navigation Device",
+        },
+        api_data={
+            "metadata": {"country": "US"},
+            "claims": [
+                {
+                    "claim_no": 1,
+                    "text": "A navigation device comprising a control unit.",
+                    "is_independent": True,
+                    "dependency": None,
+                }
+            ],
+            "claim_stats": {"active_claim_count": 1},
+        },
+    )
+
+    detailed = result["sections"]["detailed_description"]
+    assert "control unit that switches" in detailed
+    # 도면 설명("block diagram")이 상세설명으로 잘못 들어오면 안 된다.
+    assert "block diagram" not in detailed
+
+
 import pytest
 
 from services.patent.markdown_preprocess_service import _extract_claim_dependency

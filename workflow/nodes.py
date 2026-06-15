@@ -374,6 +374,22 @@ def build_target_structuring_input(state: PatentWorkflowState) -> dict | None:
         for key in ("solution", "detailed_description", "effect")
         if str(sections.get(key) or "").strip()
     )
+    if not specification_text:
+        # full_text 폴백: 표준 명세서 섹션(solution/detailed_description/effect)이 모두 비면
+        # — 해외 PDF의 헤딩이 인식되지 않아 본문이 엉뚱한 섹션에 담기거나 분류 실패한 경우 —
+        # 구조화가 빈손(key_elements 0개)이 되지 않도록 더 넓은 서술 섹션 + 도면 이후 전문으로
+        # 보강한다. 표준 섹션이 잡힌 정상 케이스(국내 특허 등)에는 영향이 없다.
+        specification_text = "\n\n".join(
+            str(sections.get(key) or "").strip()
+            for key in (
+                "technical_field",
+                "background_art",
+                "problem",
+                "detailed_description",
+                "full_text_after_drawings",
+            )
+            if str(sections.get(key) or "").strip()
+        )
     claims_text = str(sections.get("claims_text") or "").strip()
     if not claims_text:
         claims_text = "\n".join(

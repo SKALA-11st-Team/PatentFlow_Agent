@@ -1,6 +1,7 @@
 import pytest
 
 from workflow.nodes import (
+    build_target_structuring_input,
     common_preprocess_node,
     evidence_compression_node,
     evidence_search_node,
@@ -990,3 +991,54 @@ def test_report_validation_rejects_domestic_wording_and_drawing_block_for_foreig
     assert result["passed"] is False
     assert any("domestic-patent wording" in issue for issue in result["issues"])
     assert any("representative-drawing" in issue for issue in result["issues"])
+
+
+def test_build_target_structuring_input_falls_back_to_full_text_when_spec_sections_empty():
+    # 표준 명세서 섹션(solution/detailed_description/effect)이 모두 비면 — 해외 PDF 헤딩
+    # 인식 실패 등 — 구조화가 빈손이 되지 않도록 더 넓은 본문으로 폴백해야 한다.
+    state = PatentWorkflowState(
+        patent_structured={"application_number": "15/550,596"},
+        preprocessed_patent={
+            "metadata": {"country": "US"},
+            "sections": {
+                "solution": "",
+                "detailed_description": "",
+                "effect": "",
+                "technical_field": "본 발명은 내비게이션 장치에 관한 것이다.",
+                "full_text_after_drawings": "제어부는 내비게이션 모드와 액자 모드를 전환한다.",
+                "claims_text": "1. 제어부를 포함하는 내비게이션 장치.",
+            },
+        },
+    )
+
+    result = build_target_structuring_input(state)
+
+    assert result is not None
+    assert "내비게이션 장치에 관한 것" in result["specification_text"]
+    assert "액자 모드를 전환" in result["specification_text"]
+
+
+def test_build_target_structuring_input_uses_primary_sections_without_fallback():
+    # 표준 섹션이 정상적으로 잡힌 경우(국내 특허 등) 폴백이 끼어들지 않아야 한다 — 회귀 방지.
+    state = PatentWorkflowState(
+        patent_structured={"application_number": "10-2021-0153158"},
+        preprocessed_patent={
+            "metadata": {"country": "KR"},
+            "sections": {
+                "solution": "과제 해결 수단 본문",
+                "detailed_description": "상세 설명 본문",
+                "effect": "효과 본문",
+                "technical_field": "기술분야 본문(폴백에서만 쓰임)",
+                "full_text_after_drawings": "도면 이후 전문(폴백에서만 쓰임)",
+                "claims_text": "1. 청구항.",
+            },
+        },
+    )
+
+    result = build_target_structuring_input(state)
+
+    assert result is not None
+    assert "과제 해결 수단 본문" in result["specification_text"]
+    assert "상세 설명 본문" in result["specification_text"]
+    # 폴백 전용 섹션은 정상 케이스에서 specification_text에 들어오면 안 된다.
+    assert "기술분야 본문" not in result["specification_text"]
