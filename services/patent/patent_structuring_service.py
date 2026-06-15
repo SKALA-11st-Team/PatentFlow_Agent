@@ -8,6 +8,7 @@ key_flow/claims)로 구조화한다. 결과는 권리성·기술성 축이 eleme
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import json
 import logging
 import re
@@ -111,6 +112,17 @@ def structure_one_patent(patent_input: dict[str, Any]) -> dict[str, Any] | None:
     if not specification_text and not claims_text:
         return None
 
+    # 캐시: 같은 입력(내용+모델+추론량)이면 LLM 2-pass를 건너뛰고 디스크에서 즉시 반환한다.
+    # comparison_source는 캐시 본문에서 제외하고(타깃/비교군 양쪽에서 같은 특허를 재사용 가능)
+    # 로드 후 항상 현재 입력 기준으로 다시 덧입힌다.
+    model = settings.openai_structuring_model or settings.openai_chat_model
+    effort = settings.openai_structuring_reasoning_effort or ""
+    cache_key = _structure_cache_key(specification_text, claims_text, drawings_text, model, effort)
+    cached = _load_structure_cache(doc_id, cache_key)
+    if cached is not None:
+        logger.info("patent_structuring 캐시 히트 doc_id=%s", doc_id or "(unknown)")
+        return _apply_comparison_source(cached, patent_input)
+
     # Pass1 — 명세서에서 구성요소·흐름 추출
     pass1 = _run_structuring_pass(
         STEP1_PROMPT_PATH,
@@ -138,10 +150,66 @@ def structure_one_patent(patent_input: dict[str, Any]) -> dict[str, Any] | None:
         validated = validate_patent_structure(merged).model_dump()
     except ValidationError as exc:
         raise PatentStructuringError(f"schema_validation_failed: {str(exc)[:200]}")
+    # comparison_source를 입히기 전(순수 구조)을 캐시에 저장한다 — 다음 run에서 타깃/비교군
+    # 어느 역할로 와도 동일 구조를 재사용할 수 있다.
+    _save_structure_cache(doc_id, cache_key, validated)
     # 비교군 출처(prior_art/similar)를 구조화 결과에 실어, 권리성의 선행문헌-only 필터에 쓴다.
+    return _apply_comparison_source(validated, patent_input)
+
+
+def _apply_comparison_source(structure: dict[str, Any], patent_input: dict[str, Any]) -> dict[str, Any]:
+    """비교군 출처를 구조 dict에 덧입힌다(없으면 그대로). 캐시 본문은 출처 없는 순수 구조다."""
     if patent_input.get("comparison_source"):
-        validated["comparison_source"] = str(patent_input["comparison_source"])
-    return validated
+        structure["comparison_source"] = str(patent_input["comparison_source"])
+    return structure
+
+
+def _structure_cache_key(
+    specification_text: str,
+    claims_text: str,
+    drawings_text: str,
+    model: str,
+    effort: str,
+) -> str:
+    """입력 내용 + 모델 + 추론량으로 캐시 키를 만든다(식별자가 아니라 내용 기반).
+
+    명세서/청구항이 바뀌거나 모델을 gpt-5↔mini로 바꾸면 키가 달라져 stale/잘못된 모델의
+    캐시를 반환하지 않는다.
+    """
+    seed = "\x00".join([specification_text, claims_text, drawings_text, model or "", effort or ""])
+    return hashlib.sha256(seed.encode("utf-8")).hexdigest()
+
+
+def _structure_cache_path(doc_id: str, cache_key: str):
+    safe_doc_id = re.sub(r"[^0-9A-Za-z._-]", "_", str(doc_id or "")).strip("_")[:80] or "doc"
+    return settings.structuring_cache_dir / f"{safe_doc_id}_{cache_key[:12]}.json"
+
+
+def _load_structure_cache(doc_id: str, cache_key: str) -> dict[str, Any] | None:
+    """캐시 히트 시 구조 dict, 미스/손상/비활성 시 None. 손상 파일은 미스로 처리한다."""
+    if not settings.structuring_cache_enabled:
+        return None
+    path = _structure_cache_path(doc_id, cache_key)
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("patent_structuring 캐시 읽기 실패(미스 처리) doc_id=%s: %s", doc_id, exc)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _save_structure_cache(doc_id: str, cache_key: str, structure: dict[str, Any]) -> None:
+    """검증된 구조(comparison_source 입히기 전)를 캐시에 기록한다. 쓰기 실패는 무시(기능 무영향)."""
+    if not settings.structuring_cache_enabled:
+        return
+    path = _structure_cache_path(doc_id, cache_key)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(structure, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        logger.warning("patent_structuring 캐시 쓰기 실패(무시) doc_id=%s: %s", doc_id, exc)
 
 
 def _run_structuring_pass(prompt_path: str, payload: dict[str, Any], *, step: str) -> dict[str, Any]:

@@ -18,6 +18,9 @@ class Settings(BaseModel):
     output_dir: Path = run_outputs_dir / "manual"
     patent_markdown_dir: Path = output_dir / "patent_markdown"
     preprocessed_output_dir: Path = output_dir / "preprocessed_patents"
+
+    # 구조화 결과 캐시(run 폴더 밖 → run 간 영속). 같은 입력(내용+모델)이면 LLM 재호출을 건너뛴다.
+    structuring_cache_dir: Path = artifacts_dir / "cache" / "patent_structures"
     
     # LangSmith observability 설정
     langsmith_tracing: bool = getenv("LANGSMITH_TRACING", "false").lower() == "true"
@@ -46,6 +49,8 @@ class Settings(BaseModel):
     openai_valuation_reasoning_effort: str | None = getenv("OPENAI_VALUATION_REASONING_EFFORT")
     # 구조화는 추출 작업이라 깊은 추론이 불필요하므로 기본 low로 비용을 낮춘다.
     openai_structuring_reasoning_effort: str | None = getenv("OPENAI_STRUCTURING_REASONING_EFFORT", "low")
+    # 구조화 결과 디스크 캐시 on/off. 디버깅 등 같은 특허 재실행 시 LLM 재호출을 막는다.
+    structuring_cache_enabled: bool = getenv("STRUCTURING_CACHE_ENABLED", "true").lower() == "true"
     openai_writing_reasoning_effort: str | None = getenv("OPENAI_WRITING_REASONING_EFFORT")
     openai_writing_verbosity: str | None = getenv("OPENAI_WRITING_VERBOSITY")
     openai_supervisor_reasoning_effort: str | None = getenv("OPENAI_SUPERVISOR_REASONING_EFFORT")
