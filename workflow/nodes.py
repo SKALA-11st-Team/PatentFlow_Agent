@@ -41,7 +41,7 @@ from services.rag.industry_rag_service import (
 )
 from services.observability.langsmith_service import trace
 from agents.summary import run_summary_agent
-from agents.writing.final_report import run_final_report_agent
+from agents.writing.final_report import parse_report_sections, run_final_report_agent
 from workflow.state import PatentWorkflowState
 
 
@@ -1048,7 +1048,7 @@ def summary_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
-FINAL_REPORT_REQUIRED_SECTIONS = [f"## {index}." for index in range(1, 7)]
+REQUIRED_REPORT_SECTION_NUMBERS = [str(index) for index in range(1, 7)]
 
 
 @trace(run_type="tool")
@@ -1065,7 +1065,10 @@ def report_validation_node(state: PatentWorkflowState) -> PatentWorkflowState:
     if "strategy" in axes:
         issues.append("Deprecated valuation axis present: strategy")
     if markdown:
-        missing_sections = [section for section in FINAL_REPORT_REQUIRED_SECTIONS if section not in markdown]
+        # 섹션 존재 판정을 API의 build_report_sections와 동일한 파서(parse_report_sections)로 통일한다.
+        # 검증은 통과하는데 추출에선 조용히 빠지는(또는 반대) 어긋남을 없애, 누락 시 supervisor 재생성 루프가 확실히 잡게 한다.
+        present_sections = set(parse_report_sections(markdown))
+        missing_sections = [f"## {number}." for number in REQUIRED_REPORT_SECTION_NUMBERS if number not in present_sections]
         if missing_sections:
             issues.append(f"Final report missing required sections: {', '.join(missing_sections)}")
         recommendation = str(valuation.get("recommendation") or "").strip()

@@ -15,6 +15,24 @@ from services.observability.langsmith_service import trace
 from workflow.state import PatentWorkflowState
 
 
+# 보고서 최상위 섹션 헤더 파서(단일 출처). API의 build_report_sections(추출)와
+# report_validation_node(검증)가 모두 이 함수로 '섹션 존재' 판정을 통일한다 — 두 곳의 기준이 달라
+# 검증은 통과하는데 추출에선 조용히 누락(또는 반대로 불필요 재생성)되던 어긋남을 제거한다.
+# '## 2.'와 '## 2)' 두 표기를 허용하고, '### 4.1' 같은 하위 섹션(### 세 해시)은 본문에 그대로 둔다.
+REPORT_SECTION_HEADER_RE = re.compile(r"(?m)^##[ \t]+(\d+)[.)][^\n]*$\n?")
+
+
+def parse_report_sections(markdown: str | None) -> dict[str, str]:
+    """보고서 마크다운을 최상위 섹션 번호('2'·'3'…) → 본문(헤더 제외)으로 분리한다."""
+    if not markdown:
+        return {}
+    parts = REPORT_SECTION_HEADER_RE.split(markdown)
+    sections: dict[str, str] = {}
+    for number, body in zip(parts[1::2], parts[2::2]):
+        sections[number.strip()] = body.strip()
+    return sections
+
+
 @trace(name="final_report_agent", run_type="chain")
 def run_final_report_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     valuation_result = dict(state.valuation_result or {})

@@ -10,6 +10,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -179,6 +180,13 @@ def _key_elements_for_step2(key_elements: list[dict[str, Any]]) -> list[dict[str
     return compact
 
 
+def _normalize_key_element_id(value: Any) -> str:
+    """Pass 간 매칭용으로 key_element_id를 표준형으로 정규화한다(공백 제거·대문자·숫자 앞자리 0 제거).
+    'K01'·'k 1'·'K1' → 'K1'. LLM의 표기 흔들림으로 clarity 매핑이 비는 것을 방지한다."""
+    text = re.sub(r"\s+", "", str(value or "")).upper()
+    return re.sub(r"\d+", lambda m: str(int(m.group(0))), text)
+
+
 def _merge_structuring_passes(
     *,
     doc_id: str,
@@ -186,8 +194,9 @@ def _merge_structuring_passes(
     pass2: dict[str, Any],
 ) -> dict[str, Any]:
     """Pass1(구성요소·흐름) + Pass2(청구항·명확성)를 최종 구조로 합친다."""
+    # id는 정규화 키로 매칭한다(K01 vs K1 같은 표기 흔들림 흡수).
     clarity_by_id = {
-        str(item.get("key_element_id")): item
+        _normalize_key_element_id(item.get("key_element_id")): item
         for item in (pass2.get("key_element_clarity") or [])
         if isinstance(item, dict) and item.get("key_element_id")
     }
@@ -195,12 +204,14 @@ def _merge_structuring_passes(
     for element in pass1.get("key_elements") or []:
         if not isinstance(element, dict):
             continue
-        clarity = clarity_by_id.get(str(element.get("key_element_id")), {})
+        clarity = clarity_by_id.get(_normalize_key_element_id(element.get("key_element_id")), {})
         key_elements.append(
             {
                 **element,
                 "in_independent_claim": bool(clarity.get("in_independent_claim", False)),
-                "claim_clarity": clarity.get("claim_clarity"),
+                # Pass2가 일부 구성요소의 명확성을 빠뜨려도(흔함) 스키마 Literal 검증이 터지지 않도록
+                # 안전 기본값 'unresolved'로 backfill한다 — 특허 전체가 죽는 대신 그 항목만 보수적으로 처리.
+                "claim_clarity": clarity.get("claim_clarity") or "unresolved",
                 "clarity_issue": str(clarity.get("clarity_issue") or ""),
             }
         )

@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from agents.field_recommendation import recommend_fields
 from agents.valuation import CORE_VALUATION_AXES
 from agents.valuation_axes.common import grade_for_score
-from agents.writing.final_report import build_evidence_references
+from agents.writing.final_report import build_evidence_references, parse_report_sections
 from app.config import settings
 from app.main import save_outputs
 from schemas.valuation import resolve_valuation_config
@@ -476,19 +476,16 @@ REPORT_SECTION_KEYS = {
 
 
 def build_report_sections(markdown: str | None) -> dict[str, str]:
-    """가치평가 보고서 마크다운을 `## N. 제목` 최상위 섹션 단위로 분리한다(헤더 제외, 본문만).
+    """가치평가 보고서 마크다운을 `## N.` 최상위 섹션 단위로 분리해 FE 계약 키로 매핑한다(2~6번 본문).
 
-    각 섹션 본문은 다음 `## N.` 헤더 직전까지이며, 4번의 4.1~4.4 같은 `### ` 하위 섹션은 그대로 포함된다.
+    섹션 분리는 parse_report_sections(단일 출처)에 위임해 report_validation_node의 누락 검증과
+    동일 기준을 보장한다. 4번의 4.1~4.4 같은 `### ` 하위 섹션은 본문에 그대로 포함된다.
     """
-    if not markdown:
-        return {}
-    # 캡처 split: [머리말, "2", 본문, "3", 본문, ...]
-    parts = re.split(r"(?m)^##[ \t]+(\d+)\.[^\n]*$\n?", markdown)
     sections: dict[str, str] = {}
-    for number, body in zip(parts[1::2], parts[2::2]):
-        key = REPORT_SECTION_KEYS.get(number.strip())
+    for number, body in parse_report_sections(markdown).items():
+        key = REPORT_SECTION_KEYS.get(number)
         if key:
-            sections[key] = body.strip()
+            sections[key] = body
     return sections
 
 

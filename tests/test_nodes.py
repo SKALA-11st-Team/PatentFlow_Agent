@@ -843,6 +843,23 @@ def test_report_validation_flags_missing_sections():
     assert result["passed"] is False
     assert any("missing required sections" in i for i in result["issues"])
 
+
+def test_report_validation_and_extraction_agree_on_paren_headers():
+    # #3: 검증(report_validation_node)과 추출(build_report_sections)이 같은 파서를 쓰므로
+    # '## N)' 같은 표기 변형에도 일관되게 동작한다 — 추출에 잡힌 섹션을 검증이 누락으로 오판하지 않는다.
+    from app.api import build_report_sections
+    from workflow.nodes import report_validation_node
+
+    md = "\n".join(f"## {i}) 섹션{i}\n본문{i}" for i in range(1, 7))
+
+    sections = build_report_sections(md)
+    assert sections["evaluationScope"] == "본문2"
+    assert sections["finalOpinion"] == "본문6"
+
+    result = report_validation_node(_report_state(md)).report_validation_result
+    assert not any("missing required sections" in i for i in result["issues"])
+
+
 def _capture_collect_external_evidence(monkeypatch):
     configure_evidence_search_mocks(monkeypatch, external_items=[], news_kept=[])
     captured = {}
