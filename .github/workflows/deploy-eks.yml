@@ -26,7 +26,7 @@ env:
   # seed 값(자격증명 아님). 비우면 코드 기본값(20260624) 사용.
   VALUATION_SEED: ${{ vars.VALUATION_SEED || '' }}
   ENABLE_SHARED_DB_FALLBACK: ${{ vars.ENABLE_SHARED_DB_FALLBACK || 'true' }}
-  UNIFIED_API_BASE_URL: ${{ vars.UNIFIED_API_BASE_URL || 'http://team11-patentflow-be-svc:80' }}
+  UNIFIED_API_BASE_URL: ${{ vars.UNIFIED_API_BASE_URL || 'http://team11-patentflow-unified-api-svc:8080' }}
   AWS_REGION: ${{ vars.AWS_REGION || 'ap-northeast-2' }}
   AWS_PROFILE_NAME: ${{ vars.AWS_PROFILE_NAME || 'skala-student' }}
 
@@ -225,6 +225,7 @@ jobs:
             --from-literal=ENABLE_SHARED_DB_FALLBACK="${ENABLE_SHARED_DB_FALLBACK}" \
             --from-literal=UNIFIED_API_BASE_URL="${UNIFIED_API_BASE_URL}" \
             --from-literal=PGVECTOR_TABLE_NAME="industry_report_chunks" \
+            --from-literal=LANGSMITH_TRACING="true" \
             --dry-run=client -o yaml | kubectl apply -f -
 
       - name: Apply Kubernetes manifests
