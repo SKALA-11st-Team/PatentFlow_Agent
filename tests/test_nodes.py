@@ -827,22 +827,21 @@ def _report_state(markdown, total_score=223):
 def test_report_validation_passes_well_formed_report():
     from workflow.nodes import report_validation_node
 
-    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합 점수 223/300점, 평균 74.3/100점"
+    md = "\n".join(f"## {i}. 섹션" for i in range(1, 7)) + "\n종합환산점수 74.3/100점"
     result = report_validation_node(_report_state(md)).report_validation_result
 
     assert result["passed"] is True
     assert result["issues"] == []
 
 
-def test_report_validation_flags_missing_sections_and_score_mismatch():
+def test_report_validation_flags_missing_sections():
     from workflow.nodes import report_validation_node
 
-    md = "## 1. 한눈에 보는 검토 결과\n## 2. 평가대상\n종합 점수 999/300점"
+    md = "## 1. 한눈에 보는 검토 결과\n## 2. 평가대상\n종합환산점수 74.3/100점"
     result = report_validation_node(_report_state(md, total_score=223)).report_validation_result
 
     assert result["passed"] is False
     assert any("missing required sections" in i for i in result["issues"])
-    assert any("total score" in i for i in result["issues"])
 
 def _capture_collect_external_evidence(monkeypatch):
     configure_evidence_search_mocks(monkeypatch, external_items=[], news_kept=[])
@@ -964,7 +963,7 @@ def test_report_validation_rejects_domestic_wording_and_drawing_block_for_foreig
 
     md = (
         "\n".join(f"## {i}. 섹션" for i in range(1, 7))
-        + "\n종합 점수 223/300점\n등록된 국내권\n**권리범위 참고도 및 이해**"
+        + "\n종합환산점수 74.3/100점\n등록된 국내권\n**권리범위 참고도 및 이해**"
     )
     state = _report_state(md)
     state.patent_structured = {"country": country}

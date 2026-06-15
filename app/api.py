@@ -129,6 +129,11 @@ class PatentEvaluationResponse(BaseModel):
     totalScore: int | None = None
     averageScore: float | None = None
     finalGrade: str | None = None
+    # 사업 연계성 보정: business_fit 점수가 기준(appliedValuationConfig.businessFitOverrideThreshold)
+    # 이상이면 3축 등급과 무관하게 AI 검토 의견을 '유지 권고'로 끌어올린다. 등급은 3축 기준 그대로라
+    # 등급↔권고가 어긋날 수 있어, FE가 보정 사유 배지를 띄울 수 있도록 플래그·점수를 함께 노출한다.
+    businessFitOverride: bool = False
+    businessFitScore: int | None = None
     degraded: bool = False
     failureReason: str | None = None
     warnings: list[str] = Field(default_factory=list)
@@ -325,6 +330,8 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         averageScore=valuation_average_score(valuation_result),
         finalGrade=valuation_result.get("final_grade")
         or final_grade_for_average(valuation_average_score(valuation_result), applied_config),
+        businessFitOverride=bool(valuation_result.get("business_fit_override")),
+        businessFitScore=valuation_result.get("business_fit_score"),
         degraded=degraded,
         failureReason=failure_reason(final_state, valuation_result),
         warnings=dedupe(workflow_warnings(final_state) + save_warnings),

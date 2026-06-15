@@ -1203,7 +1203,7 @@ def test_business_fit_rule_requests_search_when_sk_evidence_is_absent():
             "axes": {
                 "business_fit": {
                     "score": 0,
-                    "grade": "D",
+                    "grade": "C",
                     "rationale": "공식 근거 미확인",
                     "evidence_ids": [],
                     "risk_factors": ["공식 근거 미확인"],
@@ -1243,7 +1243,7 @@ def test_business_fit_rule_accepts_owned_media_tier_without_text_marker():
             "axes": {
                 "business_fit": {
                     "score": 0,
-                    "grade": "D",
+                    "grade": "C",
                     "rationale": "SK AX 사업 근거 미확인",
                     "evidence_ids": [],
                     "risk_factors": ["공식 근거 미확인"],

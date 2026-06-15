@@ -50,7 +50,7 @@ def test_resolve_valuation_config_defaults_when_absent():
 
     assert resolved["axisWeights"] == DEFAULT_AXIS_WEIGHTS
     assert resolved["gradeCutoffs"] == DEFAULT_GRADE_CUTOFFS
-    assert resolved["maintainThreshold"] == 60.0
+    assert resolved["gradeCutoffs"] == {"A": 70.0, "B": 50.0}
     assert resolved["subscoreWeights"] == DEFAULT_SUBSCORE_WEIGHTS
     assert resolved["source"] == "default"
     assert is_default_valuation_config(resolved)
@@ -69,8 +69,8 @@ def test_resolve_valuation_config_rejects_invalid_values():
     resolved = resolve_valuation_config(
         {
             "axisWeights": {"legal": -5, "unknown_axis": 50},
-            "gradeCutoffs": {"A": 30, "B": 60, "C": 40},  # A<B → 순서 깨짐 → 기본 컷오프 폴백
-            "maintainThreshold": 250,
+            "gradeCutoffs": {"A": 30, "B": 60},  # A<B → 순서 깨짐 → 기본 컷오프 폴백
+            "businessFitOverrideThreshold": 250,  # 0~100 클램프
             "subscoreWeights": {"legal": {"right_stability": -1}},
         }
     )
@@ -78,26 +78,26 @@ def test_resolve_valuation_config_rejects_invalid_values():
     assert resolved["axisWeights"]["legal"] == 25.0
     assert "unknown_axis" not in resolved["axisWeights"]
     assert resolved["gradeCutoffs"] == DEFAULT_GRADE_CUTOFFS
-    assert resolved["maintainThreshold"] == 100.0
+    assert resolved["businessFitOverrideThreshold"] == 100.0
     assert resolved["subscoreWeights"]["legal"]["right_stability"] == 40
 
 
 def test_grade_for_score_uses_custom_cutoffs():
-    cutoffs = {"A": 90, "B": 70, "C": 50}
+    cutoffs = {"A": 90, "B": 70}
 
     assert grade_for_score(85, cutoffs) == "B"
     assert grade_for_score(85) == "A"
-    assert grade_for_score(49, cutoffs) == "D"
+    assert grade_for_score(49, cutoffs) == "C"  # B컷 미만은 모두 C(D 없음)
 
 
 def test_score_to_final_recommendation_three_tier_cutoffs():
-    # 기본 '유지 권고' 임계(maintainThreshold)는 60: ≥60 유지 권고, 50~59 조건부 유지, <50 포기 검토.
-    assert score_to_final_recommendation(60) == "유지 권고"
-    assert score_to_final_recommendation(55) == "조건부 유지"
+    # 권고는 등급에서 1:1 파생된다(기본 A≥70 / B≥50 / C<50 → 유지/조건부/포기).
+    assert score_to_final_recommendation(70) == "유지 권고"
+    assert score_to_final_recommendation(50) == "조건부 유지"
     assert score_to_final_recommendation(49) == "포기 검토"
-    # 컷오프는 파라미터로 조정 가능하다(운영 설정 maintainThreshold가 여기에 주입된다).
-    assert score_to_final_recommendation(72, maintain_cutoff=75) == "조건부 유지"
-    assert score_to_final_recommendation(55, maintain_cutoff=50) == "유지 권고"
+    # 등급 컷오프(gradeCutoffs)를 바꾸면 권고 경계도 따라 움직인다(단일 기준).
+    assert score_to_final_recommendation(60, cutoffs={"A": 55, "B": 50}) == "유지 권고"
+    assert score_to_final_recommendation(52, cutoffs={"A": 70, "B": 55}) == "포기 검토"
 
 
 def test_build_final_valuation_result_defaults_match_legacy_equal_average():
@@ -106,19 +106,19 @@ def test_build_final_valuation_result_defaults_match_legacy_equal_average():
     # 종합 점수는 권리성·기술성·시장성 3축 합산(0~300)·평균이다.
     assert result["total_score"] == 210
     assert result["average_score"] == 70.0
-    assert result["final_grade"] == "B"
+    assert result["final_grade"] == "A"
     assert result["recommendation"] == "유지 권고"
     assert result["applied_config"]["source"] == "default"
-    assert "평균 점수는" in result["decision_rationale"][0]
+    assert "종합환산점수는" in result["decision_rationale"][0]
     assert "가중치" not in result["decision_rationale"][0]
+    assert "/300" not in result["decision_rationale"][0]
 
 
 def test_build_final_valuation_result_applies_weighted_average_and_cutoffs():
     config = resolve_valuation_config(
         {
             "axisWeights": {"legal": 70, "technology": 10, "market": 10, "business_fit": 10},
-            "gradeCutoffs": {"A": 75, "B": 60, "C": 40},
-            "maintainThreshold": 65,
+            "gradeCutoffs": {"A": 75, "B": 60},
         }
     )
 
@@ -128,49 +128,41 @@ def test_build_final_valuation_result_applies_weighted_average_and_cutoffs():
     assert result["average_score"] == 73.3
     # total_score는 가중치와 무관하게 core 3축 단순 합을 유지한다.
     assert result["total_score"] == 180
-    assert result["final_grade"] == "B"
-    assert result["recommendation"] == "유지 권고"  # 73.3 >= 65
+    assert result["final_grade"] == "B"  # 73.3 < A컷 75, ≥ B컷 60 → B
+    assert result["recommendation"] == "조건부 유지"  # 등급 B에서 1:1 파생
     assert result["applied_config"]["source"] == "request"
-    assert "가중 평균" in result["decision_rationale"][0]
+    assert "종합환산점수는" in result["decision_rationale"][0]
+    assert "가중치" in result["decision_rationale"][0]
     # 축 등급도 설정 컷오프로 재산정된다(80점, A컷 75 → A).
     assert result["axes"]["legal"]["grade"] == "A"
 
 
-def test_recommendation_uses_configured_maintain_threshold():
-    # recommendation의 '유지 권고' 임계는 운영 설정 maintainThreshold(BE 단일 출처)를 따른다.
-    config = resolve_valuation_config({"maintainThreshold": 75})
-
-    # business_fit < 60(오버라이드 없음), 평균 70 < 임계 75 → 조건부 유지.
-    result = build_final_valuation_result(four_axes(70, 70, 70, 50), config=config)
-
-    assert result["average_score"] == 70.0
-    assert result["recommendation"] == "조건부 유지"
-
-    # 임계를 70으로 낮추면 같은 평균(70)이 유지 권고로 올라간다.
-    lower = resolve_valuation_config({"maintainThreshold": 70})
-    result_lower = build_final_valuation_result(four_axes(70, 70, 70, 50), config=lower)
-    assert result_lower["recommendation"] == "유지 권고"
+def test_grade_cutoffs_drive_recommendation_boundary():
+    # 등급 컷오프가 권고 경계를 결정한다(단일 기준). A컷을 65로 낮추면 평균 70이 A→유지 권고.
+    config = resolve_valuation_config({"gradeCutoffs": {"A": 65, "B": 40}})
+    result = build_final_valuation_result(four_axes(70, 70, 70, 30), config=config)
+    assert result["final_grade"] == "A"
+    assert result["business_fit_override"] is False  # business_fit 30 < 60
+    assert result["recommendation"] == "유지 권고"
 
 
-def test_build_final_valuation_result_business_fit_override_wins_over_threshold():
-    config = resolve_valuation_config({"maintainThreshold": 75})
+def test_build_final_valuation_result_business_fit_override_wins_over_grade():
+    # 3축 평균은 B(조건부)지만 사업 연계성이 기준(60) 이상이면 권고를 유지로 끌어올린다.
+    result = build_final_valuation_result(four_axes(55, 55, 55, 70))
 
-    # business_fit ≥ 60이면 임계 미달이어도 AI 권고를 유지 권고로 본다(제품 정책 오버라이드).
-    result = build_final_valuation_result(four_axes(70, 70, 70, 70), config=config)
-
-    assert result["business_fit_override"] is True
+    assert result["final_grade"] == "B"  # 평균 55 → B
+    assert result["business_fit_override"] is True  # business_fit 70 ≥ 60
     assert "final_indicator" not in result
-    assert result["recommendation"] == "유지 권고"
+    assert result["recommendation"] == "유지 권고"  # 등급 파생(조건부)을 오버라이드
 
 
-def test_recommendation_respects_low_maintain_threshold_config():
-    # maintainThreshold를 0으로 낮추면 '유지 권고' 임계가 0이 되어 모든 평균이 유지 권고로 산정된다.
-    # (운영 설정이 recommendation에 실효성을 갖는지 검증 — BE 계약상 유지 임계는 0~100 조정 가능.)
-    config = resolve_valuation_config({"maintainThreshold": 0})
+def test_business_fit_override_threshold_is_configurable():
+    # 오버라이드 기준점은 운영 설정(FE)에서 조정 가능하다. 90으로 올리면 business_fit 70은 미발동.
+    config = resolve_valuation_config({"businessFitOverrideThreshold": 90})
+    result = build_final_valuation_result(four_axes(55, 55, 55, 70), config=config)
 
-    result = build_final_valuation_result(four_axes(10, 10, 10, 10), config=config)
-
-    assert result["recommendation"] == "유지 권고"
+    assert result["business_fit_override"] is False
+    assert result["recommendation"] == "조건부 유지"  # 등급 B 그대로
 
 
 def test_reconcile_legal_scores_uses_configured_subscore_max():
@@ -303,9 +295,9 @@ def test_valuation_config_from_state_falls_back_to_default():
     assert valuation_config_from_state(PatentWorkflowState(user_input={}))["source"] == "default"
 
     configured = PatentWorkflowState(
-        user_input={"valuation_config": resolve_valuation_config({"maintainThreshold": 70})}
+        user_input={"valuation_config": resolve_valuation_config({"businessFitOverrideThreshold": 70})}
     )
-    assert valuation_config_from_state(configured)["maintainThreshold"] == 70.0
+    assert valuation_config_from_state(configured)["businessFitOverrideThreshold"] == 70.0
 
 
 def test_api_request_and_response_carry_valuation_config():
@@ -336,5 +328,5 @@ def test_final_grade_for_average_uses_shared_helper_with_cutoffs():
     from app.api import final_grade_for_average
 
     assert final_grade_for_average(None) is None
-    assert final_grade_for_average(70.0) == "B"
-    assert final_grade_for_average(70.0, {"gradeCutoffs": {"A": 70, "B": 50, "C": 30}}) == "A"
+    assert final_grade_for_average(70.0) == "A"
+    assert final_grade_for_average(60.0, {"gradeCutoffs": {"A": 80, "B": 50}}) == "B"

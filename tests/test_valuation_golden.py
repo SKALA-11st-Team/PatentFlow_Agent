@@ -1,7 +1,7 @@
 """ORCH-10 Part A — 순수 산식 골든 회귀 테스트.
 
 LLM/외부 호출 없이 결정적 산식만 단언한다(langgraph 불요).
-기대값 출처: 코드 컷오프 — grade_for_score(80/60/40), score_to_final_recommendation(60).
+기대값 출처: 코드 컷오프 — grade_for_score(A70/B50, D 없음). 권고는 등급에서 1:1 파생.
 이후 VAL-03/10·VAL-02·VAL-07·VAL-06 정정의 합산·등급·recommendation 회귀를 잡는 안전망.
 """
 
@@ -38,7 +38,7 @@ def _axes(legal: int, technology: int, market: int, business_fit: int, *, market
 
 @pytest.mark.parametrize(
     "score,grade",
-    [(0, "D"), (39, "D"), (40, "C"), (59, "C"), (60, "B"), (79, "B"), (80, "A"), (100, "A")],
+    [(0, "C"), (49, "C"), (50, "B"), (69, "B"), (70, "A"), (100, "A")],
 )
 def test_grade_for_score_boundary_cutoffs(score, grade):
     assert grade_for_score(score) == grade
@@ -49,15 +49,14 @@ def test_grade_for_score_boundary_cutoffs(score, grade):
     [
         (49.9, "포기 검토"),
         (50.0, "조건부 유지"),
-        (59.9, "조건부 유지"),
-        (60.0, "유지 권고"),
+        (69.9, "조건부 유지"),
+        (70.0, "유지 권고"),
         (0.0, "포기 검토"),
         (100.0, "유지 권고"),
     ],
 )
-def test_score_to_final_recommendation_default_60_50_cutoff(average, expected):
-    # AI 검토 의견 컷오프(기본 maintainThreshold=60): 평균점 ≥60 유지 권고, 50~59 조건부 유지, <50 포기 검토.
-    # '유지 권고' 임계는 운영 설정 maintainThreshold로 조정되며, 기본값은 schemas의 DEFAULT_MAINTAIN_THRESHOLD(60).
+def test_score_to_final_recommendation_default_70_50_cutoff(average, expected):
+    # 등급(기본 A≥70 / B≥50 / C<50)에서 1:1 파생: A→유지 권고, B→조건부 유지, C→포기 검토.
     assert score_to_final_recommendation(average) == expected
 
 
@@ -67,8 +66,8 @@ def test_score_to_final_recommendation_default_60_50_cutoff(average, expected):
     "scores,total,avg,grade,recommendation",
     [
         ((90, 90, 90, 90), 270, 90.0, "A", "유지 권고"),
-        ((50, 50, 50, 50), 150, 50.0, "C", "조건부 유지"),
-        ((70, 75, 65, 70), 210, 70.0, "B", "유지 권고"),
+        ((50, 50, 50, 50), 150, 50.0, "B", "조건부 유지"),
+        ((70, 75, 65, 70), 210, 70.0, "A", "유지 권고"),
     ],
 )
 def test_build_final_valuation_result_golden_table(scores, total, avg, grade, recommendation):

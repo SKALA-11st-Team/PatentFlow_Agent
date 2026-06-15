@@ -160,7 +160,6 @@ def compact_final_report_valuation_result(valuation_result: dict[str, Any]) -> d
     return {
         key: valuation_result.get(key)
         for key in (
-            "total_score",
             "average_score",
             "recommendation",
             "decision_rationale",

@@ -81,6 +81,8 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
             "recommendation": "유지 권고",
             "total_score": 280,
             "average_score": 70.0,
+            "business_fit_override": True,
+            "business_fit_score": 70,
             "axes": {
                 "legal": {"label": "권리성", "score": 70, "grade": "B", "rationale": "권리성 근거"},
                 "technology": {"label": "기술성", "score": 75, "grade": "B", "rationale": "기술성 근거"},
@@ -126,7 +128,10 @@ def test_evaluate_patent_runs_workflow_and_returns_report(monkeypatch):
     assert body["scores"][0]["grade"] == "B"
     assert body["totalScore"] == 280
     assert body["averageScore"] == 70.0
-    assert body["finalGrade"] == "B"
+    assert body["finalGrade"] == "A"  # 평균 70 → A컷 70 → A
+    # 사업 연계성 보정 플래그·점수가 응답에 노출된다(FE 배지용).
+    assert body["businessFitOverride"] is True
+    assert body["businessFitScore"] == 70
     assert "finalIndicator" not in body
     assert body["summaryMarkdown"].startswith("# 요약")
     # FE 카드용 구조화 요약본이 그대로 전달된다.

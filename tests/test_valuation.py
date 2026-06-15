@@ -67,7 +67,7 @@ def test_foreign_legal_result_removes_unavailable_citing_and_family_claim_gaps()
     result = reconcile_legal_scores(
         {
             "score": 0,
-            "grade": "D",
+            "grade": "C",
             "risk_factors": [
                 "피인용/후속 권리화 신호 조회 불가",
                 "독립항의 특정 조건으로 보호범위 해석에 영향 가능",
@@ -205,7 +205,7 @@ def test_run_valuation_agent_sets_result():
     core_axes = ("legal", "technology", "market")
     assert result.valuation_result["total_score"] == sum(axes[name]["score"] for name in core_axes)
     assert result.valuation_result["average_score"] == round(result.valuation_result["total_score"] / 3, 1)
-    assert "평균 점수는" in result.valuation_result["decision_rationale"][0]
+    assert "종합환산점수는" in result.valuation_result["decision_rationale"][0]
     assert axes["market"]["subscores"]["market_growth"]["score"] is None
     assert "final_report_markdown" not in result.valuation_result
 
@@ -772,7 +772,7 @@ def test_business_fit_run_uses_llm_for_final_axis_json():
     assert result["subscores"]["business_context_fit"]["score"] == 18
     assert "details" not in result["subscores"]["business_context_fit"]
     assert result["score"] == 70
-    assert result["grade"] == "B"
+    assert result["grade"] == "A"  # A컷 70 → 70점은 A
 
 
 def test_business_fit_patent_description_uses_metadata_and_agent_summary_fallbacks():
@@ -2004,7 +2004,7 @@ def test_technology_candidate_subscores_use_50_50_structure():
     )
 
     assert result["score"] == 75
-    assert result["grade"] == "B"
+    assert result["grade"] == "A"  # A컷 70 → 75점은 A
     assert result["subscores"]["technical_differentiation"]["score"] == 34
     assert result["subscores"]["implementation_specificity"]["score"] == 41
     assert "technical_substantiality" not in result["subscores"]

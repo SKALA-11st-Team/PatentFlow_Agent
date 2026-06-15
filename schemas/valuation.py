@@ -9,7 +9,8 @@ VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market", "b
 # 사업 연계성(business_fit)은 합산 대신 AI 권고 라벨 오버라이드로만 작용한다.
 CORE_VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market")
 FinalRecommendation = Literal["유지 권고", "조건부 유지", "포기 검토"]
-FinalGrade = Literal["A", "B", "C", "D"]
+# 등급과 AI 검토 의견은 동일 경계(A≥70 / B≥50 / C<50)로 1:1 대응한다(D 없음).
+FinalGrade = Literal["A", "B", "C"]
 
 # 운영 설정으로 재정의 가능한 가치평가 기준의 기본값. BE가 valuationConfig를 보내지 않으면
 # (구 BE ↔ 신 agent 호환) 아래 값이 그대로 적용되어 기존 배포와 동일하게 동작한다.
@@ -19,8 +20,9 @@ DEFAULT_AXIS_WEIGHTS: dict[str, float] = {
     "market": 25.0,
     "business_fit": 25.0,
 }
-DEFAULT_GRADE_CUTOFFS: dict[str, float] = {"A": 80.0, "B": 60.0, "C": 40.0}
-DEFAULT_MAINTAIN_THRESHOLD: float = 60.0
+# 등급 컷오프는 A·B 두 경계만 둔다(그 밑은 모두 C). 평균점 ≥A → A(=유지 권고),
+# ≥B → B(=조건부 유지), 그 외 → C(=포기 검토). AI 검토 의견은 이 등급에서 1:1 파생된다.
+DEFAULT_GRADE_CUTOFFS: dict[str, float] = {"A": 70.0, "B": 50.0}
 # 사업 연계성(business_fit) 점수가 이 값 이상이면 AI 권고를 '유지 권고'로 끌어올리는 오버라이드 기준점.
 DEFAULT_BUSINESS_FIT_OVERRIDE: float = 60.0
 DEFAULT_SUBSCORE_WEIGHTS: dict[str, dict[str, int]] = {
@@ -48,7 +50,6 @@ class ValuationConfig(BaseModel):
     gradeCutoffs: dict[str, float] = Field(default_factory=lambda: dict(DEFAULT_GRADE_CUTOFFS))
     # 범위 검증은 resolve_valuation_config에서 클램프로 처리한다(필드 제약으로 두면
     # 한 값의 범위 초과가 유효한 나머지 설정 전체를 기본값으로 폴백시키기 때문).
-    maintainThreshold: float = DEFAULT_MAINTAIN_THRESHOLD
     businessFitOverrideThreshold: float = DEFAULT_BUSINESS_FIT_OVERRIDE
     subscoreWeights: dict[str, dict[str, int]] = Field(
         default_factory=lambda: {axis: dict(values) for axis, values in DEFAULT_SUBSCORE_WEIGHTS.items()}
@@ -82,17 +83,16 @@ def resolve_valuation_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             value = DEFAULT_AXIS_WEIGHTS[axis]
         axis_weights[axis] = value if value > 0 else DEFAULT_AXIS_WEIGHTS[axis]
 
+    # 등급 컷오프는 A·B 두 경계만(그 밑은 C). A>B 순서가 깨지면 기본값으로 폴백한다
+    # (잘못된 설정으로 등급이 뒤집히는 것 방지).
     cutoffs: dict[str, float] = {}
-    for grade in ("A", "B", "C"):
+    for grade in ("A", "B"):
         try:
             cutoffs[grade] = float(config.gradeCutoffs.get(grade, DEFAULT_GRADE_CUTOFFS[grade]))
         except (TypeError, ValueError):
             cutoffs[grade] = DEFAULT_GRADE_CUTOFFS[grade]
-    if not (100 >= cutoffs["A"] > cutoffs["B"] > cutoffs["C"] >= 0):
+    if not (100 >= cutoffs["A"] > cutoffs["B"] >= 0):
         cutoffs = dict(DEFAULT_GRADE_CUTOFFS)
-
-    threshold = float(config.maintainThreshold)
-    threshold = min(100.0, max(0.0, threshold))
 
     business_fit_threshold = min(100.0, max(0.0, float(config.businessFitOverrideThreshold)))
 
@@ -112,7 +112,6 @@ def resolve_valuation_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         "version": config.version,
         "axisWeights": axis_weights,
         "gradeCutoffs": cutoffs,
-        "maintainThreshold": threshold,
         "businessFitOverrideThreshold": business_fit_threshold,
         "subscoreWeights": subscore_weights,
         "source": source,
@@ -125,7 +124,7 @@ def is_default_valuation_config(config: dict[str, Any] | None) -> bool:
     return (
         config.get("axisWeights") == DEFAULT_AXIS_WEIGHTS
         and config.get("gradeCutoffs") == DEFAULT_GRADE_CUTOFFS
-        and float(config.get("maintainThreshold", DEFAULT_MAINTAIN_THRESHOLD)) == DEFAULT_MAINTAIN_THRESHOLD
+        and float(config.get("businessFitOverrideThreshold", DEFAULT_BUSINESS_FIT_OVERRIDE)) == DEFAULT_BUSINESS_FIT_OVERRIDE
         and config.get("subscoreWeights") == DEFAULT_SUBSCORE_WEIGHTS
     )
 

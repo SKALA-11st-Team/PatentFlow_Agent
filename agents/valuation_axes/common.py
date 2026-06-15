@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from schemas.valuation import DEFAULT_GRADE_CUTOFFS
+
 
 def select_by_source_types(
     items: list[dict[str, Any]],
@@ -27,12 +29,12 @@ def normalize_text(value: Any) -> str:
 
 
 def grade_for_score(score: int | float, cutoffs: dict[str, float] | None = None) -> str:
-    # cutoffs는 운영 설정(valuationConfig.gradeCutoffs)으로 재정의 가능. 미지정 시 기존 80/60/40.
-    resolved = cutoffs or {"A": 80, "B": 60, "C": 40}
-    if score >= resolved.get("A", 80):
+    # 등급은 A·B 두 경계로만 나뉘고 그 밑은 모두 C다(D 없음). cutoffs는 운영 설정
+    # (valuationConfig.gradeCutoffs)으로 재정의 가능, 미지정 시 기본 70/50.
+    # 구(舊) 3키 컷오프({A,B,C})가 들어와도 C 키는 무시되어 안전하다.
+    resolved = cutoffs or DEFAULT_GRADE_CUTOFFS
+    if score >= resolved.get("A", DEFAULT_GRADE_CUTOFFS["A"]):
         return "A"
-    if score >= resolved.get("B", 60):
+    if score >= resolved.get("B", DEFAULT_GRADE_CUTOFFS["B"]):
         return "B"
-    if score >= resolved.get("C", 40):
-        return "C"
-    return "D"
+    return "C"

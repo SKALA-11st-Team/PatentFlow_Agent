@@ -13,7 +13,6 @@ from services.observability.langsmith_service import trace
 from agents.valuation_axes import AXIS_MODULES
 from agents.valuation_axes.common import grade_for_score
 from schemas.valuation import (
-    DEFAULT_MAINTAIN_THRESHOLD,
     DEFAULT_SUBSCORE_WEIGHTS,
     is_default_valuation_config,
     resolve_valuation_config,
@@ -28,11 +27,10 @@ AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
 # 종합 점수는 권리성·기술성·시장성 3축만 평균낸다(사업 연계성 제외).
 CORE_VALUATION_AXES = ("legal", "technology", "market")
 CORE_VALUATION_TOTAL_MAX = len(CORE_VALUATION_AXES) * 100
-# 사업 연계성 점수가 이 값 이상이면 3축 점수와 무관하게 AI 권고 라벨을 "유지 권고"로 본다.
-# 이는 운영 설정이 아닌 고정 제품 정책이며, 평균점 기준의 '유지 권고' 임계(valuationConfig.maintainThreshold)
-# 와는 별개 개념이다(기본값이 둘 다 60이라 우연히 겹치지만, maintainThreshold는 3축 평균에,
-# 이 값은 사업 연계성 단일 축에 적용된다). 오버라이드 발동 시 decision_rationale에 사유를 남긴다.
-# 운영 설정 valuationConfig.businessFitOverrideThreshold로 조정 가능(미설정 시 아래 기본값).
+# 사업 연계성 점수가 이 값 이상이면 3축 평균 등급과 무관하게 AI 검토 의견을 "유지 권고"로 끌어올린다.
+# 이는 등급=권고 1:1 매핑의 유일한 의도된 예외다(사업부가 실제 적용 중인 특허를 점수만으로 포기하지
+# 않도록). 오버라이드 발동 시 decision_rationale에 사유를 남긴다. 기준점은 운영 설정
+# valuationConfig.businessFitOverrideThreshold로 FE에서 조정 가능(미설정 시 아래 기본값).
 BUSINESS_FIT_OVERRIDE_SCORE = 60
 
 
@@ -119,10 +117,9 @@ def valuation_seed() -> int | None:
 
 def run_axis_llm_required(*, axis: str, prompt: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:
     # 재현성(VAL-01): seed 지원 모델이면 run_axis_llm_once가 seed를 전달해 동일 입력→동일 점수를 보장한다.
-    # seed 미지원(기본 gpt-5)일 때는 VALUATION_ENSEMBLE_RUNS 앙상블 중앙값 run을 채택해 점수 분산을 줄인다.
-    # 주의: 각 축은 이후 reconcile_*/apply_*에서 채택된 run의 subscores로 최종 score를 결정론적으로
-    # 재산정하므로, combine_axis_ensemble이 덮어쓰는 평균 top-level score 자체는 최종 결과에 남지 않는다
-    # (앙상블 효과는 '중앙값 run의 subscores 선택'으로 실현된다). 분산 축소는 ensemble_runs>1일 때만 적용된다.
+    # seed 미지원(기본 gpt-5)일 때는 VALUATION_ENSEMBLE_RUNS 앙상블 중앙값 run을 통째로 채택해 점수 분산을 줄인다.
+    # 앙상블 효과는 '중앙값 run 선택'으로 실현되며, 최종 score는 이후 reconcile_*/apply_*에서 채택된 run의
+    # subscores 합으로 결정론적으로 재산정된다. 분산 축소는 ensemble_runs>1일 때만 적용된다(기본 1: 단일 run).
     ensemble_runs = max(1, int(settings.valuation_ensemble_runs or 1))
     if ensemble_runs > 1:
         results = [run_axis_llm_once(axis=axis, prompt=prompt, evidence=evidence) for _ in range(ensemble_runs)]
@@ -152,10 +149,11 @@ def run_axis_llm_once(*, axis: str, prompt: str, evidence: list[dict[str, Any]])
 def combine_axis_ensemble(axis: str, results: list[dict[str, Any]]) -> dict[str, Any]:
     if not results:
         raise RuntimeError(f"LLM valuation ensemble for {axis} produced no results.")
+    # 중앙값 run을 점수·근거·subscore까지 통째로 채택한다(점수만 평균으로 덮어쓰면 근거·부분합과
+    # 어긋나므로). 최종 score는 reconcile_*/apply_*가 채택된 run의 subscore 합으로 재산정한다.
     ordered = sorted(results, key=lambda item: int(item.get("score") or 0))
     selected = dict(ordered[len(ordered) // 2])
-    average_score = round(sum(int(item.get("score") or 0) for item in results) / len(results))
-    selected["score"] = max(0, min(100, int(average_score)))
+    selected["score"] = max(0, min(100, int(selected.get("score") or 0)))
     selected["grade"] = grade_for_score(selected["score"])
     selected["ensemble_runs"] = len(results)
     selected["ensemble_scores"] = [int(item.get("score") or 0) for item in results]
@@ -383,12 +381,8 @@ def build_final_valuation_result(
     required_actions = []
     if business_fit.get("missing_information"):
         required_actions.append("사업부 적용 여부 및 향후 적용 계획 확인")
-    # '유지 권고' 임계 평균 점수는 운영 설정(valuationConfig.maintainThreshold, BE 단일 출처)을 따른다.
-    # 설정이 없으면 schemas의 기본값(60)으로 resolve된 값이 들어온다.
-    recommendation = score_to_final_recommendation(
-        average_score,
-        maintain_cutoff=maintain_threshold_cutoff(applied_config),
-    )
+    # AI 검토 의견은 종합 등급에서 1:1로 파생한다(A=유지 권고, B=조건부 유지, C=포기 검토).
+    recommendation = grade_to_recommendation(final_grade)
     if business_fit_override:
         recommendation = "유지 권고"
     result = {
@@ -403,7 +397,6 @@ def build_final_valuation_result(
         "recommendation": recommendation,
         "decision_rationale": build_decision_rationale(
             core_axes,
-            total_score,
             average_score,
             final_grade,
             recommendation,
@@ -456,21 +449,13 @@ def valuation_input_output_dir(state: PatentWorkflowState) -> Path:
     return settings.output_dir / "valuation_inputs"
 
 
-# AI 검토 의견(recommendation) 점수 컷오프(평균점 기준):
-#   ≥유지임계 유지 권고 · 그 미만이고 ≥조건부임계 조건부 유지 · <조건부임계 포기 검토.
-# '유지 권고' 임계(maintain_cutoff)는 운영 설정 valuationConfig.maintainThreshold(BE 단일 출처,
-# 기본 60)로 결정된다. 설정 미주입 경로의 폴백 기본값도 schemas의 DEFAULT_MAINTAIN_THRESHOLD에 맞춘다.
-MAINTAIN_RECOMMENDATION_CUTOFF = DEFAULT_MAINTAIN_THRESHOLD
-CONDITIONAL_RECOMMENDATION_CUTOFF = 50.0
+# AI 검토 의견은 종합 등급과 1:1 대응한다(별도 권고 컷오프 없음 — 등급이 단일 기준).
+GRADE_RECOMMENDATION = {"A": "유지 권고", "B": "조건부 유지", "C": "포기 검토"}
 
 
-def maintain_threshold_cutoff(config: dict[str, Any] | None) -> float:
-    """resolve된 valuationConfig에서 '유지 권고' 임계 평균 점수를 꺼낸다.
-    누락/비수치 시 기본값(DEFAULT_MAINTAIN_THRESHOLD)으로 폴백한다."""
-    try:
-        return float((config or {}).get("maintainThreshold", MAINTAIN_RECOMMENDATION_CUTOFF))
-    except (TypeError, ValueError):
-        return MAINTAIN_RECOMMENDATION_CUTOFF
+def grade_to_recommendation(grade: str) -> str:
+    """등급(A/B/C)을 AI 검토 의견으로 1:1 변환한다."""
+    return GRADE_RECOMMENDATION.get(grade, "포기 검토")
 
 
 def business_fit_override_cutoff(config: dict[str, Any] | None) -> float:
@@ -482,17 +467,9 @@ def business_fit_override_cutoff(config: dict[str, Any] | None) -> float:
         return BUSINESS_FIT_OVERRIDE_SCORE
 
 
-def score_to_final_recommendation(
-    average_score: float,
-    *,
-    maintain_cutoff: float = MAINTAIN_RECOMMENDATION_CUTOFF,
-    conditional_cutoff: float = CONDITIONAL_RECOMMENDATION_CUTOFF,
-) -> str:
-    if average_score >= maintain_cutoff:
-        return "유지 권고"
-    if average_score >= conditional_cutoff:
-        return "조건부 유지"
-    return "포기 검토"
+def score_to_final_recommendation(average_score: float, *, cutoffs: dict[str, float] | None = None) -> str:
+    """평균점 → 등급 → AI 검토 의견. 등급에서 파생하므로 둘이 어긋나지 않는다."""
+    return grade_to_recommendation(grade_for_score(average_score, cutoffs))
 
 
 # 부족 정보(missing_information)를 담당 팀별 확인사항으로 분류한다.
@@ -519,7 +496,6 @@ def build_review_checklist(validated_axes: dict[str, dict[str, Any]]) -> dict[st
 
 def build_decision_rationale(
     core_axes: dict[str, dict[str, Any]],
-    total_score: int,
     average_score: float,
     final_grade: str,
     recommendation: str,
@@ -537,14 +513,13 @@ def build_decision_rationale(
             for axis in CORE_VALUATION_AXES
         )
         score_line = (
-            f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
-            f"가중 평균 점수는 {average_score:g}/100점(가중치 {weight_text}), 종합 등급은 {final_grade}, "
-            f"AI 검토 의견은 {recommendation}이다."
+            f"권리성·기술성·시장성 3개 평가축 종합환산점수는 {average_score:g}/100점(가중치 {weight_text}), "
+            f"종합 등급은 {final_grade}, AI 검토 의견은 {recommendation}이다."
         )
     else:
         score_line = (
-            f"권리성·기술성·시장성 3개 평가축 합산 점수는 {total_score}/{CORE_VALUATION_TOTAL_MAX}점, "
-            f"평균 점수는 {average_score:g}/100점, 종합 등급은 {final_grade}이며 AI 검토 의견은 {recommendation}이다."
+            f"권리성·기술성·시장성 3개 평가축 종합환산점수는 {average_score:g}/100점, "
+            f"종합 등급은 {final_grade}이며 AI 검토 의견은 {recommendation}이다."
         )
     rationale = [
         score_line,
