@@ -279,13 +279,7 @@
 
 score = 기술 차별성 + 구현 구체성
 
-confidence:
-0.0 ~ 1.0
-
-
 출력 규칙:
-- Return ONLY one JSON object.
-- Markdown, 설명 문구, 코드블록을 출력하지 않는다.
 - 실제 기술적 약점만 `risk_factors`에 작성한다.
 - 자료 부족은 `missing_information`에 작성한다.
 - "정보 없음 = 낮은 기술성"으로 해석하지 않는다.

@@ -211,10 +211,6 @@ score = 권리안정성(40) + 권리보호력(40) + 포트폴리오·방어가�
 - claim_protection.score = core_solution_coverage.score + independent_claim_scope.score + dependent_claim_support.score + infringement_detectability.score   (max 40)
 - portfolio_defensive_value.score = portfolio_connection_coverage.score + follow_on_right_signal.score + overseas_right_coverage.score   (max 20)
 
-confidence:
-0.0 ~ 1.0
-
-
 출력 규칙:
 - 점수 감점 사유와 자료 부족 사유를 구분한다.
 - 실제 약점만 risk_factors에 작성한다.

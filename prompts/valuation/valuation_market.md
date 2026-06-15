@@ -167,16 +167,7 @@ score = 산업 시장성 + 시장 성장성 + 글로벌 사업성 + 경쟁성 + 
 
 단, `subscores.market_growth.score`가 null이면 산정 가능한 점수만 합산하고 confidence를 낮춘다.
 
-----------------------------------------
-confidence 기준
-----------------------------------------
-
-confidence:
-0.0 ~ 1.0
-
 출력 규칙:
-- Return ONLY one JSON object.
-- Markdown, 설명 문구, 코드블록을 출력하지 않는다.
 - `subscores.industry_marketability.score`는 0, 8, 20 중 하나로 작성한다.
 - `subscores.global_business.score`는 0, 8, 20 중 하나로 작성한다.
 - `subscores.competitiveness.score`는 0, 7, 13, 20 중 하나로 작성한다.
