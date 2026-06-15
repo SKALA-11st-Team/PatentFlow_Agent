@@ -13,8 +13,6 @@ EvidenceSourceType = Literal[
     "unknown",
 ]
 
-PublishedAtPrecision = Literal["datetime", "day", "month", "year", "unknown"]
-
 
 class Evidence(BaseModel):
     evidence_id: str
@@ -34,11 +32,3 @@ class Evidence(BaseModel):
     def model_post_init(self, __context: Any) -> None:
         if self.content is None:
             self.content = self.summary or self.raw_text or ""
-
-
-class EvidenceCollection(BaseModel):
-    source_type: str
-    source: str
-    query: str | None = None
-    collected_at: str
-    items: list[Evidence] = Field(default_factory=list)

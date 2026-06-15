@@ -7,6 +7,8 @@ import re
 # (게이트웨이 _sanitize_external_error와 에이전트 KiprisError 경로가 공유한다.)
 _SECRET_ENV_NAMES = (
     "GNEWS_API_KEY",
+    "NAVER_CLIENT_ID",
+    "NAVER_CLIENT_SECRET",
     "DART_KEY",
     "KIPRIS_SERVICE_KEYS",
     "KIPRIS_SERVICE_KEY",
