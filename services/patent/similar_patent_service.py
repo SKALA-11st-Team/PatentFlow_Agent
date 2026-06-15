@@ -27,6 +27,20 @@ def build_similar_patent_context(
     output_dir: str | Path | None = None,
     pdf_text_limit: int | None = None,
 ) -> dict[str, Any]:
+    if country_code:
+        # 해외 타깃은 가용한 분류 검색이 국내 DB(ipcSearchInfo)뿐이라, 결과가 국가 필터(KR≠대상국)에서
+        # 전부 탈락해 항상 0건이 된다. "찾았으나 없음(candidates_not_found)"과 혼동되지 않도록
+        # "검색 자체를 건너뜀(해외 미지원)"을 명시 경고로 노출한다 — 무용한 KIPRIS 호출도 생략한다.
+        # 해외 비교군은 선행문헌 경로(build_prior_art_patent_context)가 담당한다.
+        return {
+            "representative_cpc": representative_cpc,
+            "representative_ipc": representative_ipc,
+            "country_code": country_code,
+            "candidate_count": 0,
+            "similar_patents": [],
+            "warnings": ["similar_patent_skipped:foreign_target_unsupported"],
+        }
+
     classification_code = representative_ipc if country_code else representative_cpc
     classification_label = "ipc" if country_code else "cpc"
     if not classification_code:
