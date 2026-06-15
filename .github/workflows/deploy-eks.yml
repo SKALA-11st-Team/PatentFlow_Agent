@@ -74,7 +74,7 @@ jobs:
           AWS_ACCESS_KEY_ID_VALUE: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY_VALUE: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           OPENAI_API_KEY_VALUE: ${{ secrets.OPENAI_API_KEY }}
-          POSTGRES_PASSWORD_VALUE: ${{ secrets.POSTGRES_PASSWORD }}
+          PGVECTOR_DATABASE_URL_VALUE: ${{ secrets.PGVECTOR_DATABASE_URL }}
         run: |
           missing=0
           for name in \
@@ -86,7 +86,7 @@ jobs:
             AWS_ACCESS_KEY_ID_VALUE \
             AWS_SECRET_ACCESS_KEY_VALUE \
             OPENAI_API_KEY_VALUE \
-            POSTGRES_PASSWORD_VALUE
+            PGVECTOR_DATABASE_URL_VALUE
           do
             if [ -z "${!name}" ]; then
               echo "Missing required secret: ${name%_VALUE}" >&2
@@ -187,7 +187,7 @@ jobs:
           KIPRIS_SERVICE_KEY_VALUE: ${{ secrets.KIPRIS_SERVICE_KEY }}
           KIPRIS_SERVICE_KEYS_VALUE: ${{ secrets.KIPRIS_SERVICE_KEYS }}
           LANGSMITH_API_KEY_VALUE: ${{ secrets.LANGSMITH_API_KEY }}
-          POSTGRES_PASSWORD_VALUE: ${{ secrets.POSTGRES_PASSWORD }}
+          PGVECTOR_DATABASE_URL_VALUE: ${{ secrets.PGVECTOR_DATABASE_URL }}
           # 평가(evaluate) 근거수집용 외부 API. 분류(recommend-fields)는 사용 안 함.
           # 미제공 시 빈 값으로 들어가고 해당 근거만 degrade(부팅엔 지장 없음).
           GNEWS_API_KEY_VALUE: ${{ secrets.GNEWS_API_KEY }}
@@ -197,14 +197,13 @@ jobs:
           GOOGLE_CUSTOM_SEARCH_CX_VALUE: ${{ secrets.GOOGLE_CUSTOM_SEARCH_CX }}
           TAVILY_API_KEY_VALUE: ${{ secrets.TAVILY_API_KEY }}
         run: |
-          PGVECTOR_DATABASE_URL="postgresql://${PGVECTOR_USER}:${POSTGRES_PASSWORD_VALUE}@${PGVECTOR_HOST}:5432/${PGVECTOR_DB}"
           kubectl create secret generic team11-patentflow-agent-secret \
             --namespace="${KUBE_NAMESPACE}" \
             --from-literal=OPENAI_API_KEY="${OPENAI_API_KEY_VALUE}" \
             --from-literal=KIPRIS_SERVICE_KEY="${KIPRIS_SERVICE_KEY_VALUE}" \
             --from-literal=KIPRIS_SERVICE_KEYS="${KIPRIS_SERVICE_KEYS_VALUE}" \
             --from-literal=LANGSMITH_API_KEY="${LANGSMITH_API_KEY_VALUE}" \
-            --from-literal=PGVECTOR_DATABASE_URL="${PGVECTOR_DATABASE_URL}" \
+            --from-literal=PGVECTOR_DATABASE_URL="${PGVECTOR_DATABASE_URL_VALUE}" \
             --from-literal=GNEWS_API_KEY="${GNEWS_API_KEY_VALUE}" \
             --from-literal=NAVER_CLIENT_ID="${NAVER_CLIENT_ID_VALUE}" \
             --from-literal=NAVER_CLIENT_SECRET="${NAVER_CLIENT_SECRET_VALUE}" \
