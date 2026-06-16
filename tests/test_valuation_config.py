@@ -60,7 +60,7 @@ def test_resolve_valuation_config_accepts_partial_request():
     resolved = resolve_valuation_config({"axisWeights": {"market": 40}})
 
     assert resolved["axisWeights"]["market"] == 40.0
-    assert resolved["axisWeights"]["legal"] == 25.0
+    assert resolved["axisWeights"]["legal"] == 34.0
     assert resolved["source"] == "request"
     assert not is_default_valuation_config(resolved)
 
@@ -75,7 +75,7 @@ def test_resolve_valuation_config_rejects_invalid_values():
         }
     )
 
-    assert resolved["axisWeights"]["legal"] == 25.0
+    assert resolved["axisWeights"]["legal"] == 34.0
     assert "unknown_axis" not in resolved["axisWeights"]
     assert resolved["gradeCutoffs"] == DEFAULT_GRADE_CUTOFFS
     assert resolved["businessFitOverrideThreshold"] == 100.0

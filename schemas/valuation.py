@@ -14,11 +14,14 @@ FinalGrade = Literal["A", "B", "C"]
 
 # 운영 설정으로 재정의 가능한 가치평가 기준의 기본값. BE가 valuationConfig를 보내지 않으면
 # (구 BE ↔ 신 agent 호환) 아래 값이 그대로 적용되어 기존 배포와 동일하게 동작한다.
+
+# 축 가중치는 종합 점수 산출에 참여하는 3개 핵심 축(권리성·기술성·시장성)만 포함한다.
+# 사업 연계성(business_fit)은 여전히 평가되지만 점수 합산에는 참여하지 않고
+# AI 권고 라벨 오버라이드로만 작용한다.
 DEFAULT_AXIS_WEIGHTS: dict[str, float] = {
-    "legal": 25.0,
-    "technology": 25.0,
-    "market": 25.0,
-    "business_fit": 25.0,
+    "legal": 34.0,
+    "technology": 33.0,
+    "market": 33.0,
 }
 # 등급 컷오프는 A·B 두 경계만 둔다(그 밑은 모두 C). 평균점 ≥A → A(=유지 권고),
 # ≥B → B(=조건부 유지), 그 외 → C(=포기 검토). AI 검토 의견은 이 등급에서 1:1 파생된다.
@@ -76,7 +79,7 @@ def resolve_valuation_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             source = "default"
 
     axis_weights: dict[str, float] = {}
-    for axis in VALUATION_AXES:
+    for axis in CORE_VALUATION_AXES:
         try:
             value = float(config.axisWeights.get(axis, DEFAULT_AXIS_WEIGHTS[axis]))
         except (TypeError, ValueError):
