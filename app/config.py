@@ -41,19 +41,20 @@ class Settings(BaseModel):
     # 서술 품질을 위해 gpt-5 같은 상위 모델을 쓰고 싶을 때 지정한다(작성은 KIPRIS
     # 호출이 없어 느려도 워크플로우를 막지 않는다).
     openai_writing_model: str | None = getenv("OPENAI_WRITING_MODEL")
-    # GPT-5 추론량(reasoning effort)·출력 상세도(verbosity). gpt-5 계열에만 적용되며
-    # 미설정 시 OpenAI 기본값을 따른다. 작업별 값이 있으면 전역값보다 우선한다.
+    # GPT-5 추론량(reasoning effort)·출력 상세도(verbosity). gpt-5 계열에만 적용된다.
+    # 운영에서 검증된 단계별 튜닝을 코드 기본값으로 박아둔다 — 배포 env에 모델만 적어도
+    # 아래 값으로 동작하고, env에 값을 적으면 그게 오버라이드된다(작업별 > 전역 > API 기본).
     # effort: none|minimal|low|medium|high|xhigh, verbosity: low|medium|high
-    openai_reasoning_effort: str | None = getenv("OPENAI_REASONING_EFFORT")
-    openai_verbosity: str | None = getenv("OPENAI_VERBOSITY")
-    openai_valuation_reasoning_effort: str | None = getenv("OPENAI_VALUATION_REASONING_EFFORT")
+    openai_reasoning_effort: str | None = getenv("OPENAI_REASONING_EFFORT", "minimal")
+    openai_verbosity: str | None = getenv("OPENAI_VERBOSITY")  # 전역 verbosity 기본은 OpenAI API 기본값
+    openai_valuation_reasoning_effort: str | None = getenv("OPENAI_VALUATION_REASONING_EFFORT", "medium")
     # 구조화는 추출 작업이라 깊은 추론이 불필요하므로 기본 low로 비용을 낮춘다.
     openai_structuring_reasoning_effort: str | None = getenv("OPENAI_STRUCTURING_REASONING_EFFORT", "low")
     # 구조화 결과 디스크 캐시 on/off. 디버깅 등 같은 특허 재실행 시 LLM 재호출을 막는다.
     structuring_cache_enabled: bool = getenv("STRUCTURING_CACHE_ENABLED", "true").lower() == "true"
-    openai_writing_reasoning_effort: str | None = getenv("OPENAI_WRITING_REASONING_EFFORT")
-    openai_writing_verbosity: str | None = getenv("OPENAI_WRITING_VERBOSITY")
-    openai_supervisor_reasoning_effort: str | None = getenv("OPENAI_SUPERVISOR_REASONING_EFFORT")
+    openai_writing_reasoning_effort: str | None = getenv("OPENAI_WRITING_REASONING_EFFORT", "medium")
+    openai_writing_verbosity: str | None = getenv("OPENAI_WRITING_VERBOSITY", "high")
+    openai_supervisor_reasoning_effort: str | None = getenv("OPENAI_SUPERVISOR_REASONING_EFFORT", "low")
     openai_request_timeout_seconds: float = float(getenv("OPENAI_REQUEST_TIMEOUT_SECONDS", "90"))
     openai_valuation_timeout_seconds: float = float(
         getenv("OPENAI_VALUATION_TIMEOUT_SECONDS", "180")
