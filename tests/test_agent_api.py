@@ -192,6 +192,40 @@ def test_degraded_surfaces_supervisor_structural_failure():
     assert "market missing score" in reason
 
 
+def test_inline_local_report_images_embeds_local_and_keeps_external(tmp_path):
+    from app.api import inline_local_report_images
+
+    base_dir = tmp_path / "final"
+    base_dir.mkdir()
+    img_dir = tmp_path / "patent_markdown" / "imgs"
+    img_dir.mkdir(parents=True)
+    (img_dir / "fig.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+    markdown = (
+        "## 4. 평가축별 상세 근거\n"
+        "![도1](../patent_markdown/imgs/fig.png)\n"
+        "외부 ![web](https://example.com/a.png)\n"
+        "없음 ![missing](../patent_markdown/imgs/none.png)\n"
+    )
+
+    out, warnings = inline_local_report_images(markdown, base_dir)
+
+    # 로컬 png → data URI로 치환
+    assert "data:image/png;base64," in out
+    assert "../patent_markdown/imgs/fig.png" not in out
+    # 외부 URL·미존재 로컬은 그대로 유지
+    assert "https://example.com/a.png" in out
+    assert "../patent_markdown/imgs/none.png" in out
+    assert warnings == []
+
+
+def test_inline_local_report_images_noop_without_base_dir():
+    from app.api import inline_local_report_images
+
+    markdown = "![도1](../x/fig.png)"
+    assert inline_local_report_images(markdown, None) == (markdown, [])
+
+
 def test_failure_reason_names_missing_search_api_key():
     from app.api import failure_reason
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import hmac
+import base64
 import hashlib
+import hmac
 import os
 import re
 from datetime import datetime, timezone
@@ -333,6 +334,11 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
     valuation_result = final_state.valuation_result or {}
     valuation_markdown = (valuation_result.get("final_report_markdown") or "").strip()
     summary_markdown = (summary_result.get("summary_markdown") or "").strip()
+    # 로컬 이미지 경로는 배포 웹에서 깨지므로, 보고서 마크다운의 대표도면을 base64 data URI로
+    # 인라인해 payload에 함께 보낸다. 이미지 경로는 artifact_dir/final 기준 상대경로다.
+    artifact_dir = final_state.user_input.get("artifact_dir")
+    image_base_dir = (Path(artifact_dir) / "final") if artifact_dir else None
+    valuation_markdown, image_warnings = inline_local_report_images(valuation_markdown, image_base_dir)
 
     evidence_bundle = final_state.evidence_bundle or []
     applied_config = valuation_result.get("applied_config") or final_state.user_input.get("valuation_config")
@@ -356,7 +362,7 @@ def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentE
         businessFitScore=valuation_result.get("business_fit_score"),
         degraded=degraded,
         failureReason=failure_reason(final_state, valuation_result),
-        warnings=dedupe(workflow_warnings(final_state) + save_warnings),
+        warnings=dedupe(workflow_warnings(final_state) + save_warnings + image_warnings),
         evidenceConfidence=evidence_confidence(final_state),
         # ORCH-06/AIREPORT-02: 워크플로가 이미 산출한 리치 근거를 API로 풀스루한다.
         missingInformation=[str(item) for item in (valuation_result.get("missing_information") or []) if item],
@@ -534,6 +540,53 @@ def build_report_sections(markdown: str | None) -> dict[str, str]:
         if key:
             sections[key] = body
     return sections
+
+
+_INLINE_IMAGE_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+}
+# 대표도면 한 장이라도 과도하게 크면 payload가 폭증하므로 상한을 둔다(초과 시 경로 유지 + 경고).
+_MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+
+
+def inline_local_report_images(markdown: str | None, base_dir: Path | None) -> tuple[str | None, list[str]]:
+    """보고서 마크다운의 로컬 이미지 참조(`![alt](상대경로)`)를 base64 data URI로 치환한다.
+
+    배포 환경에선 에이전트 로컬 파일 경로(`../patent_markdown/...png`)가 깨져 이미지가 안 보이므로,
+    이미지 바이트를 payload(마크다운)에 실어 보낸다. http(s)·data URI는 그대로 두고, 파일 미존재·
+    미지원 확장자·과대 이미지는 경로를 유지한다(과대 이미지는 warnings로 표면화).
+    반환: (치환된 markdown, 경고 목록)
+    """
+    if not markdown or base_dir is None:
+        return markdown, []
+    warnings: list[str] = []
+
+    def _replace(match: "re.Match[str]") -> str:
+        alt, raw_path = match.group(1), match.group(2).strip()
+        if raw_path.startswith(("http://", "https://", "data:")):
+            return match.group(0)
+        try:
+            file_path = (base_dir / raw_path).resolve()
+            if not file_path.is_file():
+                return match.group(0)
+            mime = _INLINE_IMAGE_MIME.get(file_path.suffix.lower())
+            if not mime:
+                return match.group(0)
+            if file_path.stat().st_size > _MAX_INLINE_IMAGE_BYTES:
+                warnings.append(f"report_image_too_large:{file_path.name}")
+                return match.group(0)
+            encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+            return f"![{alt}](data:{mime};base64,{encoded})"
+        except OSError as exc:
+            warnings.append(f"report_image_inline_failed:{exc.__class__.__name__}")
+            return match.group(0)
+
+    return _MARKDOWN_IMAGE_RE.sub(_replace, markdown), warnings
 
 
 def valuation_scores(
