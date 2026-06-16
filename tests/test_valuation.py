@@ -144,11 +144,11 @@ def test_market_prompt_uses_20_20_20_20_20_market_structure():
     prompt = Path("prompts/valuation/valuation_market.md").read_text(encoding="utf-8")
 
     assert "시장성 점수(100) = 산업 시장성(20) + 시장 성장성(20) + 글로벌 사업성(20) + 경쟁성(20) + 발명-시장 연결성(20)" in prompt
-    assert "`subscores.industry_marketability.score`는 0, 8, 20 중 하나" in prompt
-    assert "`subscores.global_business.score`는 0, 8, 20 중 하나" in prompt
+    assert "`subscores.industry_marketability.score`는 0, 7, 13, 20 중 하나" in prompt
+    assert "`subscores.global_business.score`는 0, 7, 13, 20 중 하나" in prompt
     assert "`subscores.competitiveness.score`는 0, 7, 13, 20 중 하나" in prompt
     assert "`subscores.invention_market_linkage.score`는 0, 7, 13, 20 중 하나" in prompt
-    assert "적용 분야 자체에 대한 시장 수요 또는 상용화 흐름이 확인되지만, 세부 기능 직접성은 약한 경우에는 0점보다 8점을 우선 검토" in prompt
+    assert "적용 분야(제품·서비스 카테고리) 수준의 수요·상용화 흐름이 확인되면, 세부 기능 직접성이 약하더라도 7점이 아니라 13점을 우선 검토" in prompt
     assert '"로보어드바이저", "자동화 서비스", "AI 솔루션"처럼 상위 서비스 범주의 존재만으로는 0점을 줄 수 없다.' in prompt
     assert "세부 기능 대체 여부가 기사만으로 명확하지 않으면 기본적으로 7점 또는 13점을 우선 검토" in prompt
     assert "발명-시장 연결성" in prompt
@@ -1070,10 +1070,10 @@ def test_market_score_helpers_apply_20_20_20_20_20_structure():
             "score": 70,
             "subscores": {
                 "industry_marketability": {
-                    "score": 8,
+                    "score": 7,
                     "rationale": "상위 산업 성장만 확인된다.",
                 },
-                "global_business": {"score": 8, "rationale": "해외 직접 연결성은 약하다."},
+                "global_business": {"score": 7, "rationale": "해외 직접 연결성은 약하다."},
                 "competitiveness": {"score": 20, "rationale": "대체재가 거의 없다."},
                 "invention_market_linkage": {"score": 7, "rationale": "시장 수요는 있으나 발명과의 직접 연결은 약하다."},
             },
@@ -1086,17 +1086,17 @@ def test_market_score_helpers_apply_20_20_20_20_20_structure():
         },
     )
 
-    assert result["subscores"]["industry_marketability"]["score"] == 8
+    assert result["subscores"]["industry_marketability"]["score"] == 7
     assert result["subscores"]["industry_marketability"]["max_score"] == 20
     assert result["subscores"]["market_growth"]["details"] == {
         "cagr_score": None,
         "trend_score": None,
     }
-    assert result["subscores"]["global_business"]["score"] == 8
+    assert result["subscores"]["global_business"]["score"] == 7
     assert result["subscores"]["competitiveness"]["score"] == 20
     assert result["subscores"]["invention_market_linkage"]["score"] == 7
     assert "industry_marketability_breakdown" not in result
-    assert result["score"] == 63
+    assert result["score"] == 61
     assert "market_score_cap_reason" not in result["marketability_metrics"]
 
     assert build_global_business_metrics(
