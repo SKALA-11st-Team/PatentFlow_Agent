@@ -704,12 +704,15 @@ def is_degraded(state: PatentWorkflowState, valuation_result: dict[str, Any]) ->
     scores = valuation_scores(valuation_result)
     has_scored_axis = any(isinstance(score.score, int) for score in scores)
     warnings = set(workflow_warnings(state))
+    # 근거를 충분히 확보(evidence_confidence != LOW)한 경우, 일부 근거 채널의 수집 실패(_failed:)는
+    # 강등 사유로 보지 않는다. 단일 채널(산업 RAG·뉴스 등) 실패만으로 메일 발송을 차단하면
+    # 신뢰도 HIGH의 정상 레포트까지 묶이기 때문이다. 근거가 빈약(LOW)할 때의 부분 실패는
+    # 아래 evidence_confidence == "LOW" 조건이 그대로 강등으로 잡는다.
     return (
         bool(supervisor_structural_failure(state))
         or not has_scored_axis
         or evidence_confidence(state) == "LOW"
         or "technology_comparison_empty" in warnings
-        or any("_failed:" in warning for warning in warnings)
     )
 
 
