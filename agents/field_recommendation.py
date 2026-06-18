@@ -11,6 +11,13 @@ from services.llm.client_service import call_llm
 from services.llm.prompt_service import load_prompt
 
 
+# @author 배세은
+# @date 2026-06-04
+# @relatedFR FR-003, FR-004
+# @relatedUI UI-004
+# @description 특허 등록/수정 화면용 관련 사업·기술 분야 자동 추천 에이전트. 관리자 관리 분류 목록
+# (taxonomy) 안에서만 LLM으로 추천하며, 신뢰도와 사유를 함께 돌려준다. taxonomy 미제공 시 로컬 DB로 폴백한다.
+
 # VAL-12: load_taxonomy가 호출마다 patents 풀스캔하던 것을 짧은 TTL 캐시로 줄인다
 # (taxonomy는 관리자 관리라 변경 빈도가 낮아 수 분 캐시가 안전).
 _TAXONOMY_CACHE_TTL_SECONDS = 300.0
@@ -79,6 +86,10 @@ def _resolve_abstract(abstract: str | None, application_number: str | None) -> s
     return text[:_ABSTRACT_MAX_CHARS]
 
 
+# @relatedFR FR-003, FR-004
+# @relatedUI UI-004
+# @description 제목·초록·기존 분류 입력으로 사업/기술 분야를 추천한다. taxonomy 범위 내에서만 추천하고
+# 신뢰도(confidence)와 사유(reason)를 반환하며, LLM 실패 시 규칙 기반 폴백으로 대체한다.
 def recommend_fields(
     *,
     title: str | None = None,

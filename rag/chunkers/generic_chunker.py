@@ -11,6 +11,13 @@ from rag.industry_report_chunker import (
 )
 
 
+# @author 배세은
+# @date 2026-05-17
+# @relatedFR FR-007
+# @relatedUI TODO-UI-ID
+# @description 전용 청커가 없는 일반 산업보고서를 제목 기준으로 청킹하는 기본 청커.
+
+
 def chunk_report(
     *,
     markdown_path: Path,

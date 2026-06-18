@@ -46,6 +46,12 @@ def is_foreign_country(country: str | None) -> bool:
     return bool(code and code != "KR")
 
 
+# @author 배세은
+# @date 2026-06-13
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 해외특허 국가 코드를 (Tavily country, 검색어 언어)로 매핑해 본국 현지 뉴스를
+# 현지어로 수집하게 한다 — 해외특허 시장성 평가 근거 수집의 로케일 결정점.
 def resolve_domestic_locale(country: str | None) -> tuple[str | None, str]:
     """해외특허 국가 코드 → (tavily_country, language_label).
 

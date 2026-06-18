@@ -33,6 +33,12 @@ def ensure_evidence_ids(
     return normalized
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 여러 출처(뉴스/특허/리포트 등)의 근거를 URL·제목 기준으로 중복 제거하며
+# 하나로 병합하고, 각 항목에 안정적인 evidence_id를 부여한다. 평가 근거 집계의 진입점.
 def merge_evidence_sources(
     sources: Iterable[Iterable[dict[str, Any] | Evidence]],
     *,
@@ -53,6 +59,10 @@ def merge_evidence_sources(
     return ensure_evidence_ids(merged, prefix=prefix)
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 단일 출처에서 수집한 근거 묶음을 source_type/patent_id/쿼리 기준 경로의
+# JSON artifact로 저장한다. 평가 근거의 원본 수집 결과를 보존하는 저장 진입점.
 def save_evidence_collection(
     *,
     source_type: str,
@@ -83,6 +93,10 @@ def save_evidence_collection(
     return path
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 필터링된 근거(뉴스·산업리포트·기타)를 유형별 카운트 통계와 함께 patent_id별
+# JSON 번들로 저장한다. 평가에 실제 투입되는 근거 집합을 추적 가능하게 남긴다.
 def save_filtered_evidence_bundle(
     *,
     patent_id: str | int | None,
@@ -119,6 +133,10 @@ def save_filtered_evidence_bundle(
     return path
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description SK AX 공식 사이트 검색의 raw 결과·쿼리·진단·실패 URL을 통째로 patent_id별
+# JSON artifact로 저장한다. 사업연계성 근거가 어떤 쿼리로 무엇을 가져왔는지 추적·디버깅용.
 def save_skax_site_search_result(
     *,
     patent_id: str | int | None,

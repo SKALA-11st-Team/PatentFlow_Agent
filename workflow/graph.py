@@ -29,6 +29,13 @@ from workflow.supervisor import (
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-005, FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description 특허 평가 LangGraph 워크플로 정의·실행. 특허 수집→전처리→요약→근거 수집/압축→4축 평가→
+# 최종 보고서를 supervisor 노드로 라우팅·검증하며 진행한다. 단계 경계마다 progress_registry에 진행 단계를
+# 기록(FR-006)해 BE가 FE에 노출할 수 있게 한다. run_workflow가 BE/CLI 공용 단일 실행 진입점이다.
 class WorkflowGraphState(TypedDict, total=False):
     user_input: dict[str, Any]
     current_stage: str | None
@@ -207,6 +214,10 @@ def _route_after_writing_supervisor(payload: dict[str, Any]) -> str:
     return "end"
 
 
+# @relatedFR FR-005, FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description 평가 워크플로 그래프를 조립한다. 노드(수집/전처리/요약/근거/4축 평가/보고서)와
+# supervisor 라우팅·조건부 엣지를 연결하고, 단계 경계 노드에는 진행 단계 기록을 래핑한다.
 def _build_graph() -> Any:
     graph = StateGraph(WorkflowGraphState)
     graph.add_node("top_supervisor", lambda payload: _run_node(payload, top_supervisor_node))
@@ -354,6 +365,10 @@ def _build_graph() -> Any:
 WORKFLOW_GRAPH = _build_graph()
 
 
+# @relatedFR FR-005, FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description 평가 워크플로 단일 실행 진입점. BE(/evaluate)·CLI가 공유하며, 초기 상태를 컴파일된
+# 그래프로 돌려 최종 PatentWorkflowState(요약·4축 평가·최종 보고서·근거)를 돌려준다.
 def run_workflow(state: PatentWorkflowState) -> PatentWorkflowState:
     # LangGraph traces the whole run as a single nested tree (one root named
     # below) when LANGSMITH_TRACING is enabled; node spans and wrap_openai LLM

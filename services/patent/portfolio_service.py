@@ -22,6 +22,13 @@ EXCLUDED_RELATED_PRODUCTS = {"", "기타", "etc", "ETC", "기타/미정"}
 DEFAULT_SIBLING_LIMIT = 8
 
 
+# @author 배세은
+# @date 2026-05-08
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 타깃 특허와 같은 관련제품/관리번호 패밀리에 속하는 형제 특허를 찾아
+# KIPRIS 서지로 보강한 뒤, 포트폴리오 맥락 근거(형제 특허 역할·요약)를 생성한다.
+# 사업 연계성·시장성 평가의 포트폴리오 근거 항목으로 쓰인다.
 def analyze_portfolio_siblings(
     *,
     target_patent: dict[str, Any],
@@ -72,6 +79,10 @@ def analyze_portfolio_siblings(
     }
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 특허 DB에서 같은 관련제품(또는 제품 패밀리)·관리번호 패밀리를 공유하는
+# 형제 특허 후보를 조회하고, 매칭 사유 우선순위로 정렬해 상한만큼 반환한다.
 def find_sibling_patents(
     target_patent: dict[str, Any],
     *,
@@ -275,6 +286,10 @@ def build_patent_api_payload(
     }
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 타깃·형제 특허 페이로드로 LLM을 호출해 포트폴리오 근거 객체
+# (형제 특허 요약·역할·핵심 사실·압축 요약)를 생성한다. 평가 근거 출처(portfolio_context).
 def build_portfolio_evidence(
     *,
     target_patent: dict[str, Any],
@@ -343,6 +358,9 @@ def portfolio_prompt_patent_payload(patent: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 포트폴리오 형제 분석 결과를 patent_id별 JSON 근거 파일로 저장한다.
 def save_portfolio_evidence_result(
     *,
     patent_id: str | int | None,

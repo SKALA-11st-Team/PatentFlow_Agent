@@ -14,6 +14,13 @@ from schemas.supervisor import SupervisorDecision
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description 평가 워크플로 supervisor(품질 게이트/라우팅) 노드 모음. 단계별 산출물(수집·요약·근거·
+# 4축 평가·작성)을 규칙+LLM 판정으로 검사해 통과/재평가(valuation_retry)/근거 재수집(query_rewriting)
+# 으로 라우팅하고, 재시도 한도를 코드 레벨에서 강제해 무한 루프를 막는다.
 VALUATION_SUPERVISOR_RETRY_LIMIT = 1
 AXIS_SUPERVISOR_RETRY_LIMIT = 1
 WRITING_SUPERVISOR_RETRY_LIMIT = 1
@@ -43,6 +50,9 @@ def coerce_axis_status(axis: str, status: str) -> str:
     return status
 
 
+# @relatedFR FR-006
+# @relatedUI UI-005
+# @description 최상위 supervisor. 다음 팀(research/valuation/writing/final)으로 전체 워크플로 흐름을 라우팅한다.
 @trace(name="top_supervisor_agent", run_type="chain")
 def top_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "top"
@@ -76,6 +86,9 @@ def top_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
+# @relatedFR FR-005, FR-007
+# @relatedUI UI-005
+# @description 리서치 supervisor. 요약·근거 수집 단계 산출물이 평가에 충분한지 검사하고 다음 단계로 라우팅한다.
 @trace(name="research_supervisor_agent", run_type="chain")
 def research_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "research"
@@ -117,6 +130,10 @@ def research_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 가치평가 supervisor. 4축 평가 결과를 축별로 검사해 통과/축 재평가/근거 재수집으로 라우팅하고
+# 재시도 한도를 강제한다(외부 근거 의존 축인 시장성·사업 연계성만 근거 재수집을 요청할 수 있음).
 @trace(name="valuation_supervisor_agent", run_type="chain")
 def valuation_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "valuation"
@@ -972,6 +989,9 @@ def run_writing_quality_check(state: PatentWorkflowState, key: str) -> dict[str,
         return {"passed": True, "issues": [f"{key}_quality_check_warning:{exc.__class__.__name__}"]}
 
 
+# @relatedFR FR-008
+# @relatedUI UI-005
+# @description 작성 supervisor. 요약·최종 보고서 작성 품질(필수 섹션·서술 일관성)을 검사하고 재작성/통과로 라우팅한다.
 @trace(name="writing_supervisor_agent", run_type="chain")
 def writing_supervisor_node(state: PatentWorkflowState) -> PatentWorkflowState:
     state.current_team = "writing"

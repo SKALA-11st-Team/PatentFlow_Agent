@@ -100,6 +100,12 @@ def _industry_keyword_hits(blob_lower: str, keywords: tuple[str, ...]) -> int:
     return hits
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 특허의 자유 텍스트(기술/사업 분야 등)를 산업 RAG 코퍼스의 산업 라벨 하나로 매핑한다.
+# 시장성 축 근거를 해당 산업으로 한정 검색하기 위한 전처리(무관 산업 청크 혼입 방지).
 def match_industry(text: str | None) -> str | None:
     """자유 텍스트(기술/사업 분야 등)를 코퍼스 산업 라벨 하나로 매핑한다. 매칭 없으면 None."""
     blob = " ".join(str(text or "").split()).lower()
@@ -121,6 +127,10 @@ def match_industry(text: str | None) -> str | None:
     return candidates[0]
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 특허 메타데이터·전처리 섹션을 모아 산업 라벨로 매핑하고, 시장성 근거 검색에 쓸
+# 필터 목록([매핑산업, "공통"])을 만든다. 매핑 실패 시 None을 반환해 전체 검색으로 안전 폴백한다.
 def resolve_patent_industries(
     patent_context: dict[str, Any] | None = None,
     preprocessed_patent: dict[str, Any] | None = None,
@@ -164,6 +174,10 @@ def index_industry_evidence(
     )
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 산업/시장 RAG 벡터스토어를 검색해 시장성 평가 근거 항목(출처·발행연도·본문·스코어)을
+# 반환한다. 멀티쿼리 배치에서는 상위가 주입한 store를 재사용해 임베딩 모델·캐시·DB 연결을 공유한다.
 def search_industry_evidence(
     query: str,
     *,
@@ -248,6 +262,10 @@ def dedupe_industry_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return deduped
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 특허 1건의 산업/시장성 RAG 근거를 다중 쿼리로 수집·중복제거하고 결과를 아티팩트로 저장하는
+# 메인 진입점. 쿼리가 비면 특허 메타/섹션으로 폴백 쿼리를 구성하고, 배치 전체에 단일 store를 재사용한다.
 def search_and_save_patent_industry_evidence(
     *,
     preprocessed_patent: dict[str, Any],

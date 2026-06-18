@@ -5,6 +5,13 @@ from typing import Any, TypeVar
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR N/A
+# @relatedUI TODO-UI-ID
+# @description LLM/워크플로 관측(LangSmith) 트레이싱 보조 유틸. 현재는 하위호환용
+# no-op 데코레이터로, 실제 트레이싱은 LangGraph 네이티브 + wrap_openai가 담당한다.
+# 사용자 기능이 아니라 평가 워크플로 관측 인프라이므로 직접 매핑되는 FR/UI는 없다.
 def trace(name: str | None = None, run_type: str = "chain") -> Callable[[F], F]:
     """No-op decorator kept for backwards compatibility.
 

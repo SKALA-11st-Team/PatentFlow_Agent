@@ -16,6 +16,11 @@ import requests
 from app.config import settings
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-001
+# @relatedUI UI-003
+# @description 검토 대상 특허 목록을 로컬 특허 DB에서 조회한다(관리번호·출원/등록번호·상태 등 기본 메타데이터).
 def list_patents(limit: int = 20) -> list[dict[str, Any]]:
     query = """
         SELECT
@@ -41,6 +46,9 @@ def list_patents(limit: int = 20) -> list[dict[str, Any]]:
         return [dict(row) for row in conn.execute(query, (limit,)).fetchall()]
 
 
+# @relatedFR FR-003
+# @relatedUI UI-005
+# @description 단일 특허의 기본 정보·회사 컨텍스트를 식별자(id/출원번호/등록번호/관리번호)로 조회한다.
 def get_patent(
     patent_id: int | None = None,
     application_number: str | None = None,
@@ -89,6 +97,10 @@ def get_patent(
         return dict(row) if row else None
 
 
+# @relatedFR FR-005, FR-007
+# @relatedUI UI-005
+# @description KIPRIS 외부 연동으로 국내(KR) 특허의 서지·청구항·패밀리·인용/피인용·인용근거를 한 번에 수집해
+#              특허 이해와 권리성 평가 근거의 입력 데이터를 만든다(부가 API 실패는 warnings로 격리).
 def fetch_kipris_bibliography(application_number: str) -> dict[str, Any]:
     client = _kipris_client()
     kipris_application_number = normalize_kipris_application_number(application_number)
@@ -171,6 +183,10 @@ def fetch_kipris_abstract(application_number: str) -> str:
     return (normalized.get("sections") or {}).get("abstract") or ""
 
 
+# @relatedFR FR-005, FR-007
+# @relatedUI UI-005
+# @description 해외(비-KR) 특허의 권리성 데이터를 KIPRIS 해외문헌 API로 수집한다(국내 API의 빈 응답을
+#              KR 메타데이터로 오인하지 않도록 분리). 서지·청구항·전문 PDF/Google Patents 폴백을 포함한다.
 def fetch_foreign_patent_rights_data(
     patent: dict[str, Any],
     *,
@@ -390,6 +406,9 @@ def merge_foreign_metadata(base: dict[str, Any], override: dict[str, Any]) -> di
     merged["assignee_count"] = len(merged.get("assignee") or [])
     merged["has_co_assignee"] = merged["assignee_count"] > 1
     return merged
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description KIPRIS 국내 서지상세 원응답을 표준 메타데이터/초록/청구항/청구항 통계 구조로 정규화한다.
 def normalize_kipris_bibliography(raw: dict[str, Any], *, application_number: str) -> dict[str, Any]:
     item = _get_path(raw, ["response", "body", "item"]) or {}
     summary = _first_item(_get_path(item, ["biblioSummaryInfoArray", "biblioSummaryInfo"])) or {}
@@ -624,6 +643,9 @@ def normalize_foreign_bibliography(
     }
 
 
+# @relatedFR FR-005, FR-007
+# @relatedUI UI-005
+# @description KIPRIS 전문 PDF를 내려받아 마크다운으로 파싱한다(특허 본문 이해·비교문헌 근거의 원천 텍스트).
 def download_and_parse_patent_pdf(
     application_number: str,
     *,
@@ -664,6 +686,9 @@ def download_and_parse_patent_pdf(
     }
 
 
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 특허 PDF 한 건을 opendataloader로 마크다운 변환한다(US 2단 조판은 좌→우 컬럼/OCR 폴백 적용).
 def parse_single_patent_pdf(
     pdf_path: str | Path,
     *,
@@ -1059,6 +1084,9 @@ def citing_document_records(citing_documents: list[dict[str, Any]]) -> list[dict
     ]
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 권리성 평가 근거로 쓰일 선행 인용문헌(국내/해외)을 청구항 등 조회 가능한 형태로 보강한다.
 def resolve_citation_evidence(
     client: Any,
     *,

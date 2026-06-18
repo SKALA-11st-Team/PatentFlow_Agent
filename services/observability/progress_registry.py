@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 
+# @author 유건욱
+# @date 2026-06-12
 # @relatedFR FR-006
 # @relatedUI UI-005
 # @description 평가 워크플로 진행 단계(특허 이해→근거 수집→…→완료)를 patent_id별로

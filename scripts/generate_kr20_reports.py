@@ -8,6 +8,14 @@ from datetime import datetime
 from pathlib import Path
 
 
+# @author 배세은
+# @date 2026-05-08
+# @relatedFR FR-005, FR-006, FR-008
+# @relatedUI UI-005
+# @description 무작위 KR 특허 N건에 대해 요약·4축 평가·권고 레포트를 일괄 생성하는 배치 CLI.
+# 각 특허를 app.main 서브프로세스로 실행해 산출물을 모은다.
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Generate random KR patent summary and valuation reports.")
     parser.add_argument("--count", type=int, default=20)

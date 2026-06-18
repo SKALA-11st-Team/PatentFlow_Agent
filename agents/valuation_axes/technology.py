@@ -16,6 +16,12 @@ from services.patent.similar_patent_service import build_similar_patent_context
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-19
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 기술성(technology) 평가 축. 비교 특허군(선행문헌 우선, 부족분은 CPC/IPC 유사특허로 보강)
+# 대비 기술 차별성·구현 구체성을 채점한다. 비교군이 비면 technology_comparison_empty 경고로 표면화한다.
 AXIS = "technology"
 LABEL = "기술성"
 PROMPT_PATH = "valuation/valuation_technology.md"
@@ -45,6 +51,9 @@ TECHNOLOGY_SUBSCORE_MAX_SCORES = {
 }
 
 
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 기술성 축 실행: 근거 선택→비교군 지표 산출→프롬프트 구성→LLM 채점→세부지표 정규화 후 점수 적용.
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     metrics = build_technology_metrics(state)

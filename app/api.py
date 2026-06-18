@@ -27,6 +27,14 @@ from workflow.graph import run_workflow
 from workflow.state import PatentWorkflowState
 
 
+# @author 이소율
+# @date 2026-05-15
+# @relatedFR FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description BE(Spring)가 호출하는 AI 평가 서빙 FastAPI 앱. 특허 가치 재평가(/evaluate),
+# 평가 진행 단계 조회(/evaluate/progress), 분류 추천(/recommend-fields),
+# 평가 기준 프롬프트 관리(/admin/valuation-criteria/prompts)를 제공한다. 워크플로가 산출한
+# 4축 평가·권고·근거·degraded/warnings 등 노출 계약 신호를 PatentEvaluationResponse로 풀스루한다.
 app = FastAPI(
     title="PatentFlow Agent API",
     version="0.1.0",
@@ -82,6 +90,10 @@ class PatentMetadata(BaseModel):
     expectedExpirationDate: str | None = None
 
 
+# @relatedFR FR-006
+# @relatedUI UI-005
+# @description /evaluate 요청 바디. BE가 특허 식별자·메타데이터·가치평가 기준(valuationConfig)을
+# 전달한다. 식별자/메타데이터 누락 시 에이전트가 로컬 DB·KIPRIS로 폴백한다.
 class PatentEvaluationRequest(BaseModel):
     managementNumber: str | None = None
     applicationNumber: str | None = None
@@ -135,6 +147,11 @@ class PatentEvaluationScore(BaseModel):
     confidence: float | None = None
 
 
+# @relatedFR FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description /evaluate 응답 계약. 4축 점수·종합 등급·AI 검토 의견(recommendation)·평가 근거와
+# degraded/failureReason/warnings/evidenceConfidence 등 운영·사용자 노출 신호를 함께 담는다.
+# AI 평가 레포트일 뿐 최종 판단이 아니므로 라벨은 유지 권고/포기 검토/추가 정보 필요로 분리한다.
 class PatentEvaluationResponse(BaseModel):
     patentId: str
     scores: list[PatentEvaluationScore]
@@ -195,6 +212,10 @@ class FieldRecommendationResponse(BaseModel):
     reason: str
 
 
+# @relatedFR FR-003, FR-004
+# @relatedUI UI-004
+# @description 특허 등록/수정 화면용 관련 사업·기술 분야 자동 추천. BE가 넘긴 taxonomy(관리자 관리
+# 분류 목록) 안에서만 추천하며, 미제공 시 로컬 DB로 폴백한다.
 @app.post("/api/v1/ai/patents/{patent_id}/recommend-fields", response_model=FieldRecommendationResponse)
 def recommend_patent_fields(patent_id: str, request: FieldRecommendationRequest) -> FieldRecommendationResponse:
     del patent_id
@@ -228,6 +249,10 @@ def root() -> dict[str, str]:
     }
 
 
+# @relatedFR FR-006
+# @relatedUI UI-008
+# @description 설정 화면용 4축(권리성·기술성·시장성·사업 연계성) 평가 기준 프롬프트 조회/수정 API.
+# 수정 시 checksum 충돌 검사와 필수 항목·미지원 평가축(라이프사이클 경제성) 차단 검증을 거친다.
 @app.get("/api/v1/admin/valuation-criteria/prompts")
 def list_valuation_prompts() -> list[ValuationPromptResponse]:
     return [read_valuation_prompt(axis) for axis in VALUATION_PROMPT_PATHS]
@@ -317,6 +342,11 @@ def get_patent_evaluation_progress(patent_id: str) -> PatentEvaluationProgressRe
     return PatentEvaluationProgressResponse(patentId=patent_id, **entry)
 
 
+# @relatedFR FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description AI 특허 가치 재평가 엔드포인트. 워크플로(run_workflow)를 동시성 제한 아래 실행해
+# 4축 평가·종합 권고·근거를 산출하고, 영속화(save_outputs) 실패는 응답을 날리지 않도록 warnings로만
+# 표면화한다. degraded 시 recommendation은 '포기'로 단정하지 않고 '추가 정보 필요'를 기본값으로 둔다.
 @app.post("/api/v1/ai/patents/{patent_id}/evaluate")
 def evaluate_patent(patent_id: str, request: PatentEvaluationRequest) -> PatentEvaluationResponse:
     initial_state = PatentWorkflowState(user_input=build_api_user_input(patent_id, request))

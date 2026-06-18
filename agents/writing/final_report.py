@@ -15,6 +15,14 @@ from services.observability.langsmith_service import trace
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-19
+# @relatedFR FR-007, FR-008
+# @relatedUI UI-005
+# @description 최종 AI 특허 평가 레포트(종합 권고안) 작성 에이전트. 4축 평가 결과와 근거를 바탕으로
+# LLM이 섹션 구조(평가대상·판단근거·축별 상세·역할별 확인사항·최종 검토 의견)의 보고서 마크다운을 생성한다.
+# 섹션 헤더 파서는 API 추출·report 검증이 공유하는 단일 출처다.
+
 # 보고서 최상위 섹션 헤더 파서(단일 출처). API의 build_report_sections(추출)와
 # report_validation_node(검증)가 모두 이 함수로 '섹션 존재' 판정을 통일한다 — 두 곳의 기준이 달라
 # 검증은 통과하는데 추출에선 조용히 누락(또는 반대로 불필요 재생성)되던 어긋남을 제거한다.
@@ -33,6 +41,10 @@ def parse_report_sections(markdown: str | None) -> dict[str, str]:
     return sections
 
 
+# @relatedFR FR-007, FR-008
+# @relatedUI UI-005
+# @description 최종 보고서 작성 진입점. valuation_result를 입력으로 LLM 본문을 생성하고 헤더/메타를 붙여
+# 완성된 보고서 마크다운(final_report_markdown)을 valuation_result에 채운다.
 @trace(name="final_report_agent", run_type="chain")
 def run_final_report_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     valuation_result = dict(state.valuation_result or {})

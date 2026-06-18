@@ -12,6 +12,13 @@ from rag.industry_report_chunker import (
 )
 
 
+# @author 배세은
+# @date 2026-05-17
+# @relatedFR FR-007
+# @relatedUI TODO-UI-ID
+# @description KIET 산업전망 보고서를 장(chapter) 범위와 제목 기준으로 청킹하는 전용 청커.
+
+
 def chunk_report(
     *,
     markdown_path: Path,

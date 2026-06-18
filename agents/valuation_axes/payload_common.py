@@ -6,6 +6,13 @@ from agents.valuation_axes.common import normalize_text
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-21
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 4축 평가 프롬프트의 공통 입력 페이로드 빌더. 대상 특허 메타데이터·청구항 컨텍스트·
+# 선행문헌/인용 근거·수집된 외부 근거를 LLM 입력 JSON으로 조립하고, 대상 특허와 비교 문헌의 역할을
+# 명시(document_role)해 비교 문헌 기술을 대상 특허 구성으로 서술하지 않도록 한다.
 def build_base_input_payload(
     *,
     state: PatentWorkflowState,

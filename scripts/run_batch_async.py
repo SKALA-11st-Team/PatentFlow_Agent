@@ -20,6 +20,14 @@ from datetime import datetime
 from pathlib import Path
 
 
+# @author 배세은
+# @date 2026-06-05
+# @relatedFR FR-006, FR-008
+# @relatedUI UI-005
+# @description 여러 특허의 평가 워크플로를 동시 실행하는 비동기 배치 러너.
+# 각 특허를 격리된 app.main 서브프로세스로 돌리며 --concurrency로 동시 실행 수를 제한한다.
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run valuation workflow for a batch of patents concurrently.")
     parser.add_argument("--from-batch", default=None, help="Reuse management numbers from artifacts/batches/<name>.")

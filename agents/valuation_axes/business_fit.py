@@ -8,6 +8,13 @@ from schemas.valuation import DEFAULT_SUBSCORE_WEIGHTS
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-19
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 사업 연계성(business_fit) 평가 축. 공식 사업 근거·제품/기능 직접 일치·사업 맥락 적합성으로
+# 채점한다. 이 점수는 종합 합산에 들어가지 않고, 기준 이상이면 AI 검토 의견을 '유지 권고'로 끌어올리는
+# 오버라이드로만 작용한다(BUSINESS_ALIGNMENT 축, 라이프사이클 경제성 아님).
 AXIS = "business_fit"
 LABEL = "사업 연계성"
 PROMPT_PATH = "valuation/valuation_business_fit.md"
@@ -79,6 +86,9 @@ def business_fit_subscore_max_map(state: PatentWorkflowState | None) -> dict[str
     }
 
 
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 사업 연계성 축 실행: 근거 선택→프롬프트 구성→LLM 채점 후 결과 반환.
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = build_input_payload(state=state, evidence=evidence)

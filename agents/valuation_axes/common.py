@@ -5,6 +5,12 @@ from typing import Any
 from schemas.valuation import DEFAULT_GRADE_CUTOFFS
 
 
+# @author 배세은
+# @date 2026-05-19
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 4축 평가 공용 유틸. source_type 기반 축별 근거 라우팅과 점수→등급(A/B/C) 변환을 제공한다.
+# 등급 컷오프는 운영 설정(valuationConfig.gradeCutoffs)으로 재정의 가능하며 기본 70/50이다.
 def select_by_source_types(
     items: list[dict[str, Any]],
     *,

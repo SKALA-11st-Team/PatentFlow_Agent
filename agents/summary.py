@@ -11,6 +11,12 @@ from services.evidence.compression_service import parse_json_object
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 특허 내용 요약 생성 에이전트. 전처리된 특허(청구항·초록·섹션)를 LLM으로 요약 마크다운과
+# FE 카드용 구조화 요약(summary_brief: 한줄요약·문제·핵심아이디어·구성요소·동작·기대효과)으로 만든다.
 @trace(name="summary_agent", run_type="chain")
 def run_summary_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     patent = state.preprocessed_patent or {}

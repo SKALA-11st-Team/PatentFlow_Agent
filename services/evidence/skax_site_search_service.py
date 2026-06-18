@@ -260,6 +260,12 @@ class PageHTMLParser(HTMLParser):
         return normalize_text(" ".join(self.text_parts))
 
 
+# @author 배수정
+# @date 2026-05-19
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 특허 컨텍스트(제품/사업/기술 분야·제목 키워드·도메인 힌트)로 SK AX 사이트
+# 검색어를 생성한다 — 평가 근거 수집의 검색어 입력.
 def build_search_queries(
     patent_context: dict[str, Any],
     *,
@@ -407,6 +413,11 @@ def extract_title_keywords(title: Any, *, limit: int = 4) -> list[str]:
     return keywords
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description SK AX 공식 사이트(skax.co.kr 및 SK 관련 매체)에서 특허 관련 제품/서비스
+# 페이지를 검색·수집해 사업 연계성·시장성 평가 근거로 제공한다. 검색→필터→본문 수집까지
+# 수행하고, 검색 키(Tavily) 미설정 시 '근거 0건'을 진단(missing_config)에 표면화한다.
 def collect_skax_site_evidence(
     patent_context: dict[str, Any],
     *,

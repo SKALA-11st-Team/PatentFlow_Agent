@@ -33,6 +33,12 @@ KOREAN_STOPWORDS = {
 }
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 수집한 뉴스를 특허 키워드 매칭·노후(5년 컷오프)·중복 기준으로 걸러 시장성
+# 평가 근거로 쓸 뉴스만 남긴다. kept/rejected와 사유를 함께 돌려 근거 선별 근거를 추적 가능하게 한다.
 def filter_news_evidence(
     items: list[dict[str, Any]],
     *,

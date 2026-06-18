@@ -12,6 +12,15 @@ import re
 from app.config import settings
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 산업보고서 청크를 임베딩해 pgvector에 적재/검색하는 산업 RAG 벡터 스토어.
+# 시장성 축 평가 근거를 산업보고서 기반으로 보강하는 데 쓰인다. OpenAI 임베딩과
+# 오프라인/테스트용 결정적 해싱 임베딩을 함께 제공하고, build_industry_vector_db로
+# JSONL 청크를 적재하는 CLI 진입점을 가진다.
+
 DEFAULT_HASH_DIMENSIONS = 512
 DEFAULT_CHUNKS_PATH = settings.data_dir / "vector_db" / "industry_report_chunks.jsonl"
 DEFAULT_TABLE_NAME = settings.pgvector_table_name

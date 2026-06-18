@@ -137,6 +137,14 @@ class ArticleTitleHTMLParser(HTMLParser):
         return None
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 뉴스 검색 결과 항목의 스니펫을 실제 기사 본문(+정제된 제목)으로 보강한다.
+# 항목별 URL을 병렬 fetch해 본문 추출에 성공하면 content를 교체하고 content_source를
+# full_text로 표시하며, 실패하면 원본 스니펫을 보존하고 사유를 metadata에 남긴다.
+# 평가 근거(시장성 등) 텍스트 품질을 높이는 근거 수집 단계의 진입점.
 def enrich_news_items_with_full_text(
     items: list[dict[str, Any]],
     *,
@@ -193,6 +201,11 @@ def enrich_news_items_with_full_text(
     return items
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 단일 기사 URL의 본문/제목을 안전하게 추출한다. validate_article_url로
+# SSRF를 차단하고 리다이렉트를 막은 뒤, trafilatura → 폴백 HTML 파서 순으로 본문을
+# 뽑아 유효성(최소 길이·노이즈 비율)을 검사한다. 실패 시 사유 코드를 함께 반환한다.
 def fetch_article_text(url: str) -> dict[str, str | None]:
     blocked_reason = validate_article_url(url)
     if blocked_reason:
@@ -239,6 +252,11 @@ def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 기사 fetch 전 URL의 SSRF 안전성을 검증한다. scheme/userinfo/차단 호스트명을
+# 거르고, IP나 DNS 해석 결과가 사설·루프백·링크로컬(클라우드 메타데이터 등)이면 차단 사유를
+# 반환한다(안전하면 None). 외부 근거 수집 시 내부망 접근을 막는 보안 게이트.
 def validate_article_url(url: str) -> str | None:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:

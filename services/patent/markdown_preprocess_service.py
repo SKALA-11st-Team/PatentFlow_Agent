@@ -377,6 +377,11 @@ def normalize_blank_lines(text: str) -> str:
     return text.strip()
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 특허 PDF 마크다운 원문을 평가용으로 정제한다(이미지/중복 등록표시/페이지 잡음 제거, 헤더·줄바꿈 정규화).
 def preprocess_patent_markdown(raw_text: str) -> str:
     text = raw_text
     text = remove_image_markdown(text)
@@ -390,6 +395,10 @@ def preprocess_patent_markdown(raw_text: str) -> str:
     return text
 
 
+# @relatedFR FR-005, FR-007
+# @relatedUI UI-005
+# @description 정제된 특허 본문·KIPRIS API·DB 메타데이터를 합쳐 평가 입력(요약·청구항·섹션·근거)을 구성하고
+#              누락 필드/경고를 검증해 돌려준다 — 특허 이해와 4축 평가의 핵심 입력 빌더.
 def build_preprocessed_patent(
     raw_text: str,
     *,
@@ -484,6 +493,9 @@ def build_preprocessed_patent(
     return result
 
 
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 마크다운 파일 경로를 읽어 build_preprocessed_patent로 평가 입력 구조를 만든다.
 def preprocess_markdown_file(
     markdown_path: str | Path,
     *,
@@ -616,6 +628,9 @@ def extract_pdf_fallback_metadata(text: str, *, db_metadata: dict[str, Any] | No
     return metadata
 
 
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 정제된 특허 본문을 기술분야·배경기술·과제·해결수단·효과 등 표준 섹션(국/영/중/일 헤딩)으로 분리한다.
 def extract_sections(text: str) -> dict[str, str]:
     sections = {value: "" for value in SECTION_ALIASES.values()}
     sections["abstract"] = postprocess_agent_text(_extract_abstract(text))
@@ -821,6 +836,9 @@ def build_claim_stats(reported_claim_count: int | None, claims: list[dict[str, A
     }
 
 
+# @relatedFR FR-005, FR-006
+# @relatedUI UI-005
+# @description 정제 결과를 요약/평가(valuation)/검색계획 용도별 AI 입력 묶음으로 재구성한다.
 def build_agent_inputs(
     metadata: dict[str, Any],
     sections: dict[str, str],

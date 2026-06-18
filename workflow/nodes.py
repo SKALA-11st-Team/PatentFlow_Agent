@@ -45,6 +45,19 @@ from agents.writing.final_report import parse_report_sections, run_final_report_
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-005, FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description 평가 워크플로의 단계별 노드 모음. 특허 수집(KIPRIS/PDF)→전처리→요약→근거 수집/뉴스 필터/
+# 산업 RAG/압축→4축 평가 입력 준비→최종 보고서 작성으로 이어지는 각 단계를 구현한다.
+# 각 노드는 PatentWorkflowState를 입력받아 갱신된 state를 반환하며 그래프(graph.py)가 연결한다.
+
+
+# @relatedFR FR-001, FR-003
+# @relatedUI UI-005
+# @description 특허 수집 노드. BE가 메타데이터(patent_record)를 넘기면 로컬 SQLite 조회를 건너뛰고
+# 그대로 쓰며, 본문(청구항·명세서)은 application_number로 KIPRIS/PDF에서 수집한다.
 @trace(run_type="tool")
 def patent_fetch_node(state: PatentWorkflowState) -> PatentWorkflowState:
     # BE가 메타데이터(patent_record)를 넘기면 로컬 SQLite 조회를 건너뛰고 그대로 쓴다(본문은 아래 KIPRIS/PDF로 수집).
@@ -188,6 +201,10 @@ def analyze_portfolio_siblings_safely(
         }
 
 
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 전처리 노드. 수집한 특허 마크다운을 정제해 청구항·섹션·도면 컨텍스트 등 구조화된
+# preprocessed_patent으로 만든다(요약·평가 입력의 기반).
 @trace(run_type="tool")
 def common_preprocess_node(state: PatentWorkflowState) -> PatentWorkflowState:
     if not state.parsed_pdf and not state.kipris_api_data:
@@ -539,6 +556,9 @@ def final_merge_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 요약 노드. 요약 에이전트(run_summary_agent)를 실행해 특허 요약·구조화 요약을 생성한다.
 @trace(run_type="tool")
 def summary_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return run_summary_agent(state)
@@ -587,6 +607,11 @@ def query_rewriting_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return state
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 외부 평가 근거 수집 노드. 뉴스·산업 리포트(RAG)·SK AX 공식 사이트 등을 검색해
+# evidence_bundle을 채운다. 키 미설정·외부 호출 실패는 search_warnings로 표면화해(가짜 근거로 대체 금지)
+# degraded 판정과 운영 진단에 활용한다.
 @trace(run_type="tool")
 def evidence_search_node(state: PatentWorkflowState) -> PatentWorkflowState:
     preprocessed = state.preprocessed_patent or {}
@@ -847,6 +872,10 @@ def first_non_empty_text(*values: object) -> str:
     return ""
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 근거 압축 노드. 수집한 근거 후보를 LLM으로 요약·선별해 평가 축 입력에 적합한
+# 압축 근거 번들로 만든다(축별 근거 라우팅은 source_type 기준).
 @trace(run_type="tool")
 def evidence_compression_node(state: PatentWorkflowState) -> PatentWorkflowState:
     preprocessed = state.preprocessed_patent or {}
@@ -1056,6 +1085,10 @@ def artifact_subdir(state: PatentWorkflowState, name: str) -> Path:
     return settings.output_dir / name
 
 
+# @relatedFR FR-007, FR-008
+# @relatedUI UI-005
+# @description 최종 보고서 노드. 최종 보고서 에이전트(run_final_report_agent)를 실행해 종합 권고안
+# 보고서 마크다운을 생성한다.
 @trace(run_type="tool")
 def final_report_node(state: PatentWorkflowState) -> PatentWorkflowState:
     return run_final_report_agent(state)

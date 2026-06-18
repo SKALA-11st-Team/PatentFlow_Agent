@@ -5,6 +5,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR N/A
+# @relatedUI TODO-UI-ID
+# @description 에이전트 전역 설정(환경변수 기반). 경로·LLM 모델/추론량/타임아웃·근거 수집 동시성·
+# 가치평가 재현성(seed)·통합 API(BE) 주소·pgvector 접속 정보 등 워크플로 전반의 동작 파라미터를
+# 한곳에서 정의한다. 모든 값은 env로 오버라이드 가능(하드코딩 금지 원칙의 단일 출처).
 class Settings(BaseModel):
     project_root: Path = Path(__file__).resolve().parents[1]
     data_dir: Path = project_root / "data"

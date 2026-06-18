@@ -36,6 +36,13 @@ class PatentStructuringError(Exception):
     """구조화 실패(JSON 파싱·형식검증 등). 사유 문자열을 메시지로 담는다."""
 
 
+# @author 배세은
+# @date 2026-06-11
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 타깃 특허 1건과 비교 특허군(선행문헌·CPC유사) N건을 동일 스키마로
+# 병렬 구조화한다. 권리성·기술성 축의 element 단위 비교에 쓰일 구조화 입력을 만들고,
+# 실패 건은 사유와 함께 분리해 반환한다(한 건 실패가 전체 평가를 막지 않게).
 def structure_target_and_comparisons(
     *,
     target_input: dict[str, Any],
@@ -97,6 +104,11 @@ def _structure_one_outcome(role: str, patent_input: dict[str, Any]) -> dict[str,
     return {"role": role, "doc_id": doc_id, "structure": structure, "reason": None}
 
 
+# @relatedFR FR-005
+# @relatedUI UI-005
+# @description 특허 1건의 명세서·청구항을 LLM 2-pass로 구조화한다(Pass1 구성요소·흐름,
+# Pass2 청구항 분해·구성요소 명확성). 내용 기반 캐시로 재호출을 줄이고 결과는
+# patent_structure 스키마로 형식 검증한다. 특허 이해·요약 생성의 구조화 입력 단위.
 @trace(name="patent_structuring", run_type="chain")
 def structure_one_patent(patent_input: dict[str, Any]) -> dict[str, Any] | None:
     """특허 1건을 2-pass로 구조화한다. 성공 시 dict, 빈 입력 시 None, 실패 시 예외.

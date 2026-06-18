@@ -9,6 +9,13 @@ from app.config import settings
 log = logging.getLogger(__name__)
 
 
+# @author 배세은
+# @date 2026-06-04
+# @relatedFR FR-001
+# @relatedUI UI-005
+# @description BE 공유 DB(patentflow.patents)에서 patent_id로 특허 식별자·기본 정보
+# (관리번호·출원/등록번호·제목·사업/기술 분야)를 조회한다. psycopg/DB URL 미설정 시
+# 경고 후 None 반환(평가 흐름을 막지 않는 선택적 보강 조회).
 def get_patent_identifiers(patent_id: str) -> dict[str, Any] | None:
     try:
         import psycopg

@@ -13,6 +13,12 @@ class BigQueryPatentClaimsError(RuntimeError):
     """BigQuery patent claims 조회 실패."""
 
 
+# @author 배세은
+# @date 2026-05-20
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 비교 특허 후보의 공개번호로 Google Patents 공개 데이터(BigQuery)를 조회해
+# 해외 특허의 대표 청구항을 가져온다. 해외 비교 특허 청구항 근거를 평가에 공급하는 외부 연동.
 def fetch_foreign_claims_from_bigquery(
     candidates: list[dict[str, Any]],
     *,

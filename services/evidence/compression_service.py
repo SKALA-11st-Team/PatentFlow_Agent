@@ -19,6 +19,13 @@ DEFAULT_TEXT_LIMIT = 6000
 DEFAULT_COMPRESSION_WORKERS = settings.compression_workers
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 수집된 근거 항목들을 LLM으로 압축·관련성 판정하는 진입점. 후보 선별 →
+# 병렬 압축 → 비관련 제외/실패 패스스루 보존을 거쳐 압축된 근거 목록과 경고·통계를
+# 반환한다. 경쟁특허는 압축 없이 그대로 합류시킨다. 4축 평가에 투입할 근거를 정제한다.
 def compress_evidence_items(
     items: list[dict[str, Any]],
     *,
@@ -145,6 +152,11 @@ def select_compression_candidates(
     return candidates, skipped, passthrough
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 단일 근거 항목을 LLM 압축 프롬프트로 요약·관련성 판단한 뒤, 출처 유형
+# (뉴스/산업리포트/회사 공시)별 정규화 함수로 표준 근거 shape를 만든다. 비-JSON 응답은
+# ValueError로 올려 상위에서 패스스루 보존하게 한다.
 def compress_single_evidence(
     item: dict[str, Any],
     *,
@@ -257,6 +269,10 @@ def normalize_industry_compression(item: dict[str, Any], parsed: dict[str, Any])
     }
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 근거 압축 결과(항목·경고·통계)를 patent_id별 JSON artifact로 저장해
+# 평가 근거 추적/디버깅에 쓴다.
 def save_compressed_evidence_result(
     *,
     patent_id: str | int | None,

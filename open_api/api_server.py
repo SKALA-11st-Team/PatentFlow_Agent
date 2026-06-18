@@ -38,6 +38,13 @@ OPENAPI_FILES = (
     ROOT / "gnews_open_api.yaml",
 )
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description KIPRIS/NAVER/GNews 외부 API를 단일 게이트웨이로 묶어 프록시하는 통합 FastAPI 앱.
+# 에이전트 근거 수집기가 호출하는 유일한 외부 연동 진입점으로, 특허 평가 근거(서지·뉴스·시장)를 수집한다.
+# X-API-Key 인증·IP 레이트리밋·시크릿 마스킹을 미들웨어로 적용한다.
 app = FastAPI(
     title="Unified API Server (KIPRIS + NAVER + GNews)",
     version="1.0.0",
@@ -303,6 +310,9 @@ def root() -> dict[str, Any]:
 # -------------------------
 # NAVER / GNEWS
 # -------------------------
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description NAVER 뉴스 검색 프록시. 특허 시장성/사업성 평가 근거가 되는 국내 뉴스 기사를 수집한다.
 @app.get("/api/news/search", tags=["NAVER News"])
 def naver_news_search(
     query: str = Query(..., description="검색어"),
@@ -339,6 +349,9 @@ def naver_news_search_alias(
     return naver_news_search(query=query, display=display, start=start, sort=sort)
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description GNews 글로벌 뉴스 검색 프록시. 해외 시장 동향 등 특허 시장성 평가 근거를 수집한다.
 @app.get("/api/v4/search", tags=["GNews"])
 def gnews_search(
     q: str = Query(..., description="검색어"),
@@ -400,6 +413,10 @@ def _sanitize_external_error(exc: Exception) -> str:
 # -------------------------
 # KIPRIS
 # -------------------------
+# @relatedFR FR-001, FR-007
+# @relatedUI UI-005
+# @description KIPRIS 특허·실용 검색/서지/패밀리/인용/해외문헌/전문 프록시 엔드포인트 군의 대표 진입점.
+# 평가 대상 특허 조회 및 외부 출원·등록 데이터 기반 평가 근거 수집에 쓰인다(KiprisClient로 위임).
 @app.get("/kipris/patent-utility/search/advanced", tags=["KIPRIS Patent Search"])
 def get_advanced_search(request: Request) -> Any:
     client, raw_query = _kipris_request_context(request)

@@ -36,6 +36,13 @@ def _get_client() -> OpenAI:
     return client
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-005, FR-006, FR-008
+# @relatedUI UI-005
+# @description 공용 OpenAI 호출 래퍼. 요약·4축 평가·최종 보고서·supervisor 판정 등 모든 LLM 호출이 거치는
+# 단일 진입점이다. seed 지정 시 재현성을 위해 Chat Completions 경로를 쓰고, 그 외엔 Responses API를 사용하며
+# gpt-5 계열 reasoning effort/verbosity와 타임아웃을 작업별로 적용한다.
 def call_llm(
     prompt: str,
     *,

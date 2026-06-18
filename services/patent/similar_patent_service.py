@@ -17,6 +17,12 @@ from services.patent.markdown_preprocess_service import (
 )
 
 
+# @author 김한규
+# @date 2026-05-20
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 대표 CPC/IPC·출원일 기준으로 유사특허 후보를 KIPRIS에서 수집·유사도 정렬해 비교문헌 컨텍스트를 만든다
+#              (권리성/기술성 평가 근거). 해외 타깃은 미지원으로 경고만 남기고 선행문헌 경로가 담당한다.
 def build_similar_patent_context(
     *,
     target_metadata: dict[str, Any],
@@ -140,6 +146,9 @@ def build_similar_patent_context(
     }
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 선정된 유사특허의 전문 PDF를 받아 대표 청구항·기술내용·유사도 텍스트로 보강한다.
 def collect_similar_patent_pdfs(
     similar_patents: list[dict[str, Any]],
     *,
@@ -211,6 +220,9 @@ def collect_similar_patent_pdfs(
                 f"{exc.__class__.__name__}:{str(exc)[:160]}"
             )
     return enriched, warnings
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 대표 분류 검색 결과에서 출원일 10년 범위·법인 출원·공개/등록 상태로 유사특허 후보를 선별한다.
 def collect_similar_patent_candidates(
     *,
     representative_cpc: str,
@@ -302,6 +314,9 @@ class EmbeddingModel(Protocol):
         ...
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 유사특허 후보를 대상 특허와의 유사도로 정렬한다(임베딩 코사인 우선, 실패 시 토큰 Jaccard 폴백).
 def rank_similar_patent_candidates(
     *,
     target_text: str,

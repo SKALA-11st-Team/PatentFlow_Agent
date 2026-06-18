@@ -16,6 +16,12 @@ except ImportError:
         return str(text or "")
 
 
+# @author 배세은
+# @date 2026-05-19
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 시장성(market) 평가 축. 산업 리포트·뉴스 근거와 시장 성장성 지표로 시장 매력도를 채점한다.
+# 해외특허는 글로벌 산업 리포트를 우선 근거로 사용한다.
 AXIS = "market"
 LABEL = "시장성"
 PROMPT_PATH = "valuation/valuation_market.md"
@@ -26,6 +32,9 @@ FOREIGN_MARKET_PRIORITY_REPORTS = (
 )
 
 
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 시장성 축 실행: 근거 선택→시장성 지표·근거 그룹 구성→프롬프트 구성→LLM 채점 후 점수 적용.
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = build_input_payload(state=state, evidence=evidence)

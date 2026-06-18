@@ -22,6 +22,13 @@ from schemas.valuation import (
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 4축(권리성·기술성·시장성·사업 연계성) 가치평가 오케스트레이터. 축별 LLM 채점을 실행하고,
+# 종합 점수는 핵심 3축(사업 연계성 제외) 평균으로 산정한다. 사업 연계성은 합산 대신 일정 점수 이상이면
+# AI 검토 의견을 '유지 권고'로 끌어올리는 오버라이드로만 작용한다. 등급→AI 검토 의견은 1:1 파생.
 VALUATION_AXES = list(AXIS_MODULES)
 AXIS_LABELS = {axis: module.LABEL for axis, module in AXIS_MODULES.items()}
 # 종합 점수는 권리성·기술성·시장성 3축만 평균낸다(사업 연계성 제외).
@@ -40,6 +47,9 @@ class AxisRuntime:
     run_llm_required: Callable[..., dict[str, Any]]
 
 
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 가치평가 에이전트 진입점. 4개 축을 순차 실행한 뒤 종합 결과로 합산한다(LLM 평가 필수).
 @trace(name="valuation_agent", run_type="chain")
 def run_valuation_agent(state: PatentWorkflowState) -> PatentWorkflowState:
     if state.user_input.get("use_llm_valuation", True) is False:
@@ -345,6 +355,11 @@ def normalize_subscores(value: Any) -> dict[str, dict[str, Any]]:
     return normalized
 
 
+# @relatedFR FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description 4축 결과를 종합 평가 결과로 합산한다. 핵심 3축 평균으로 종합 점수·등급을 산정하고,
+# 등급에서 AI 검토 의견을 파생하며 사업 연계성 오버라이드를 적용한다. 부족 정보는 팀별 확인 체크리스트로
+# 분류하고 판단 근거(decision_rationale)를 생성한다.
 def build_final_valuation_result(
     axes: dict[str, dict[str, Any]],
     *,

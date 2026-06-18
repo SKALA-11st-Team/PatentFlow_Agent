@@ -12,11 +12,21 @@ from agents.valuation_axes.payload_common import (
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-19
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 권리성(legal) 평가 축. 청구항·선행문헌·인용/피인용 근거로 권리안정성·권리보호력·
+# 포트폴리오 가치를 채점한다. 해외특허는 비교 가능한 선행문헌/피인용 신호가 없으면 해당 세부지표를
+# 제외하고 만점을 비례 축소해 채점한다(국내 규칙으로 뭉뚱그리지 않음).
 AXIS = "legal"
 LABEL = "권리성"
 PROMPT_PATH = "valuation/valuation_legal.md"
 
 
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 권리성 축 실행: 근거 선택→프롬프트 구성→LLM 채점→하위 점수 재조정(reconcile)→권리 컨텍스트 부착.
 def run(state: PatentWorkflowState, runtime: Any) -> dict[str, Any]:
     evidence = select_evidence(state.evidence_bundle or [], state)
     payload = build_input_payload(state=state, evidence=evidence)

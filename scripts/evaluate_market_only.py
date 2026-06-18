@@ -26,6 +26,15 @@ from workflow.state import PatentWorkflowState
 LOCAL_JDK_HOME = PROJECT_ROOT / ".jdk" / "jdk-17.0.19+10" / "Contents" / "Home"
 
 
+# @author 김한규
+# @date 2026-05-19
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 특허 1건에 대해 시장성 축만 단독으로 평가하는 오프라인 CLI.
+# KIPRIS PDF 파싱 + 산업보고서 RAG 근거 수집을 거쳐 시장성 평가/근거를 산출하며,
+# 시장 축 프롬프트·근거 파이프라인을 빠르게 검증하는 용도다.
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run only the market valuation axis for one patent.")
     parser.add_argument("management_number", help="Internal patent management number. Example: P201702001-KR0.")

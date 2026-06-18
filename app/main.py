@@ -11,6 +11,13 @@ from workflow.graph import run_workflow
 from workflow.state import PatentWorkflowState
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-005, FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description 평가 워크플로 1회 실행 CLI(개발/배치용). 특허 식별자 인자를 받아 run_workflow를
+# 돌리고, 요약·가치평가·최종 보고서 산출물(JSON/Markdown)을 artifacts/runs에 저장한다.
+# 장기 서버는 app.api(uvicorn)이며, save_outputs는 /evaluate 경로에서도 재사용한다.
 LOCAL_JDK_HOME = settings.project_root / ".jdk" / "jdk-17.0.19+10" / "Contents" / "Home"
 
 
@@ -254,6 +261,10 @@ def print_queries(label: str, queries: list[str]) -> None:
         print(f"- {query}")
 
 
+# @relatedFR FR-005, FR-008
+# @relatedUI UI-005
+# @description 워크플로 산출물(전처리 특허·요약·요약 브리프·최종 보고서)을 run 폴더에 JSON/Markdown으로
+# 저장한다. CLI와 /evaluate API가 공유하며, API 경로에서는 저장 실패가 평가 응답을 막지 않도록 best-effort로 호출된다.
 def save_outputs(state: PatentWorkflowState, *, save_cleaned_markdown: bool = False) -> dict[str, Path]:
     saved: dict[str, Path] = {}
     if state.preprocessed_patent:
@@ -356,6 +367,10 @@ def print_saved_outputs(saved: dict[str, Path]) -> None:
         print(f"- {label}: {path}")
 
 
+# @relatedFR FR-005, FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description CLI 진입점. 인자 파싱·식별자 검증 후 워크플로를 1회 실행하고, 선택적 API 근거 수집과
+# 산출물 저장을 거쳐 요약을 출력한다.
 def main() -> None:
     configure_local_java()
     parser = build_parser()

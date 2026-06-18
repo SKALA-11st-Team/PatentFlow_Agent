@@ -14,6 +14,14 @@ import unicodedata
 from app.config import settings
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 산업보고서 PDF를 마크다운으로 변환하고 산업/장 단위로 청킹해
+# 벡터 DB 적재용 JSONL을 만드는 청킹 파이프라인. 시장성 축 평가 근거 RAG의
+# 입력 데이터를 생성하며, 보고서 종류별 전용 청커(chunkers/)로 분기한다.
+
 INDUSTRY_NAMES = [
     "자동차",
     "조선",

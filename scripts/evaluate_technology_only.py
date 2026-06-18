@@ -17,6 +17,14 @@ from services.patent.markdown_preprocess_service import build_preprocessed_paten
 from workflow.state import PatentWorkflowState
 
 
+# @author 김한규
+# @date 2026-05-20
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 특허 1건에 대해 기술성 축만 단독으로 평가하는 오프라인 CLI.
+# KIPRIS PDF 파싱 후 기술성 평가/근거를 산출하며, 기술 축 프롬프트를 빠르게 검증하는 용도다.
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run only the technology valuation axis for one patent.")
     parser.add_argument("management_number", help="Internal patent management number. Example: P201702001-KR0.")

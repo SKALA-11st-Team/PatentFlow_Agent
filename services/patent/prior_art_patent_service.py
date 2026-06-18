@@ -42,6 +42,12 @@ def has_prior_art_fulltext(item: dict[str, Any]) -> bool:
     return bool(str(item.get("pdf_text") or item.get("pdf_text_excerpt") or "").strip())
 
 
+# @author 김한규
+# @date 2026-05-20
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 대상 특허의 인용/선행기술 후보를 모아 전문(본문)을 확보한 비교문헌 컨텍스트를 만든다 —
+#              권리성 평가 근거(선행기술 대비)의 입력. 자국 우선 순회로 전문 성공 건수 목표를 채운다.
 def build_prior_art_patent_context(
     *,
     target_metadata: dict[str, Any],
@@ -166,6 +172,9 @@ def _rank_prior_art_citations(citation_documents: list[dict[str, Any]], home_cou
     return sorted(citation_documents, key=_key)
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description KIPRIS 인용문헌과 전처리된 선행기술 번호를 합쳐 중복 제거한 선행기술 후보 목록을 만든다.
 def collect_prior_art_candidates(
     *,
     target_metadata: dict[str, Any],
@@ -222,6 +231,9 @@ def collect_prior_art_candidates(
     return items
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 선행기술 후보 한 건을 KIPRIS 검색·서지·전문 PDF(국내/해외)로 해소해 비교 가능한 문헌으로 만든다.
 def resolve_prior_art_candidate(
     candidate: dict[str, Any],
     *,
@@ -857,6 +869,9 @@ def prior_art_similarity_text_from_markdown(markdown_text: str) -> str:
     )
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 선행문헌 전문 마크다운에서 대표 청구항·초록·기술내용을 뽑아 청구항 비교용 권리성 근거로 정리한다.
 def prior_art_legal_content_from_markdown(
     markdown_text: str,
     *,

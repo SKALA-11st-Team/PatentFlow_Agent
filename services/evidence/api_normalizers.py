@@ -9,6 +9,12 @@ import re
 from services.evidence.store_service import now_iso
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 네이버 뉴스 API 응답을 공통 뉴스 근거 shape로 정규화한다(HTML 제거,
+# pubDate RFC2822 파싱). 시장성 등 평가 근거로 쓰일 국내 뉴스 근거를 생성한다.
 def normalize_naver_news_response(
     raw: dict[str, Any] | list[dict[str, Any]],
     *,
@@ -43,6 +49,10 @@ def normalize_naver_news_response(
     return evidence
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description GNews API 응답을 공통 뉴스 근거 shape로 정규화한다(publishedAt ISO 파싱,
+# 발행처/이미지 메타데이터 보존). 평가 근거로 쓰일 글로벌 뉴스 근거를 생성한다.
 def normalize_gnews_response(
     raw: dict[str, Any] | list[dict[str, Any]],
     *,
@@ -77,6 +87,10 @@ def normalize_gnews_response(
     return evidence
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description Tavily(topic=news) 검색 결과를 공통 뉴스 근거 shape로 정규화한다. source/country
+# 인자로 글로벌/해외 본국 현지 뉴스를 구분 태깅한다. 시장성 평가 근거를 생성한다.
 def normalize_tavily_news_response(
     raw: dict[str, Any] | list[dict[str, Any]],
     *,
@@ -125,6 +139,10 @@ def normalize_tavily_news_response(
     return evidence
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description KIPRIS 특허 검색 결과를 competitor_patent 근거 shape로 정규화한다(제목·출원인·
+# 출원/등록번호·IPC·날짜 추출). 권리성·기술성 축의 경쟁특허 평가 근거를 생성한다.
 def normalize_kipris_patent_results(
     raw: dict[str, Any] | list[dict[str, Any]],
     *,

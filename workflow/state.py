@@ -2,6 +2,12 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-005, FR-006, FR-007, FR-008
+# @relatedUI UI-005
+# @description 평가 워크플로 전 단계가 공유·갱신하는 상태 모델. 입력(user_input)·특허 원천 데이터·
+# 전처리/요약·근거 번들·4축 평가 결과·최종 보고서·supervisor 판정/검증 결과를 한 객체에 담아 노드 간 전달한다.
 class PatentWorkflowState(BaseModel):
     # Run control
     user_input: dict[str, Any] = Field(default_factory=dict)

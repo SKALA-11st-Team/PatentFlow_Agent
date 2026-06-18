@@ -43,6 +43,12 @@ BLOCKED_LINK_LOCAL_IP = ipaddress.ip_address("169.254.169.254")
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description Tavily로 시장성/사업 동향 뉴스를 수집해 시장성 축 평가 근거로 제공한다.
+# 국내(KR)는 게이트웨이 Naver News, 해외특허는 country 한정 현지어 뉴스로 분기한다.
 def search_news_via_tavily(query: str, *, max_results: int, country: str | None = None) -> dict[str, Any]:
     """Tavily로 뉴스를 검색한다.
 
@@ -78,11 +84,18 @@ def search_news_via_tavily(query: str, *, max_results: int, country: str | None 
     return response.json()
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 국가 제한 없는 글로벌 영어 뉴스를 검색해 글로벌 사업성/시장성 평가 근거로 제공한다.
 def search_global_news_via_tavily(query: str, *, max_results: int) -> dict[str, Any]:
     """GNews 대체: 국가 제한 없는 글로벌 영어 뉴스 검색(하위호환 래퍼)."""
     return search_news_via_tavily(query, max_results=max_results, country=None)
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 특허 메타데이터/요약을 바탕으로 평가 근거 수집용 검색어(국내·영어·산업RAG·
+# SK AX 사이트)를 LLM으로 재작성한다. LLM 실패 시 메타데이터 기반 결정적 쿼리로 degraded 폴백한다.
 def rewrite_search_queries(
     preprocessed_patent: dict[str, Any],
     *,
@@ -161,6 +174,11 @@ def rewrite_search_queries(
     }
 
 
+# @relatedFR FR-007
+# @relatedUI UI-005
+# @description 외부 평가 근거 수집 진입점. 게이트웨이/Tavily로 뉴스·경쟁특허(KIPRIS)를 병렬
+# 수집·정규화·품질주석해 시장성 등 평가 근거로 제공한다. 게이트웨이 전건 실패 시 '근거 0건'을
+# 조용히 통과시키지 않고 missing_reason/warnings로 표면화한다(degraded 계약 신호).
 def collect_external_evidence(
     *,
     preprocessed_patent: dict[str, Any],

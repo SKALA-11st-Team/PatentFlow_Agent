@@ -14,6 +14,13 @@ from rag.industry_report_chunker import (
 )
 
 
+# @author 김한규
+# @date 2026-06-05
+# @relatedFR FR-007
+# @relatedUI TODO-UI-ID
+# @description WEF Top 10 신기술 보고서를 본문 페이지/섹션 기준으로 청킹하는 전용 청커.
+
+
 WEF_TOKEN_LIMIT = 420
 WEF_TOKEN_OVERLAP = 70
 MIN_BODY_PAGE = 9

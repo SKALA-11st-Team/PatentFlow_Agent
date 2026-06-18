@@ -30,6 +30,13 @@ from services.patent.markdown_preprocess_service import build_preprocessed_paten
 LOCAL_JDK_HOME = PROJECT_ROOT / ".jdk" / "jdk-17.0.19+10" / "Contents" / "Home"
 
 
+# @author 김한규
+# @date 2026-06-09
+# @relatedFR N/A
+# @relatedUI TODO-UI-ID
+# @description 평가를 돌리지 않고 특허 PDF 파싱 결과(메타데이터/초록/OCR 폴백)만 점검하는 진단 CLI.
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Parse one patent PDF and print extracted metadata/abstract without running valuation.",

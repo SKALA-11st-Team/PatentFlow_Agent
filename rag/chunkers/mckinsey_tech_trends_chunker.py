@@ -13,6 +13,13 @@ from rag.industry_report_chunker import (
 )
 
 
+# @author 김한규
+# @date 2026-06-05
+# @relatedFR FR-007
+# @relatedUI TODO-UI-ID
+# @description McKinsey 기술 트렌드 보고서를 섹션 패턴/페이지 기준으로 청킹하는 전용 청커.
+
+
 MCKINSEY_TOKEN_LIMIT = 420
 MCKINSEY_TOKEN_OVERLAP = 70
 MIN_START_PAGE = 11

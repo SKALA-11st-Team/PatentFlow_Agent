@@ -36,6 +36,14 @@ from app.config import settings  # noqa: E402
 _EXCLUDED = ("", "기타", "etc", "ETC", "기타/미정")
 
 
+# @author 유건욱
+# @date 2026-06-05
+# @relatedFR FR-006
+# @relatedUI TODO-UI-ID
+# @description 분야 추천(사업/기술 분류) 정확도를 라벨링된 특허로 실측 평가하는 오프라인 CLI.
+# 초록 보강 유무에 따른 분류 정확도 변화를 정량 측정한다.
+
+
 def log_step(message: str) -> None:
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
 

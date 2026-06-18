@@ -3,6 +3,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005, UI-008
+# @description 가치평가 도메인 스키마·기본값·검증. 4축(권리성·기술성·시장성·사업 연계성), 등급(A/B/C)·
+# AI 검토 의견 라벨, 운영 설정(valuationConfig: 축 가중치/등급 컷오프/유지 임계/하위 배점)의 기본값과
+# resolve/clamp 보정, 축·종합 결과의 형식 검증을 한곳에서 정의한다(BE/FE와 공유하는 계약은 camelCase 유지).
 ValuationAxis = Literal["legal", "technology", "market", "business_fit"]
 VALUATION_AXES: tuple[ValuationAxis, ...] = ("legal", "technology", "market", "business_fit")
 # 종합 점수(total_score/average_score)는 권리성·기술성·시장성 3축으로만 산정한다.

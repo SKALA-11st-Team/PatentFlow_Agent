@@ -135,6 +135,12 @@ class Claim(BaseModel):
         return _none_if_nullish(value)
 
 
+# @author 배세은
+# @date 2026-06-11
+# @relatedFR FR-006, FR-007
+# @relatedUI UI-005
+# @description 특허 한 건의 구성요소 구조화 결과 전체. 권리성·기술성 축이 element 단위로 비교하기 위한
+# 입력 계약(청구항 구성요소·핵심요소·흐름)을 정의한다.
 class PatentStructure(BaseModel):
     """특허 한 건의 구조화 결과 전체."""
 

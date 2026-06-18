@@ -195,6 +195,13 @@ def _iter_mappings(value: Any) -> list[Mapping[str, Any]]:
     return []
 
 
+# @author 배세은
+# @date 2026-05-06
+# @relatedFR FR-001, FR-007
+# @relatedUI UI-005
+# @description KIPRISPlus 원천 API 직접 호출 클라이언트(서지·패밀리·인용/피인용·해외문헌·전문 PDF 등).
+# 평가 대상 특허의 외부 출원·등록 데이터와 평가 근거를 수집해 특허상세(AI 평가/근거) 흐름에 공급한다.
+# 다중 키 라운드로빈으로 쿼터를 분산하고, 실패 메시지의 ServiceKey 평문은 scrub_secrets로 마스킹한다.
 class KiprisClient:
     """KIPRISPlus 원천 API 직접 호출 클라이언트."""
 

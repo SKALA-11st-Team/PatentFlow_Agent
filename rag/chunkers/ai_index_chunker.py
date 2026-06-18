@@ -14,6 +14,13 @@ from rag.industry_report_chunker import (
 )
 
 
+# @author 배세은
+# @date 2026-05-17
+# @relatedFR FR-007
+# @relatedUI TODO-UI-ID
+# @description Stanford AI Index 보고서를 제목 기준으로 청킹하고 노이즈를 제거하는 전용 청커.
+
+
 AI_INDEX_TOKEN_LIMIT = 500
 AI_INDEX_TOKEN_OVERLAP = 60
 MIN_MERGED_CHARS = 350

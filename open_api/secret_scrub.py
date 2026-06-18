@@ -20,6 +20,13 @@ _SECRET_ENV_NAMES = (
 _QUERY_SECRET_RE = re.compile(r"(?i)(ServiceKey|serviceKey|accessKey|crtfc_key)=[^&\s'\"]+")
 
 
+# @author 유건욱
+# @date 2026-06-09
+# @relatedFR N/A
+# @relatedUI TODO-UI-ID
+# @description 로그·에러 메시지·경고에서 시크릿(KIPRIS ServiceKey/accessKey, NAVER/GNews/DART 키 등)을
+# 마스킹하는 보안 유틸. 게이트웨이 _sanitize_external_error와 에이전트 KiprisError 경로가 공유한다.
+# 직접적인 사용자 기능이 아닌 횡단 보안 유틸이라 대응 FR/UI는 없다.
 def scrub_secrets(text: str) -> str:
     """문자열에서 알려진 시크릿(env 값)과 쿼리스트링 인증키를 마스킹한다."""
     if not text:
