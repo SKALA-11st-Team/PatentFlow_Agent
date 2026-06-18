@@ -407,6 +407,9 @@ def connect_pgvector(database_url: str | None) -> Any:
             "PGVECTOR_DATABASE_URL is required for the industry pgvector store. "
             "Example: postgresql://user:password@localhost:5432/patent_rag"
         )
+    # Secret/ConfigMap 주입 값에 끼어든 후행 개행·공백이 DB명에 섞이면("patentflow\n")
+    # 'database "patentflow\n" does not exist'로 연결이 실패한다 — 정규화 후 연결한다.
+    database_url = database_url.strip()
     _, psycopg = import_psycopg()
     return psycopg.connect(database_url)
 
