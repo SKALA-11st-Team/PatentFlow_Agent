@@ -51,6 +51,20 @@ pgvector/RAG 기능을 테스트할 때만 DB가 필요합니다(`/health`·`/do
 docker compose up -d postgres
 ```
 
+## 필요 API (외부 API 키)
+
+`.env`에 아래 외부 서비스 키를 채워야 합니다. 미설정 시 해당 근거 수집 단계는 건너뛰거나 `degraded`로 표면화됩니다.
+
+| 외부 API | 용도 | 환경변수 | 키 필요 |
+|---|---|---|---|
+| OpenAI | LLM 요약·4축 평가·작성·임베딩 (필수) | `OPENAI_API_KEY` | ✅ |
+| KIPRIS | 특허 서지·PDF 수집 | `KIPRIS_API_KEY` | ✅ |
+| Naver News | 국문 뉴스 근거 | `NAVER_CLIENT_ID`, `NAVER_CLIENT_SECRET` | ✅ |
+| GNews | 영문 뉴스 근거 | `GNEWS_API_KEY` | ✅ |
+| Tavily | 글로벌 뉴스·검색 근거 | `TAVILY_API_KEY` | ✅ |
+| LangSmith | 워크플로우 트레이싱 | `LANGSMITH_API_KEY` | ⬜ 선택 |
+| Google Cloud | 서비스 계정 자격증명(사용하는 GCP 기능에 한함) | `GOOGLE_APPLICATION_CREDENTIALS` | ⬜ 선택 |
+
 ## 실행 방식: `app.api` vs `app.main`
 
 두 실행 방식은 같은 `venv`와 같은 환경변수를 사용합니다. `app.api`를 띄운다고 `app.main`이 같이 도는 것은 아닙니다.
