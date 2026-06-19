@@ -160,17 +160,23 @@ def rewrite_search_queries(
         previous,
     )
 
+    meta: dict[str, Any] = {
+        "rewrite_source": "fallback" if llm_error else "llm",
+        "llm_error": llm_error,
+        "product_query_enforced": product_query_enforced,
+        **company_query_meta,
+    }
+    # AG-02: LLM 재작성 실패 폴백을 query_plan.rewrite_meta에만 남기면 CLI는 출력하지만 API
+    # 응답(warnings/degraded)에는 닿지 않는다. warning 키로 표면화해 collect_warning_values가
+    # 사용자/운영 노출 신호로 수집하게 한다(결정적 폴백을 조용히 숨기지 않기).
+    if llm_error:
+        meta["warning"] = f"query_rewriting_fallback:{llm_error}"
     return {
         "domestic": rewritten_domestic,
         "en": rewritten_en,
         "industry_rag": rewritten_industry_rag,
         "skax_site": rewritten_skax_site,
-        "meta": {
-            "rewrite_source": "fallback" if llm_error else "llm",
-            "llm_error": llm_error,
-            "product_query_enforced": product_query_enforced,
-            **company_query_meta,
-        },
+        "meta": meta,
     }
 
 

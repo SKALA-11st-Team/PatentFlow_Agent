@@ -14,6 +14,10 @@ _SECRET_ENV_NAMES = (
     "KIPRIS_SERVICE_KEY",
     "KIPRIS_API_KEY",
     "SERVICE_KEY",
+    "OPENAI_API_KEY",
+    "TAVILY_API_KEY",
+    "UNIFIED_API_KEY",
+    "LANGSMITH_API_KEY",
 )
 
 # 쿼리스트링으로 전달된 per-request 인증키(env에 없어 값 replace로 못 가림)도 마스킹한다.
